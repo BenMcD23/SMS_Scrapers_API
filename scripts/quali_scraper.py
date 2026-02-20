@@ -4,7 +4,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
 import time
-from flask import Response, stream_with_context
 import threading
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click

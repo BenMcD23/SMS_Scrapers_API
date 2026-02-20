@@ -1,1 +1,4 @@
 venv
+scraper_data.db
+.env
+__pycache__
