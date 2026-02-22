@@ -214,12 +214,30 @@ async def get_events(db: Session = Depends(get_db)):
     return db.query(Event317).all()
 
 
-@app.post("/generate-doc")
-async def generate_doc(event_id: int, action: str, db: Session = Depends(get_db)):
+@app.get("/generate-doc/{event_id}/{action}")
+async def generate_doc_endpoint(event_id: int, action: str, db: Session = Depends(get_db)):
+    # 1. Fetch event from DB
     event = db.query(Event317).filter(Event317.id == event_id).first()
-
     if not event:
-        raise HTTPException(status_code=404)
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    # Your file return logic here
-    pass
+    try:
+        # 2. Call the appropriate generator function
+        if action == "ji":
+            file_buffer = generate_ji(event)
+            filename = f"JI_{event.reference}.docx"
+        elif action == "ao":
+            file_buffer = generate_ao(event)
+            filename = f"AO_{event.reference}.docx"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action")
+
+        # 3. Return the file as a stream
+        return StreamingResponse(
+            file_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        print(f"Error generating document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
