@@ -1,0 +1,4 @@
+tailscale_data
+__pycache__
+*.pyc
+.git
