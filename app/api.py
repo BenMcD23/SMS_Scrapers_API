@@ -60,17 +60,32 @@ def get_db():
 
 def run_scraper_task(scraper_func, user_id: int):
     global scraper_running
-    # Create a fresh DB session for the background thread
-    db = Session(engine) 
+    db = Session(engine)
+    # Create an event to signal the scraper to stop if it takes too long
+    stop_event = threading.Event()
+    
+    def monitor_timeout():
+        # Global timeout for the entire scraper
+        time.sleep(900)
+        if scraper_running:
+            stop_event.set()
+
+    # Start the timeout monitor thread
+    monitor_thread = threading.Thread(target=monitor_timeout, daemon=True)
+    monitor_thread.start()
+
     try:
-        # Pass the user_id and db to your scraper function
-        scraper_func(scraper_messages, scraper_lock, user_id, db)
+        # Pass the stop_event to your scraper
+        scraper_func(scraper_messages, scraper_lock, user_id, db, stop_event)
 
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
+            if stop_event.is_set():
+                scraper_messages.append(json.dumps({"type": "error", "value": "Scraper timed out."}))
+            else:
+                scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
     except Exception as e:
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "error", "value": str(e)}))
+            scraper_messages.append(json.dumps({"type": "error", "value": f"Crash: {str(e)}"}))
     finally:
         db.close()
         with scraper_state_lock:
@@ -100,6 +115,7 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
         "cadet-quali": quali_scraper,
         "cadet-event": cadet_event_scraper,
         "317-event": event_317_scraper,
+        "medical": medical_scraper,
     }
 
     if name not in scraper_map:
@@ -202,7 +218,12 @@ async def scraper_stream():
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
     )
 
 # ===============================

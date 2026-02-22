@@ -1,5 +1,5 @@
 services:
-  app:
+  api:
     build: .
     # Map host 8000 to container 8000 (matching your Dockerfile EXPOSE)
     ports:
@@ -14,3 +14,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/app
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    restart: always
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - api
