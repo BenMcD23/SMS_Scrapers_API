@@ -14,12 +14,19 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/app
-  tunnel:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflare-tunnel
-    restart: always
-    command: tunnel --no-autoupdate run
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: 317-sms-api
     environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-    depends_on:
-      - api
+      # - TS_AUTHKEY=tskey-auth-${TAILSCALE_TOKEN}
+      - TS_STATE_DIR=/var/lib/tailscale
+      # - TS_EXTRA_ARGS=--advertise-tags=tag:container
+    volumes:
+      - ./tailscale_data:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    restart: unless-stopped

@@ -26,9 +26,17 @@ app = FastAPI()
 # Allow Next.js to talk to FastAPI
 app.add_middleware(
     CORSMiddleware,
+<<<<<<< HEAD
     allow_origins=["http://localhost:3000", "https://sms.317atc.co.uk"],
     allow_methods=["*"],
     allow_headers=["*"],
+=======
+    allow_origins=["http://localhost:3000", "https://sms.317atc.co.uk", "https://317-sms-site.vercel.app"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    allow_credentials=True,
+>>>>>>> f1656e74ac87944a296b0cb431b02206ef962ebd
 )
 
 # ===============================
