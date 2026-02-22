@@ -1,7 +1,7 @@
 import threading
 import json
 import time
-from scripts.scraper_calls import event_317_scraper
+from scripts.scraper_calls import event_317_scraper, quali_scraper
 
 def debug_scraper():
     # 1. Setup mock state to match your FastAPI global variables
@@ -35,7 +35,7 @@ def debug_scraper():
     # 3. Execute the scraper
     try:
         # We pass the same objects FastAPI would pass
-        event_317_scraper(test_messages, test_lock)
+        quali_scraper(test_messages, test_lock)
     except Exception as e:
         print(f"\n[CRITICAL ERROR]: {str(e)}")
     finally:
