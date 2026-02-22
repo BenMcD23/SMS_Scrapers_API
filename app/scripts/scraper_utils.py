@@ -11,6 +11,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from database.models import User
+
+from utils.crypto import decrypt_password
 
 from scripts.event_scraper import *
 from scripts.quali_scraper import *
@@ -84,12 +87,22 @@ def login(driver, credentials, scraper_messages, scraper_lock):
     with scraper_lock:
         scraper_messages.append("Logged in")
 
-def init_scraper():
-    credentials = load_credentials()
-    driver = init_driver()
-
+def init_scraper(user_id, db_session):
+    user = db_session.query(User).filter(User.id == user_id).first()
     
-    return driver, credentials
+    if not user or not user.role_password:
+        raise Exception("No credentials found!")
+
+    # Decrypt so Selenium can use the actual string
+    credentials = {
+        "role_username": user.role_username,
+        "role_password": decrypt_password(user.role_password),
+        "personal_username": user.personal_username,
+        "personal_password": decrypt_password(user.personal_password)
+    }
+    
+    # driver = init_driver()
+    return credentials
 
 
 def push_to_google_apps_script(data, url, scraper_messages, scraper_lock):

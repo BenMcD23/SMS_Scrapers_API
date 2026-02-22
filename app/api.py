@@ -3,16 +3,21 @@ import threading
 import asyncio
 import json
 from typing import AsyncGenerator
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from database.create_db import init_db
 from database.database import engine
-from database.models import Event317
+from database.models import Event317, User
 from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
+
+from utils.crypto import encrypt_password
+
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 init_db()
 
@@ -112,6 +117,51 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks):
 
     return {"status": "started"}
 
+GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
+
+@app.post("/save-credentials")
+async def save_credentials(
+    data: dict, 
+    db: Session = Depends(get_db),
+    authorization: str = Header(None) 
+):
+    print(f"DEBUG: Received Authorization Header: {authorization}") # <-- Add this
+
+    # 1. Extract the token from the "Bearer <token>" header
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+    
+    token = authorization.split(" ")[1]
+
+    try:
+        # 2. Verify the token with Google
+        # This checks that the token is real, not expired, and meant for your app
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        
+        # 3. Get the unique Google ID and Email from the verified token
+        google_id = idinfo['sub']
+        email = idinfo['email']
+
+    except ValueError:
+        # Token was invalid (fake or expired)
+        raise HTTPException(status_code=401, detail="Invalid Google Token")
+
+    # 4. Find or create the user in your database
+    user = db.query(User).filter(User.google_id == google_id).first()
+    
+    if not user:
+        user = User(google_id=google_id, email=email)
+        db.add(user)
+
+    # 5. Update the Bader credentials
+    user.role_username = data.get("role_user")
+    user.role_password = encrypt_password(data.get("role_pass"))
+    user.personal_username = data.get("pers_user")
+    user.personal_password = encrypt_password(data.get("pers_pass"))
+    
+    db.commit()
+    
+    return {"status": "success", "message": f"Settings saved for {email}"}
 # ===============================
 # SERVER SENT EVENTS
 # ===============================
