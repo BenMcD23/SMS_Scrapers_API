@@ -75,6 +75,3 @@ def medical_scraper(scraper_messages, scraper_lock):
         scraper_messages.append("Scraper completed successfully!")
 
     driver.quit()
-def run_all():
-    pass
-
