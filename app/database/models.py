@@ -80,3 +80,17 @@ class AllEvent(Base):
     title = Column(Text, nullable=False)
 
     cadet_events = relationship("CadetEvent", back_populates="event")
+
+# In your models file
+class User(Base):
+    __tablename__ = "Users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    google_id = Column(Text, unique=True, nullable=False) # The ID from NextAuth
+    email = Column(Text, nullable=False)
+    
+    # Bader Credentials (encrypted in a real app, but for now plain text)
+    role_username = Column(Text)
+    role_password = Column(Text)
+    personal_username = Column(Text)
+    personal_password = Column(Text)
