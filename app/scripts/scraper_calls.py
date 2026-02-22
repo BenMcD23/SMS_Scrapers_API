@@ -5,10 +5,10 @@ from scripts.alergies import *
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
-def quali_scraper(scraper_messages, scraper_lock):
+def quali_scraper(scraper_messages, scraper_lock, user_id, db_session):
     with scraper_lock:
         scraper_messages.append("Started scraper")
-    driver, credentials = init_scraper()
+    driver, credentials = init_scraper(user_id, db_session)
     login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
     cadetNames, numberOfCadets = get_cadet_names(driver)
     with scraper_lock:
@@ -22,10 +22,10 @@ def quali_scraper(scraper_messages, scraper_lock):
 
     driver.quit()
 
-def cadet_event_scraper(scraper_messages, scraper_lock):
+def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session):
     with scraper_lock:
         scraper_messages.append("Started scraper")
-    driver, credentials = init_scraper()
+    driver, credentials = init_scraper(user_id, db_session)
     login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
     event_names, number_of_events, event_links_317 = get_event_names_and_317_links(driver)
     with scraper_lock:
@@ -39,10 +39,10 @@ def cadet_event_scraper(scraper_messages, scraper_lock):
 
     driver.quit()
 
-def event_317_scraper(scraper_messages, scraper_lock):
+def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session):
     with scraper_lock:
         scraper_messages.append("Started scraper")
-    driver, credentials = init_scraper()
+    driver, credentials = init_scraper(user_id, db_session)
     login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
     event_names, number_of_events, event_links_317 = get_event_names_and_317_links(driver)
     with scraper_lock:
@@ -59,10 +59,10 @@ def check_banned_scraper():
     pass
     # banned_and_bidding = get_event_bans(event_data)
 
-def medical_scraper(scraper_messages, scraper_lock):
+def medical_scraper(scraper_messages, scraper_lock, user_id, db_session):
     with scraper_lock:
         scraper_messages.append("Started scraper")
-    driver, credentials = init_scraper()
+    driver, credentials = init_scraper(user_id, db_session)
     login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
     cadetNames, numberOfCadets = get_cadet_names(driver)
     with scraper_lock:

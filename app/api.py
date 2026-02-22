@@ -58,33 +58,43 @@ def get_db():
 # SCRAPER LOGIC
 # ===============================
 
-def run_scraper_task(scraper_func):
+def run_scraper_task(scraper_func, user_id: int):
     global scraper_running
-
+    # Create a fresh DB session for the background thread
+    db = Session(engine) 
     try:
-        scraper_func(scraper_messages, scraper_lock)
+        # Pass the user_id and db to your scraper function
+        scraper_func(scraper_messages, scraper_lock, user_id, db)
 
         with scraper_lock:
-            scraper_messages.append(
-                json.dumps({"type": "status", "value": "done"})
-            )
-
+            scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
     except Exception as e:
         with scraper_lock:
-            scraper_messages.append(
-                json.dumps({"type": "error", "value": str(e)})
-            )
-
+            scraper_messages.append(json.dumps({"type": "error", "value": str(e)}))
     finally:
+        db.close()
         with scraper_state_lock:
             scraper_running = False
-
         message_event.set()
 
 
 @app.get("/run-scraper/{name}")
-async def start_scraper(name: str, background_tasks: BackgroundTasks):
+async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db), authorization: str = Header(None)):
     global scraper_running
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        token = authorization.split(" ")[1]
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        google_id = idinfo['sub']
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Token")
+
+    user = db.query(User).filter(User.google_id == google_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Save settings first.")
 
     scraper_map = {
         "cadet-quali": quali_scraper,
@@ -113,7 +123,7 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks):
 
     message_event.set()
 
-    background_tasks.add_task(run_scraper_task, scraper_map[name])
+    background_tasks.add_task(run_scraper_task, scraper_map[name], user.id)
 
     return {"status": "started"}
 

@@ -1,51 +1,56 @@
 import threading
-import json
 import time
-from scripts.scraper_calls import event_317_scraper, quali_scraper
+from sqlalchemy.orm import Session
+from database.database import engine  # Import your engine
+from scripts.scraper_calls import quali_scraper
 
 def debug_scraper():
-    # 1. Setup mock state to match your FastAPI global variables
+    # 1. Setup mock state
     test_messages = []
     test_lock = threading.Lock()
+    
+    # 2. Setup Database Session
+    # This creates a real connection to your scraper_data.db
+    db_session = Session(bind=engine)
+    
+    # Set the user ID you want to test with (as requested)
+    TEST_USER_ID = 1
 
-    print("--- Starting Scraper Debug Session ---")
+    print(f"--- Starting Scraper Debug Session (User ID: {TEST_USER_ID}) ---")
 
-    # 2. Define a background thread to print messages as they arrive
-    # This mimics your SSE (Server Sent Events) stream
+    # 3. Message monitor (unchanged logic)
     def message_monitor():
         last_idx = 0
         while True:
             with test_lock:
-                # Check if there are new messages
                 if last_idx < len(test_messages):
                     for i in range(last_idx, len(test_messages)):
                         print(f"[SCRAPER LOG]: {test_messages[i]}")
                     last_idx = len(test_messages)
                 
-                # Exit monitor if scraper sends a completion or error message
-                # (Adjust strings based on what your actual utils functions push)
-                if any("completed" in str(m).lower() or "error" in str(m).lower() for m in test_messages):
+                # Exit conditions
+                if any("done" in str(m).lower() or "error" in str(m).lower() for m in test_messages):
                     break
-            
             time.sleep(0.5)
 
     monitor_thread = threading.Thread(target=message_monitor, daemon=True)
     monitor_thread.start()
 
-    # 3. Execute the scraper
-    try:
-        # We pass the same objects FastAPI would pass
-        quali_scraper(test_messages, test_lock)
-    except Exception as e:
-        print(f"\n[CRITICAL ERROR]: {str(e)}")
-    finally:
-        print("\n--- Scraper Finished ---")
-        # Give the monitor thread a moment to print the final messages
-        time.sleep(1)
+    # 4. Execute the scraper with the 4 required arguments
+    # try:
+        # Arguments: (logs, lock, user_id, db_session)
+    quali_scraper(test_messages, test_lock, TEST_USER_ID, db_session)
         
-        print("\nFull Message History Log:")
-        for msg in test_messages:
-            print(msg)
+    # except Exception as e:
+    #     print(f"\n[CRITICAL ERROR]: {str(e)}")
+    # finally:
+    db_session.close()  # Always close the session
+    print("\n--- Scraper Finished ---")
+    time.sleep(1)
+    
+    print("\nFull Message History Log:")
+    for msg in test_messages:
+        print(msg)
 
 if __name__ == "__main__":
     debug_scraper()
