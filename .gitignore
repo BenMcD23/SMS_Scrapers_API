@@ -2,3 +2,4 @@ venv
 scraper_data.db
 .env
 __pycache__
+317_SMS.db
