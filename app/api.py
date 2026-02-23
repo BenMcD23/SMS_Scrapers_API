@@ -33,6 +33,9 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
+MAX_CONCURRENT_SCRAPERS = 2
+
 # ===============================
 # GLOBAL SCRAPER STATE
 # ===============================
@@ -44,6 +47,8 @@ scraper_running = False
 scraper_state_lock = threading.Lock()
 
 message_event = asyncio.Event()
+
+current_scraper_user = None
 
 # ===============================
 # DATABASE
@@ -61,7 +66,7 @@ def get_db():
 # ===============================
 
 def run_scraper_task(scraper_func, user_id: int):
-    global scraper_running
+    global scraper_running, current_scraper_user  
     db = Session(engine)
     # Create an event to signal the scraper to stop if it takes too long
     stop_event = threading.Event()
@@ -92,12 +97,15 @@ def run_scraper_task(scraper_func, user_id: int):
         db.close()
         with scraper_state_lock:
             scraper_running = False
+        
+        current_scraper_user = None
+
         message_event.set()
 
 
 @app.get("/run-scraper/{name}")
 async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db), authorization: str = Header(None)):
-    global scraper_running
+    global scraper_running, current_scraper_user
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -122,7 +130,7 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
 
     if name not in scraper_map:
         raise HTTPException(status_code=404, detail="Scraper not found")
-
+    
     # Prevent multiple scrapers running
     with scraper_state_lock:
         if scraper_running:
@@ -131,6 +139,8 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
                 detail="Scraper already running"
             )
         scraper_running = True
+
+    current_scraper_user = idinfo.get("email")
 
     # Reset messages
     with scraper_lock:
@@ -145,15 +155,13 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
 
     return {"status": "started"}
 
-GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
-
 @app.post("/save-credentials")
 async def save_credentials(
     data: dict, 
     db: Session = Depends(get_db),
     authorization: str = Header(None) 
 ):
-    print(f"DEBUG: Received Authorization Header: {authorization}") # <-- Add this
+    print(f"DEBUG: Received Authorization Header: {authorization}")
 
     # 1. Extract the token from the "Bearer <token>" header
     if not authorization or not authorization.startswith("Bearer "):
@@ -228,6 +236,19 @@ async def scraper_stream():
         }
     )
 
+@app.get("/scraper-status")
+async def scraper_status():
+    with scraper_lock:
+        logs = [
+            json.loads(m).get("value", m)
+            for m in scraper_messages
+            if json.loads(m).get("type") == "log"
+        ]
+    return {
+        "running": scraper_running,
+        "started_by": current_scraper_user,   # see below
+        "recent_logs": logs[-50:],            # last 50 lines
+    }
 # ===============================
 # DATA ENDPOINTS
 # ===============================
