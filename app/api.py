@@ -5,16 +5,18 @@ import json
 import time
 import base64
 import httpx
+import io
 
 from typing import AsyncGenerator
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+
 from sqlalchemy.orm import Session
 
 from database.create_db import init_db
 from database.database import engine
-from database.models import Event317, User
+from database.models import Event317, User, BaderCredentials, UserSignature
 from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
 
@@ -68,6 +70,29 @@ def get_db():
     finally:
         db.close()
 
+def get_or_create_user(db: Session, google_id: str, email: str) -> User:
+    """
+    Fetch the User row by google_id, creating one if it doesn't exist yet.
+    This means users no longer need to save credentials before doing anything.
+    """
+    user = db.query(User).filter(User.google_id == google_id).first()
+    if not user:
+        user = User(google_id=google_id, email=email)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
+
+def verify_token(authorization: str) -> dict:
+    """Verify Bearer token and return idinfo dict. Raises 401 on failure."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        token = authorization.split(" ")[1]
+        return id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Token")
+
 # ===============================
 # SCRAPER LOGIC
 # ===============================
@@ -103,24 +128,24 @@ def run_scraper_task(scraper_func, user_id: int):
         current_scraper_user = None
         current_scraper_name = None
 
-
 @app.get("/run-scraper/{name}")
-async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db), authorization: str = Header(None)):
+async def start_scraper(
+    name: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
     global scraper_running, current_scraper_user, current_scraper_name
 
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
-    try:
-        token = authorization.split(" ")[1]
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-        google_id = idinfo['sub']
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid Token")
-
-    user = db.query(User).filter(User.google_id == google_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Save settings first.")
+    # Scraper specifically needs bader credentials to be set
+    if not user.bader_credentials:
+        raise HTTPException(
+            status_code=400,
+            detail="Bader credentials not saved. Please go to Settings first.",
+        )
 
     scraper_map = {
         "cadet-quali": quali_scraper,
@@ -131,7 +156,7 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
 
     if name not in scraper_map:
         raise HTTPException(status_code=404, detail="Scraper not found")
-    
+
     with scraper_state_lock:
         if scraper_running:
             raise HTTPException(status_code=400, detail="Scraper already running")
@@ -152,45 +177,102 @@ async def start_scraper(name: str, background_tasks: BackgroundTasks, db: Sessio
         )
 
     background_tasks.add_task(run_scraper_task, scraper_map[name], user.id)
-
     return {"status": "started"}
 
 
+# ===============================
+# SETTINGS
+# ===============================
+
 @app.post("/save-credentials")
 async def save_credentials(
-    data: dict, 
+    data: dict,
     db: Session = Depends(get_db),
-    authorization: str = Header(None) 
+    authorization: str = Header(None),
 ):
-    print(f"DEBUG: Received Authorization Header: {authorization}")
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid or missing token")
-    
-    token = authorization.split(" ")[1]
+    # Upsert BaderCredentials
+    creds = user.bader_credentials
+    if not creds:
+        creds = BaderCredentials(user_id=user.id)
+        db.add(creds)
 
-    try:
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-        google_id = idinfo['sub']
-        email = idinfo['email']
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid Google Token")
+    creds.role_username = data.get("role_user")
+    creds.role_password = encrypt_password(data.get("role_pass"))
+    creds.personal_username = data.get("pers_user")
+    creds.personal_password = encrypt_password(data.get("pers_pass"))
 
-    user = db.query(User).filter(User.google_id == google_id).first()
-    
-    if not user:
-        user = User(google_id=google_id, email=email)
-        db.add(user)
-
-    user.role_username = data.get("role_user")
-    user.role_password = encrypt_password(data.get("role_pass"))
-    user.personal_username = data.get("pers_user")
-    user.personal_password = encrypt_password(data.get("pers_pass"))
-    
     db.commit()
-    
-    return {"status": "success", "message": f"Settings saved for {email}"}
+    return {"status": "success", "message": f"Settings saved for {user.email}"}
 
+
+# ===============================
+# SIGNATURE ENDPOINTS
+# ===============================
+
+@app.post("/save-signature")
+async def save_signature(
+    file: UploadFile = File(...),
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    if file.content_type not in ("image/png", "image/jpeg"):
+        raise HTTPException(status_code=400, detail="Only PNG or JPEG images are accepted")
+
+    image_bytes = await file.read()
+    if len(image_bytes) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Signature image must be under 2 MB")
+
+    # Upsert UserSignature
+    sig = user.signature
+    if not sig:
+        sig = UserSignature(user_id=user.id)
+        db.add(sig)
+
+    sig.image_data = image_bytes
+    sig.mime_type = file.content_type
+
+    db.commit()
+    return {"status": "success", "message": "Signature saved"}
+
+
+@app.get("/get-signature")
+async def get_signature(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    if not user.signature:
+        raise HTTPException(status_code=404, detail="No signature saved")
+
+    return StreamingResponse(
+        io.BytesIO(user.signature.image_data),
+        media_type=user.signature.mime_type,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.delete("/delete-signature")
+async def delete_signature(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    if not user.signature:
+        raise HTTPException(status_code=404, detail="No signature to delete")
+
+    db.delete(user.signature)
+    db.commit()
+    return {"status": "success", "message": "Signature deleted"}
 
 # ===============================
 # SERVER SENT EVENTS
