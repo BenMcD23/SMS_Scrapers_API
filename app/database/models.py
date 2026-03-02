@@ -5,13 +5,15 @@ from sqlalchemy import (
     Boolean,
     Text,
     DateTime,
-    ForeignKey
+    ForeignKey,
+    LargeBinary,
 )
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.orm import relationship
 
 from database.database import Base
 
 
+# ─── Cadet / Event tables (unchanged) ────────────────────────────────────────
 
 class Cadet(Base):
     __tablename__ = "Cadets"
@@ -81,16 +83,65 @@ class AllEvent(Base):
 
     cadet_events = relationship("CadetEvent", back_populates="event")
 
-# In your models file
+
+# ─── User tables ──────────────────────────────────────────────────────────────
+
 class User(Base):
+    """
+    Core identity record — created automatically on first login/action.
+    Holds only auth identity; credentials and signature are in child tables.
+    """
     __tablename__ = "Users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    google_id = Column(Text, unique=True, nullable=False) # The ID from NextAuth
+    google_id = Column(Text, unique=True, nullable=False, index=True)
     email = Column(Text, nullable=False)
-    
-    # Bader Credentials (encrypted in a real app, but for now plain text)
-    role_username = Column(Text)
-    role_password = Column(Text)
-    personal_username = Column(Text)
-    personal_password = Column(Text)
+
+    bader_credentials = relationship(
+        "BaderCredentials",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    signature = relationship(
+        "UserSignature",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class BaderCredentials(Base):
+    """
+    Bader login credentials — one row per user, created/updated via /save-credentials.
+    """
+    __tablename__ = "Bader_Credentials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer, ForeignKey("Users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+
+    role_username = Column(Text, nullable=True)
+    role_password = Column(Text, nullable=True)       # stored encrypted
+    personal_username = Column(Text, nullable=True)
+    personal_password = Column(Text, nullable=True)   # stored encrypted
+
+    user = relationship("User", back_populates="bader_credentials")
+
+
+class UserSignature(Base):
+    """
+    Assessor signature image — one row per user, created/replaced via /save-signature.
+    """
+    __tablename__ = "User_Signatures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        Integer, ForeignKey("Users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+
+    image_data = Column(LargeBinary, nullable=False)
+    mime_type = Column(Text, nullable=False, default="image/png")
+
+    user = relationship("User", back_populates="signature")
