@@ -1,28 +1,29 @@
 services:
   api:
     build: .
-    # Map host 8000 to container 8000 (matching your Dockerfile EXPOSE)
+    env_file:
+      - .env
     ports:
-      - "8000:8000" 
-    # Use uvicorn for FastAPI
+      - "8000:8000"
     command: uvicorn app.api:app --host 0.0.0.0 --port 8000
     shm_size: 768mb
     deploy:
       resources:
         limits:
           memory: 6gb
+    volumes:
+      - ./data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/app
+      - DATABASE_URL=sqlite:////app/data/317_SMS.db
 
   tailscale:
     image: tailscale/tailscale:latest
     container_name: tailscale
     hostname: 317-sms-api
     environment:
-      # - TS_AUTHKEY=tskey-auth-${TAILSCALE_TOKEN}
       - TS_STATE_DIR=/var/lib/tailscale
-      # - TS_EXTRA_ARGS=--advertise-tags=tag:container
     volumes:
       - ./tailscale_data:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun

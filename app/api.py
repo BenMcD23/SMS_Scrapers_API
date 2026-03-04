@@ -6,6 +6,7 @@ import time
 import base64
 import httpx
 import io
+from dotenv import load_dotenv
 
 from typing import AsyncGenerator
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File
@@ -40,6 +41,8 @@ app.add_middleware(
 )
 
 GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
+
+load_dotenv()
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = "BenMcD23/cadet-website"

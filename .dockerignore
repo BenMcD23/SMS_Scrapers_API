@@ -1,4 +1,9 @@
-tailscale_data
-__pycache__
 *.pyc
 .git
+.env
+*.db
+data/
+tailscale_data/
+__pycache__/
+venv/
+.venv/
