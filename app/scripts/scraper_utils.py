@@ -36,10 +36,6 @@ def get_env_path():
         return os.path.abspath(".env")
     
 def load_credentials():
-    env_path = get_env_path()
-
-    load_dotenv(env_path, override=True)
-
     return {
         "role_username": os.getenv("role_username"),
         "role_password": os.getenv("role_password"),

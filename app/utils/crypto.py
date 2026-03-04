@@ -1,9 +1,5 @@
 import os
 from cryptography.fernet import Fernet
-from dotenv import load_dotenv
-
-# Load variables from .env
-load_dotenv()
 
 # Pull the key from environment
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
