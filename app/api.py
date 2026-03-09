@@ -602,7 +602,7 @@ async def search_cadets(
 
 # ── Leadership assessment endpoint (updated to use cin) ────────────────────
 
-@app.post("/assessments/leadership/generate-pdf")
+@app.post("/assessments/leadership/add-assessment")
 async def generate_leadership_assessment(
     data: dict,
     db: Session = Depends(get_db),
