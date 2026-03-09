@@ -48,9 +48,9 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         try:
             workspace_users = get_workspace_users()
             # Key: (first_name_upper, last_name_upper) → email
-            # Both first AND last must match to avoid false positives
+            # uppercase keys for comparison, but the dict value retains original
             email_map = {
-                (u["first_name"].upper(), u["last_name"].upper()): u["email"]
+                (u["first_name_key"], u["last_name_key"]): u["email"]
                 for u in workspace_users
             }
             with scraper_lock:
@@ -69,29 +69,39 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             cin = entry.get("cin")
 
             if not cin:
-                with scraper_lock:
-                    scraper_messages.append(json.dumps({
-                        "type": "warning",
-                        "value": f"Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found"
-                    }))
+                print(f"[Scraper] Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found")
                 skipped += 1
                 continue
 
             try:
                 cin = int(cin)
             except (ValueError, TypeError):
-                with scraper_lock:
-                    scraper_messages.append(json.dumps({
-                        "type": "warning",
-                        "value": f"Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer"
-                    }))
+                print(f"[Scraper] Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer")
                 skipped += 1
                 continue
 
-            # Match email by full name (first AND last must both match)
-            first = (entry.get("first_name") or "").strip().upper()
-            last  = (entry.get("last_name")  or "").strip().upper()
-            email = email_map.get((first, last))
+            # Uppercase only for comparison — names saved to DB come from SMS as-is
+            first_key = (entry.get("first_name") or "").strip().upper()
+            last_key  = (entry.get("last_name")  or "").strip().upper()
+
+            # 1. Full first + last
+            email = email_map.get((first_key, last_key))
+            if email:
+                print(f"[Scraper] Matched '{first_key}' '{last_key}' by full name → {email}")
+            else:
+                # 2. First initial + last  (e.g. 'T' 'SMITH')
+                initial_key = first_key[0] if first_key else ""
+                email = next(
+                    (v for (f, l), v in email_map.items() if l == last_key and f.startswith(initial_key)),
+                    None
+                )
+                if not email:
+                    # 3. Last name only — only use if exactly one workspace account shares that surname
+                    last_matches = [(f, l, v) for (f, l), v in email_map.items() if l == last_key]
+                    if len(last_matches) == 1:
+                        email = last_matches[0][2]
+
+
             if email:
                 emails_matched += 1
 
@@ -100,6 +110,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 cadet = Cadet(cin=cin)
                 db_session.add(cadet)
 
+            # Store names exactly as SMS returned them, not uppercased
             cadet.first_name    = entry.get("first_name") or cadet.first_name
             cadet.last_name     = entry.get("last_name")  or cadet.last_name
             cadet.rank          = entry.get("rank")        or cadet.rank
@@ -110,11 +121,9 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             # Upsert qualifications
             existing_quals = {cq.qual_type for cq in cadet.qualifications}
             for qual in entry.get("qualifications", []):
-                # qual is expected to be a dict: {"qual_type": ..., "status": ..., "date_achieved": ...}
-                # If it's still a raw string from the scraper, store it as-is with a default status
                 if isinstance(qual, str):
-                    qual_type = qual
-                    status = "true"
+                    qual_type     = qual
+                    status        = "true"
                     date_achieved = None
                 else:
                     qual_type     = qual.get("qual_type")
@@ -150,7 +159,6 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
     finally:
         if driver:
             driver.quit()
-
 
 def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event):
     driver = None
