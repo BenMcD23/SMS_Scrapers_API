@@ -3,7 +3,7 @@ from sqlalchemy import (
     ForeignKey, LargeBinary, JSON,
 )
 from sqlalchemy.orm import relationship
-from database.database import Base
+from app.database.database import Base
 
 
 class Cadet(Base):

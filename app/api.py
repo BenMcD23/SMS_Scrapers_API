@@ -48,7 +48,7 @@ GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleuse
 
 load_dotenv()
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "BenMcD23/cadet-website"
 GITHUB_BRANCH = "master"
 PROGRAMME_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyqQbEdYxu53ARNzfcxdcm9cRieRVBC3cJ_TtdGVbpPQaMfpzD3XkreSmNSnJaHe1pM/exec"
