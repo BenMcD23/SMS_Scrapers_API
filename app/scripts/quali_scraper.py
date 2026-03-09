@@ -51,8 +51,8 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
         with scraper_lock:
             scraper_messages.append(f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}")
         
-        if i == 5:
-            break
+        # if i == 5:
+        #     break
 
         driver.get("https://sms.bader.mod.uk/cadets/default.aspx")
         wait_for_aspx_load(driver)

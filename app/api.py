@@ -600,7 +600,7 @@ async def search_cadets(
     ]
 
 
-# ── Leadership assessment endpoint (updated to use cin) ────────────────────
+# ── Leadership assessment endpoint ────────────────────
 
 @app.post("/assessments/leadership/add-assessment")
 async def generate_leadership_assessment(
