@@ -5,3 +5,4 @@ tailscale_data
 data/
 *.db
 tailscale_data/
+service_account.json
