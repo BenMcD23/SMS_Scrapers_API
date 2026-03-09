@@ -4,61 +4,153 @@ from scripts.event_scraper import *
 from scripts.alergies import *
 import json
 
+from database.models import Cadet, CadetQualification
+from google_admin_api.get_all_users import get_workspace_users
+
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
-def quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event):
-    # 1. Initialize Driver with a safety try block
+def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event):
     driver = None
     try:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Initializing scraper..."}))
-        
+
         driver, credentials = init_scraper(user_id, db_session)
-        
-        # Set a hard page load limit (e.g., 50 seconds)
         driver.set_page_load_timeout(50)
 
-        # 2. Check stop_event before starting heavy tasks
         if stop_event.is_set(): return
 
         login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
-        
+
         if stop_event.is_set(): return
 
         cadetNames, numberOfCadets = get_cadet_names(driver)
-        
-        with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {numberOfCadets} cadets. Fetching qualifications..."}))
 
-        # 3. Pass stop_event into the data collection function
-        # You will need to update the definition of get_cadet_qualifications to accept this argument
-        cadet_quali_data = get_cadet_qualifications(
-            driver, 
-            cadetNames, 
-            numberOfCadets, 
-            scraper_messages, 
-            scraper_lock, 
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {numberOfCadets} cadets. Fetching info and qualifications..."}))
+
+        cadet_data = get_cadet_info_and_qualifications(
+            driver,
+            cadetNames,
+            numberOfCadets,
+            scraper_messages,
+            scraper_lock,
         )
-        
-        # 4. Only push to Google if we weren't stopped
-        if not stop_event.is_set():
-            push_to_google_apps_script({"cadet_quali": cadet_quali_data}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
-            with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
-        else:
+
+        if stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped by timeout."}))
+            return
+
+        # ── Fetch workspace emails and build lookup ────────────────────────────
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Fetching Google Workspace emails..."}))
+        try:
+            workspace_users = get_workspace_users()
+            # Key: (first_name_upper, last_name_upper) → email
+            # Both first AND last must match to avoid false positives
+            email_map = {
+                (u["first_name"].upper(), u["last_name"].upper()): u["email"]
+                for u in workspace_users
+            }
+            with scraper_lock:
+                scraper_messages.append(json.dumps({"type": "info", "value": f"Fetched {len(workspace_users)} workspace accounts."}))
+        except Exception as e:
+            email_map = {}
+            with scraper_lock:
+                scraper_messages.append(json.dumps({"type": "warning", "value": f"Could not fetch workspace emails: {str(e)}. Continuing without emails."}))
+
+        # ── Upsert into DB ────────────────────────────────────────────────────
+        saved = 0
+        skipped = 0
+        emails_matched = 0
+
+        for entry in cadet_data:
+            cin = entry.get("cin")
+
+            if not cin:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found"
+                    }))
+                skipped += 1
+                continue
+
+            try:
+                cin = int(cin)
+            except (ValueError, TypeError):
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer"
+                    }))
+                skipped += 1
+                continue
+
+            # Match email by full name (first AND last must both match)
+            first = (entry.get("first_name") or "").strip().upper()
+            last  = (entry.get("last_name")  or "").strip().upper()
+            email = email_map.get((first, last))
+            if email:
+                emails_matched += 1
+
+            cadet = db_session.query(Cadet).filter(Cadet.cin == cin).first()
+            if not cadet:
+                cadet = Cadet(cin=cin)
+                db_session.add(cadet)
+
+            cadet.first_name    = entry.get("first_name") or cadet.first_name
+            cadet.last_name     = entry.get("last_name")  or cadet.last_name
+            cadet.rank          = entry.get("rank")        or cadet.rank
+            cadet.flight        = entry.get("flight")      or cadet.flight
+            cadet.date_of_birth = entry.get("date_of_birth") or cadet.date_of_birth
+            cadet.email         = email or cadet.email  # keep existing if no match
+
+            # Upsert qualifications
+            existing_quals = {cq.qual_type for cq in cadet.qualifications}
+            for qual in entry.get("qualifications", []):
+                # qual is expected to be a dict: {"qual_type": ..., "status": ..., "date_achieved": ...}
+                # If it's still a raw string from the scraper, store it as-is with a default status
+                if isinstance(qual, str):
+                    qual_type = qual
+                    status = "true"
+                    date_achieved = None
+                else:
+                    qual_type     = qual.get("qual_type")
+                    status        = qual.get("status", "true")
+                    date_achieved = qual.get("date_achieved")
+
+                if qual_type and qual_type not in existing_quals:
+                    db_session.add(CadetQualification(
+                        cadet_id=cin,
+                        qual_type=qual_type,
+                        status=status,
+                        date_achieved=date_achieved,
+                    ))
+
+            saved += 1
+
+        db_session.commit()
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped."
+            }))
+            scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
     except TimeoutException:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": "A page took too long to load (Timeout)."}))
     except Exception as e:
+        db_session.rollback()
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": f"Scraper Error: {str(e)}"}))
     finally:
-        # 5. ALWAYS close the driver to free up system memory
         if driver:
             driver.quit()
+
 
 def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event):
     driver = None

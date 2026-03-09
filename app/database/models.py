@@ -3,7 +3,7 @@ from sqlalchemy import (
     ForeignKey, LargeBinary, JSON,
 )
 from sqlalchemy.orm import relationship
-from app.database.database import Base
+from database.database import Base
 
 
 class Cadet(Base):
@@ -17,7 +17,7 @@ class Cadet(Base):
     date_of_birth = Column(DateTime, nullable=True)
     rank          = Column(Text, nullable=True)
     flight        = Column(Text, nullable=True)
-    classification = Column(Text, nullable=True)
+    # classification = Column(Text, nullable=True)
 
     qualifications = relationship("CadetQualification", back_populates="cadet")
     cadet_events       = relationship("CadetEvent", back_populates="cadet")
