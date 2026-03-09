@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from database.create_db import init_db
 from database.database import engine
@@ -567,6 +568,40 @@ async def update_programme(
 # ASSESSMENT ENDPOINTS
 # ===============================
 
+@app.get("/cadets/search")
+async def search_cadets(
+    q: str = "",
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    if not q or len(q.strip()) < 2:
+        return []
+
+    search = f"%{q.strip()}%"
+    cadets = db.query(Cadet).filter(
+        or_(
+            Cadet.first_name.ilike(search),
+            Cadet.last_name.ilike(search),
+            (Cadet.first_name + " " + Cadet.last_name).ilike(search),
+        )
+    ).order_by(Cadet.last_name, Cadet.first_name).limit(10).all()
+
+    return [
+        {
+            "cin":        c.cin,
+            "first_name": c.first_name,
+            "last_name":  c.last_name,
+            "rank":       c.rank,
+            "flight":     c.flight,
+        }
+        for c in cadets
+    ]
+
+
+# ── Leadership assessment endpoint (updated to use cin) ────────────────────
+
 @app.post("/assessments/leadership/generate-pdf")
 async def generate_leadership_assessment(
     data: dict,
@@ -576,27 +611,25 @@ async def generate_leadership_assessment(
     idinfo = verify_token(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
-    # Resolve cadet by full name (case-insensitive)
-    cadet_name = data.get("cadet_name", "").strip()
-    if not cadet_name:
-        raise HTTPException(status_code=400, detail="cadet_name is required.")
+    # Resolve cadet by CIN (preferred) or fall back to name search
+    cadet_cin = data.get("cadet_cin")
+    if cadet_cin:
+        cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+        if not cadet:
+            raise HTTPException(status_code=404, detail=f"Cadet with CIN {cadet_cin} not found.")
+    else:
+        cadet_name = data.get("cadet_name", "").strip()
+        if not cadet_name:
+            raise HTTPException(status_code=400, detail="cadet_cin or cadet_name is required.")
+        cadet = db.query(Cadet).filter(
+            (Cadet.first_name + " " + Cadet.last_name).ilike(cadet_name)
+        ).first()
+        if not cadet:
+            raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")
 
-    cadet = db.query(Cadet).filter(
-        (Cadet.first_name + " " + Cadet.last_name).ilike(cadet_name)
-    ).first()
-    if not cadet:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Cadet '{cadet_name}' not found in the database.",
-        )
-
-    # Process scores and calculate pass/fail
     processed = process_assessment_data(data)
+    pdf_bytes  = generate_leadership_pdf(processed)
 
-    # Generate PDF bytes
-    pdf_bytes = generate_leadership_pdf(processed)
-
-    # Persist assessment to DB
     sheet = AssessmentSheet(
         assessment_type="leadership",
         fields={
