@@ -86,9 +86,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
             # 1. Full first + last
             email = email_map.get((first_key, last_key))
-            if email:
-                print(f"[Scraper] Matched '{first_key}' '{last_key}' by full name → {email}")
-            else:
+            if not email:
                 # 2. First initial + last  (e.g. 'T' 'SMITH')
                 initial_key = first_key[0] if first_key else ""
                 email = next(
