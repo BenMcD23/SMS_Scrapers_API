@@ -35,13 +35,13 @@ def get_env_path():
         # Running in development (source code)
         return os.path.abspath(".env")
     
-def load_credentials():
-    return {
-        "role_username": os.getenv("role_username"),
-        "role_password": os.getenv("role_password"),
-        "personal_username": os.getenv("personal_username"),
-        "personal_password": os.getenv("personal_password")
-    }
+# def load_credentials():
+#     return {
+#         "role_username": os.getenv("role_username"),
+#         "role_password": os.getenv("role_password"),
+#         "personal_username": os.getenv("personal_username"),
+#         "personal_password": os.getenv("personal_password")
+#     }
 
 def init_driver():
     options = webdriver.ChromeOptions()
@@ -86,15 +86,15 @@ def login(driver, credentials, scraper_messages, scraper_lock):
 def init_scraper(user_id, db_session):
     user = db_session.query(User).filter(User.id == user_id).first()
     
-    if not user or not user.role_password:
+    if not user or not user.bader_credentials or not user.bader_credentials.role_password:
         raise Exception("No credentials found!")
 
-    # Decrypt so Selenium can use the actual string
+    creds = user.bader_credentials
     credentials = {
-        "role_username": user.role_username,
-        "role_password": decrypt_password(user.role_password),
-        "personal_username": user.personal_username,
-        "personal_password": decrypt_password(user.personal_password)
+        "role_username": creds.role_username,
+        "role_password": decrypt_password(creds.role_password),
+        "personal_username": creds.personal_username,
+        "personal_password": decrypt_password(creds.personal_password)
     }
     
     driver = init_driver()
