@@ -1,21 +1,3 @@
-"""
-sync_workspace_emails.py
-------------------------
-Pulls all Google Workspace users from your domain and syncs their
-emails into the Cadets table, matching on name.
-
-Requirements:
-    pip install google-api-python-client google-auth
-
-Setup:
-    1. Go to console.cloud.google.com → Enable "Admin SDK API"
-    2. Create a Service Account with Domain-Wide Delegation
-    3. In Google Admin Console → Security → API Controls → Domain-wide delegation
-       Add the service account client ID with scope:
-       https://www.googleapis.com/auth/admin.directory.user.readonly
-    4. Set GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_ADMIN_EMAIL, GOOGLE_DOMAIN in your .env
-"""
-
 import os
 from dotenv import load_dotenv
 from googleapiclient.discovery import build

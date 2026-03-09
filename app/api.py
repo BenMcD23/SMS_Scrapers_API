@@ -155,7 +155,7 @@ async def start_scraper(
         )
 
     scraper_map = {
-        "cadet-quali": quali_scraper,
+        "cadet-quali": info_and_quali_scraper,
         "cadet-event": cadet_event_scraper,
         "317-event": event_317_scraper,
         "medical": medical_scraper,
