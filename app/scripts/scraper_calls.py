@@ -58,7 +58,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         except Exception as e:
             email_map = {}
             with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "warning", "value": f"Could not fetch workspace emails: {str(e)}. Continuing without emails."}))
+                scraper_messages.append(json.dumps({"type": "warning", "value": f"[WARN] Could not fetch workspace emails: {str(e)}. Continuing without emails."}))
 
         # ── Upsert into DB ────────────────────────────────────────────────────
         saved = 0
@@ -149,6 +149,21 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
+        apps_script_payload = [
+            {
+                "cadet_name": f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
+                "qualifications": [
+                    q if isinstance(q, str) else q.get("qual_type", "")
+                    for q in entry.get("qualifications", [])
+                ]
+            }
+            for entry in cadet_data
+        ]
+        push_to_google_apps_script({"cadet_quali": apps_script_payload}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
+        
     except TimeoutException:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": "A page took too long to load (Timeout)."}))
