@@ -33,16 +33,18 @@ def get_workspace_users() -> list[dict]:
         ).execute()
 
         for u in result.get("users", []):
+            first = u["name"].get("givenName", "").strip()
+            last  = u["name"].get("familyName", "").strip()
             users.append({
-                "email":      u["primaryEmail"],
-                "first_name": u["name"].get("givenName", "").strip(),
-                "last_name":  u["name"].get("familyName", "").strip(),
+                "email":          u["primaryEmail"],
+                "first_name":     first,          # original casing for DB
+                "last_name":      last,           # original casing for DB
+                "first_name_key": first.upper(),  # uppercase for comparison only
+                "last_name_key":  last.upper(),   # uppercase for comparison only
             })
 
         page_token = result.get("nextPageToken")
         if not page_token:
             break
 
-    print(f"[Google] Fetched {len(users)} workspace users")
     return users
-
