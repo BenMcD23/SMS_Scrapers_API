@@ -7,6 +7,7 @@ import base64
 import httpx
 import io
 from dotenv import load_dotenv
+from datetime import datetime
 
 from typing import AsyncGenerator
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File
@@ -17,9 +18,12 @@ from sqlalchemy.orm import Session
 
 from database.create_db import init_db
 from database.database import engine
-from database.models import Event317, User, BaderCredentials, UserSignature
+from database.models import Event317, User, BaderCredentials, UserSignature, AssessmentSheet, Cadet
+
 from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
+
+from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
 
 from utils.crypto import encrypt_password
 
@@ -558,3 +562,61 @@ async def update_programme(
         "pdf": pdf_filename,
         "pages_converted": len(pages),
     }
+
+# ===============================
+# ASSESSMENT ENDPOINTS
+# ===============================
+
+@app.post("/assessments/leadership/generate-pdf")
+async def generate_leadership_assessment(
+    data: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    # Resolve cadet by full name (case-insensitive)
+    cadet_name = data.get("cadet_name", "").strip()
+    if not cadet_name:
+        raise HTTPException(status_code=400, detail="cadet_name is required.")
+
+    cadet = db.query(Cadet).filter(
+        (Cadet.first_name + " " + Cadet.last_name).ilike(cadet_name)
+    ).first()
+    if not cadet:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Cadet '{cadet_name}' not found in the database.",
+        )
+
+    # Process scores and calculate pass/fail
+    processed = process_assessment_data(data)
+
+    # Generate PDF bytes
+    pdf_bytes = generate_leadership_pdf(processed)
+
+    # Persist assessment to DB
+    sheet = AssessmentSheet(
+        assessment_type="leadership",
+        fields={
+            "scores":           processed["scores"],
+            "total_score":      processed["total_score"],
+            "passed":           processed["passed"],
+            "exercise_no":      processed["exercise_no"],
+            "exercise_name":    processed["exercise_name"],
+            "assessor_name":    processed["assessor_name"],
+            "date":             processed["date"],
+            "debriefing_notes": processed["debriefing_notes"],
+        },
+        pdf_data=pdf_bytes,
+        pdf_mime_type="application/pdf",
+        created_at=datetime.utcnow(),
+        cadet_id=cadet.cin,
+        assessor_id=user.id,
+    )
+    db.add(sheet)
+    db.commit()
+    db.refresh(sheet)
+
+    return {"status": "success", "assessment_id": sheet.id}
