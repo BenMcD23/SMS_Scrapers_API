@@ -822,6 +822,23 @@ async def get_assessment_pdf(
         },
     )
 
+@app.delete("/assessments/{assessment_id}")
+async def delete_assessment(
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
+    if not sheet:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    db.delete(sheet)
+    db.commit()
+
+    return {"status": "success", "message": f"Assessment {assessment_id} deleted."}
+
 # ===============================
 # CADET OVERVIEW ENDPOINTS
 # Add these into your main FastAPI app (main.py)
