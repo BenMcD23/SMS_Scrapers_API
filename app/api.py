@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 
 from typing import AsyncGenerator
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -91,13 +91,19 @@ def get_or_create_user(db: Session, google_id: str, email: str) -> User:
         db.refresh(user)
     return user
 
+ALLOWED_EMAILS = {"ci.mcdonald@317atc.co.uk"}
+
 def verify_token(authorization: str) -> dict:
-    """Verify Bearer token and return idinfo dict. Raises 401 on failure."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         token = authorization.split(" ")[1]
-        return id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        if idinfo["email"] not in ALLOWED_EMAILS:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return idinfo
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid Token")
 
@@ -293,7 +299,14 @@ def safe_parse(m: str) -> dict | None:
         return None
 
 @app.get("/scraper-stream")
-async def scraper_stream():
+async def scraper_stream(
+    authorization: str = Header(None),
+    token: str = Query(None),  # fallback for EventSource
+):
+    # Accept token from either header or query param
+    auth = authorization or (f"Bearer {token}" if token else None)
+    verify_token(auth)
+
     async def event_generator():
         # Immediately replay current state to any tab that connects late
         with scraper_lock:
@@ -349,7 +362,8 @@ async def scraper_stream():
 
 
 @app.get("/scraper-status")
-async def scraper_status():
+async def scraper_status(authorization: str = Header(None)):
+    verify_token(authorization)
     with scraper_lock:
         logs = [
             json.loads(m).get("value", m)
