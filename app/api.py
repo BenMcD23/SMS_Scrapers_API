@@ -655,6 +655,173 @@ async def generate_leadership_assessment(
     return {"status": "success", "assessment_id": sheet.id}
 
 
+
+# How many passed assessments are needed per type to unlock upload
+UPLOAD_THRESHOLDS: dict[str, int] = {
+    "leadership": 2,
+    # everything else defaults to 1
+}
+
+def required_passes(assessment_type: str) -> int:
+    return UPLOAD_THRESHOLDS.get(assessment_type, 1)
+
+
+@app.get("/assessments/overview")
+async def assessments_overview(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    # Load all assessment sheets, joining cadet info
+    sheets = (
+        db.query(AssessmentSheet)
+        .join(Cadet, AssessmentSheet.cadet_id == Cadet.cin)
+        .order_by(Cadet.last_name, Cadet.first_name, AssessmentSheet.created_at)
+        .all()
+    )
+
+    # Group by cadet, then by assessment_type
+    from collections import defaultdict
+
+    cadet_map: dict[int, dict] = {}
+
+    for sheet in sheets:
+        cadet = sheet.cadet
+        cin = cadet.cin
+
+        if cin not in cadet_map:
+            cadet_map[cin] = {
+                "cin":        cadet.cin,
+                "first_name": cadet.first_name,
+                "last_name":  cadet.last_name,
+                "rank":       cadet.rank,
+                "flight":     cadet.flight,
+                "type_map":   defaultdict(list),
+            }
+
+        cadet_map[cin]["type_map"][sheet.assessment_type].append(sheet)
+
+    result = []
+    for cin, data in cadet_map.items():
+        groups = []
+        for atype, type_sheets in data["type_map"].items():
+            assessments = [
+                {
+                    "id":              s.id,
+                    "assessment_type": s.assessment_type,
+                    "created_at":      s.created_at.isoformat() if s.created_at else None,
+                    "passed":          s.fields.get("passed")        if s.fields else None,
+                    "total_score":     s.fields.get("total_score")   if s.fields else None,
+                    "exercise_name":   s.fields.get("exercise_name") if s.fields else None,
+                    "assessor_name":   s.fields.get("assessor_name") if s.fields else None,
+                }
+                for s in type_sheets
+            ]
+
+            passed_count = sum(1 for a in assessments if a["passed"] is True)
+            required     = required_passes(atype)
+            can_upload   = passed_count >= required
+
+            # Check if qualification already uploaded
+            # You can track this however you like — here we check a field in the sheet fields
+            # e.g. fields["qualification_uploaded"] = True set by the upload endpoint
+            uploaded = any(
+                s.fields.get("qualification_uploaded") is True
+                for s in type_sheets
+                if s.fields
+            )
+
+            groups.append({
+                "assessment_type":    atype,
+                "assessments":        assessments,
+                "passed_count":       passed_count,
+                "required_to_upload": required,
+                "can_upload":         can_upload,
+                "uploaded":           uploaded,
+            })
+
+        result.append({
+            "cin":        data["cin"],
+            "first_name": data["first_name"],
+            "last_name":  data["last_name"],
+            "rank":       data["rank"],
+            "flight":     data["flight"],
+            "groups":     groups,
+        })
+
+    return result
+
+
+@app.post("/assessments/{cin}/{assessment_type}/upload-qualification")
+async def upload_qualification(
+    cin: int,
+    assessment_type: str,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet {cin} not found.")
+
+    sheets = [
+        s for s in cadet.assessment_sheets
+        if s.assessment_type == assessment_type
+    ]
+
+    if not sheets:
+        raise HTTPException(status_code=404, detail=f"No {assessment_type} assessments found for cadet {cin}.")
+
+    passed_count = sum(
+        1 for s in sheets
+        if s.fields and s.fields.get("passed") is True
+    )
+    required = required_passes(assessment_type)
+
+    if passed_count < required:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cadet needs {required} passed {assessment_type} assessment(s) to upload qualification (has {passed_count}).",
+        )
+
+    # Mark all sheets for this cadet+type as uploaded
+    for sheet in sheets:
+        if sheet.fields is None:
+            sheet.fields = {}
+        sheet.fields = {**sheet.fields, "qualification_uploaded": True}
+
+    db.commit()
+
+    return {
+        "status":  "success",
+        "message": f"{assessment_type.title()} qualification marked as uploaded for cadet {cin}.",
+    }
+
+@app.get("/assessments/{assessment_id}/pdf")
+async def get_assessment_pdf(
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
+    if not sheet:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+    if not sheet.pdf_data:
+        raise HTTPException(status_code=404, detail="No PDF stored for this assessment.")
+
+    return StreamingResponse(
+        io.BytesIO(sheet.pdf_data),
+        media_type=sheet.pdf_mime_type or "application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="assessment_{assessment_id}.pdf"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
 # ===============================
 # CADET OVERVIEW ENDPOINTS
 # Add these into your main FastAPI app (main.py)
