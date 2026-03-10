@@ -653,3 +653,116 @@ async def generate_leadership_assessment(
     db.refresh(sheet)
 
     return {"status": "success", "assessment_id": sheet.id}
+
+
+# ===============================
+# CADET OVERVIEW ENDPOINTS
+# Add these into your main FastAPI app (main.py)
+# ===============================
+
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+
+
+class CadetPatch(BaseModel):
+    email: Optional[str] = None
+
+@app.get("/cadets")
+async def list_cadets(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
+    return [
+        {
+            "cin":        c.cin,
+            "first_name": c.first_name,
+            "last_name":  c.last_name,
+            "rank":       c.rank,
+            "flight":     c.flight,
+        }
+        for c in cadets
+    ]
+
+@app.get("/cadets/{cin}")
+async def get_cadet(
+    cin: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cin} not found.")
+
+    qualifications = [
+        {
+            "id": q.id,
+            "qualification_name": q.qual_type.replace("_", " ").title(),
+            "achieved_date": q.date_achieved.isoformat() if q.date_achieved else None,
+            "status": q.status,
+        }
+        for q in cadet.qualifications
+    ]
+
+    events = [
+        {
+            "id": e.id,
+            "event_name": e.event.title if e.event else f"Event {e.event_id}",
+            "event_date": None,
+            "attended": True,
+        }
+        for e in cadet.cadet_events
+    ]
+
+    assessments = [
+        {
+            "id": a.id,
+            "assessment_type": a.assessment_type,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "passed": a.fields.get("passed") if a.fields else None,
+            "total_score": a.fields.get("total_score") if a.fields else None,
+            "exercise_name": a.fields.get("exercise_name") if a.fields else None,
+            "assessor_name": a.fields.get("assessor_name") if a.fields else None,
+        }
+        for a in cadet.assessment_sheets
+    ]
+
+    return {
+        "cin": cadet.cin,
+        "first_name": cadet.first_name,
+        "last_name": cadet.last_name,
+        "email": cadet.email,
+        "date_of_birth": cadet.date_of_birth.isoformat() if cadet.date_of_birth else None,
+        "rank": cadet.rank,
+        "flight": cadet.flight,
+        "qualifications": qualifications,
+        "events": events,
+        "assessments": assessments,
+    }
+
+
+@app.patch("/cadets/{cin}")
+async def patch_cadet(
+    cin: int,
+    data: CadetPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+
+    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cin} not found.")
+
+    # Only update fields that were explicitly provided
+    update_data = data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(cadet, field, value)
+
+    db.commit()
+    db.refresh(cadet)
+
+    return {"status": "success", "message": f"Cadet {cin} updated.", "updated_fields": list(update_data.keys())}
