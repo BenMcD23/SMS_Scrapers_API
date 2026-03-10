@@ -2,9 +2,13 @@ import io
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.colors import HexColor, black
 from pypdf import PdfReader, PdfWriter
+import base64
+from reportlab.lib.utils import ImageReader
+from PIL import Image as PILImage
+from datetime import datetime
 
 # --- Configuration ---
-TEMPLATE_PATH = "app/assessment_sheets/Blue_Leadership.pdf"
+TEMPLATE_PATH = "assessment_sheets/Blue_Leadership.pdf"
 PAGE_W, PAGE_H = 595.28, 841.89
 CIRCLE_RADIUS = 10 
 
@@ -51,7 +55,7 @@ def _build_overlay(
     assessor_name: str,
     date: str,
     debriefing_notes: str,
-    assessor_signature_text: str,
+    assessor_signature_text: str,  # may be a base64 data URL or plain text
 ) -> bytes:
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
@@ -67,7 +71,6 @@ def _build_overlay(
             x, y = SCORE_POSITIONS[q_id][score]
             col_counts[score] += 1
             
-            # Color logic
             stroke_color = HexColor("#ef4444") if score == 1 else HexColor("#22c55e") if score == 5 else HexColor("#3b82f6")
             c.setStrokeColor(stroke_color)
             c.circle(x, y, CIRCLE_RADIUS, stroke=1, fill=0)
@@ -77,8 +80,9 @@ def _build_overlay(
     c.setFont("Helvetica-Bold", 12)
     for i, score_val in enumerate(range(1, 6)):
         count = col_counts[score_val]
+        total = count * score_val
         x, y = TEXT_FIELDS["total_score_columns"][i]
-        c.drawCentredString(x, y, str(count))
+        c.drawCentredString(x, y, str(total))
 
     # -- 3. Text Fields --
     c.setFont("Helvetica", 10)
@@ -87,13 +91,66 @@ def _build_overlay(
     c.drawString(*TEXT_FIELDS["exercise_name"], exercise_name)
     c.drawString(*TEXT_FIELDS["assessor_name"], assessor_name)
     c.drawString(*TEXT_FIELDS["date"], date)
-    c.drawString(*TEXT_FIELDS["assessor_signature"], assessor_signature_text)
 
-    # -- 4. Overall Total Score --
+    # -- 4. Signature: image if base64 data URL, otherwise plain text --
+    sig = assessor_signature_text
+    if sig and sig.startswith("data:image"):
+        try:
+            header, b64data = sig.split(",", 1)
+            img_bytes = base64.b64decode(b64data)
+
+            # Crop transparent padding for drawn signatures
+            pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGBA")
+            bbox = pil_img.getbbox()
+            if bbox:
+                pil_img = pil_img.crop(bbox)
+            img_w, img_h = pil_img.size
+
+            # Save cropped image back to bytes
+            cropped_buf = io.BytesIO()
+            pil_img.save(cropped_buf, format="PNG")
+            cropped_buf.seek(0)
+
+            # Box coordinates (from template measurement)
+            BOX_X1, BOX_Y1 = 182, 191
+            BOX_X2, BOX_Y2 = 355, 217
+            box_w = BOX_X2 - BOX_X1  # 173
+            box_h = BOX_Y2 - BOX_Y1  # 26
+
+            # Scale to fit width, preserve aspect ratio, cap to box height
+            aspect = img_w / img_h
+            draw_w = box_w
+            draw_h = draw_w / aspect
+            if draw_h > box_h:
+                draw_h = box_h
+                draw_w = draw_h * aspect
+
+            # Centre vertically within the box
+            draw_x = BOX_X1 + (box_w - draw_w) / 2
+            draw_y = BOX_Y1 + (box_h - draw_h) / 2
+
+            img_reader = ImageReader(cropped_buf)
+            c.drawImage(
+                img_reader,
+                draw_x, draw_y,
+                width=draw_w,
+                height=draw_h,
+                preserveAspectRatio=False,  # we've already calculated it
+                mask="auto",
+            )
+        except Exception as e:
+            print(f"[PDF] Signature image error: {e}")
+            c.setFont("Helvetica", 10)
+            c.drawString(182, 200, "[signature error]")
+    elif sig:
+        c.setFont("Helvetica", 10)
+        c.drawString(182, 200, sig)
+
+    # -- 5. Overall Total Score --
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(TEXT_FIELDS["total_score"][0], TEXT_FIELDS["total_score"][1], str(total_score))
 
-    # -- 5. Pass/Fail Ticks --
+    # -- 6. Pass/Fail Ticks --
     c.setFont("Helvetica-Bold", 14)
     if passed:
         c.setFillColor(HexColor("#16a34a"))
@@ -102,7 +159,7 @@ def _build_overlay(
         c.setFillColor(HexColor("#dc2626"))
         c.drawString(TEXT_FIELDS["pass_no"][0], TEXT_FIELDS["pass_no"][1], "✓")
 
-    # -- 6. Multiline Debrief --
+    # -- 7. Multiline Debrief --
     if debriefing_notes:
         from reportlab.lib.utils import simpleSplit
         lines = simpleSplit(debriefing_notes, "Helvetica", 9, 450)
@@ -167,6 +224,12 @@ def process_assessment_data(payload: dict) -> dict:
     
     passed = all_answered and total_score >= 30 and not has_a_one
     
+    raw_date = payload.get("date", "")
+    try:
+        date = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%d/%m/%y")
+    except (ValueError, TypeError):
+        date = raw_date  # fallback to whatever was sent if parsing fails
+        
     # 4. Map back to the expected PDF builder format
     return {
         "cadet_name": payload.get("cadet_name", "Unknown"),
@@ -177,6 +240,6 @@ def process_assessment_data(payload: dict) -> dict:
         "passed": passed,
         "assessor_name": payload.get("assessor_name", ""),
         "assessor_signature": payload.get("assessor_signature"),
-        "date": payload.get("date", ""),
+        "date": date,
         "debriefing_notes": payload.get("debriefing_notes", ""),
     }
