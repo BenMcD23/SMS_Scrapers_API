@@ -462,9 +462,18 @@ def upload_qualifications_scraper(
 
             finally:
                 for p in tmp_paths:
+                    # File may have been renamed inside the scraper, clean up both
                     if os.path.exists(p):
                         os.remove(p)
-
+                    safe_qual_name = qual_name.replace(" ", "_")
+                    for j in range(len(tmp_paths)):
+                        renamed = os.path.join(
+                            os.path.dirname(p),
+                            f"{safe_qual_name}_Assessment_{j + 1}.pdf"
+                        )
+                        if os.path.exists(renamed):
+                            os.remove(renamed)
+                            
             # ── Mark all sheets in this group as uploaded ─────────────────────
             for s in group_sheets:
                 s.uploaded = True
