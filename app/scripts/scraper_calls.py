@@ -128,10 +128,12 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                     qual_type     = qual
                     status        = "true"
                     date_achieved = None
+                    date_expires  = None
                 else:
                     qual_type     = qual.get("qual_type")
                     status        = qual.get("status", "true")
                     date_achieved = qual.get("date_achieved")
+                    date_expires  = qual.get("date_expires")
 
                 if qual_type and qual_type not in existing_quals:
                     db_session.add(CadetQualification(
@@ -139,6 +141,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                         qual_type=qual_type,
                         status=status,
                         date_achieved=date_achieved,
+                        date_expires=date_expires,
                     ))
 
             saved += 1

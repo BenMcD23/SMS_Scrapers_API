@@ -923,6 +923,7 @@ async def get_cadet(
             "id": q.id,
             "qualification_name": q.qual_type.replace("_", " ").title(),
             "achieved_date": q.date_achieved.isoformat() if q.date_achieved else None,
+            "expires_date": q.date_expires.isoformat() if q.date_expires else None,
             "status": q.status,
         }
         for q in cadet.qualifications
