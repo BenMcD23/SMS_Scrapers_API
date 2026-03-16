@@ -5,6 +5,7 @@ from selenium.common.exceptions import ElementClickInterceptedException, Timeout
 
 from datetime import datetime
 
+import json
 import time
 import threading
 
@@ -49,7 +50,8 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
 
     for i in range(numberOfCadets):
         with scraper_lock:
-            scraper_messages.append(f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}")
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}"}))
+
         
         # if i == 5:
         #     break
@@ -182,5 +184,15 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
 
         except Exception as e:
             print(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
+
+        cadet_data.append({
+            "cin":           cin,
+            "first_name":    first_name,
+            "last_name":     last_name,
+            "rank":          rank,
+            "flight":        flight,
+            "date_of_birth": date_of_birth,
+            "qualifications": cadetQualifications,
+        })
 
     return cadet_data

@@ -174,3 +174,17 @@ class UserSignature(Base):
     mime_type  = Column(Text, nullable=False, default="image/png")
 
     user = relationship("User", back_populates="signature")
+
+
+# ─── Stats Snapshots ──────────────────────────────────────────────────────────
+
+class StatsSnapshot(Base):
+    """
+    Periodic snapshot of squadron-wide stats (cadets, badges, etc.).
+    Captured automatically after the cadet-quali scraper runs, or on demand.
+    """
+    __tablename__ = "Stats_Snapshots"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    captured_at = Column(DateTime, nullable=False)
+    data        = Column(JSON, nullable=False)
