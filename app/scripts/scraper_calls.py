@@ -121,27 +121,43 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             cadet.date_of_birth = entry.get("date_of_birth") or cadet.date_of_birth
             cadet.email         = email or cadet.email  # keep existing if no match
 
-            # Upsert qualifications
-            existing_quals = {cq.qual_type for cq in cadet.qualifications}
+            # Deduplicate scraped qualifications by qual_type, keeping most recent date_achieved
+            deduped_quals = {}
             for qual in entry.get("qualifications", []):
                 if isinstance(qual, str):
-                    qual_type     = qual
-                    status        = "true"
-                    date_achieved = None
-                    date_expires  = None
+                    qt, st, da, de = qual, "true", None, None
                 else:
-                    qual_type     = qual.get("qual_type")
-                    status        = qual.get("status", "true")
-                    date_achieved = qual.get("date_achieved")
-                    date_expires  = qual.get("date_expires")
+                    qt = qual.get("qual_type")
+                    st = qual.get("status", "true")
+                    da = qual.get("date_achieved")
+                    de = qual.get("date_expires")
 
-                if qual_type and qual_type not in existing_quals:
+                if not qt:
+                    continue
+
+                if qt not in deduped_quals:
+                    deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
+                else:
+                    existing_da = deduped_quals[qt]["date_achieved"]
+                    if da is not None and (existing_da is None or da > existing_da):
+                        deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
+
+            # Upsert qualifications — update dates if missing, insert if new
+            existing_quals = {cq.qual_type: cq for cq in cadet.qualifications}
+            for qt, qual in deduped_quals.items():
+                if qt in existing_quals:
+                    cq = existing_quals[qt]
+                    if qual["date_achieved"] is not None and cq.date_achieved is None:
+                        cq.date_achieved = qual["date_achieved"]
+                    if qual["date_expires"] is not None and cq.date_expires is None:
+                        cq.date_expires = qual["date_expires"]
+                else:
                     db_session.add(CadetQualification(
                         cadet_id=cin,
-                        qual_type=qual_type,
-                        status=status,
-                        date_achieved=date_achieved,
-                        date_expires=date_expires,
+                        qual_type=qt,
+                        status=qual["status"],
+                        date_achieved=qual["date_achieved"],
+                        date_expires=qual["date_expires"],
                     ))
 
             saved += 1
