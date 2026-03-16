@@ -102,7 +102,7 @@ class BanNotification(Base):
 
 # ─── Assessment ───────────────────────────────────────────────────────────────
 
-ASSESSMENT_TYPES = ("leadership", "first_aid", "radio")
+ASSESSMENT_TYPES = ("Blue Leadership", "first_aid", "radio")
 
 class AssessmentSheet(Base):
     """
@@ -123,6 +123,7 @@ class AssessmentSheet(Base):
     pdf_data        = Column(LargeBinary, nullable=True)   # generated PDF blob
     pdf_mime_type   = Column(Text, nullable=True, default="application/pdf")
     created_at      = Column(DateTime, nullable=False)
+    uploaded        = Column(Boolean, nullable=False, default=False, server_default="0")
 
     cadet_id  = Column(Integer, ForeignKey("Cadets.cin"), nullable=False)
     assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False)  # the user who did it

@@ -13,7 +13,7 @@ def add_qualification_with_attachment(
     driver,
     cadet_cin: int | str,
     qualification_name: str,
-    pdf_path: str,
+    pdf_path: list[str],
     scraper_messages=None,
     scraper_lock=None,
 ):
@@ -44,7 +44,7 @@ def add_qualification_with_attachment(
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
     cin_str = str(cadet_cin).strip()
-
+    print("here")
     # ── 1. Open cadets list and find the cadet by CIN ────────────────────────
     log(f"Navigating to cadet list to find CIN {cin_str}...")
     driver.get("https://sms.bader.mod.uk/cadets/default.aspx")
@@ -161,74 +161,158 @@ def add_qualification_with_attachment(
     wait_for_aspx_load(driver)
     time.sleep(1)
 
-    # ── 6. Find the newly-added qualification row ─────────────────────────────
-    log(f"Locating the '{qualification_name}' row in the qualifications list...")
-
-    # Rows are inside lvQualifications repeater — find the one whose text matches
-    qual_rows = WebDriverWait(driver, 20).until(
-        EC.presence_of_all_elements_located(
-            (By.XPATH, "//div[contains(@id,'lvQualifications')]//div[contains(@class,'card')]")
-        )
-    )
-
-    qual_row = None
-    for row in qual_rows:
-        if target in row.text.strip().lower():
-            qual_row = row
-            break
-
-    if qual_row is None:
-        # Fall back: just take the first row (most recently added)
-        log("Warning: could not match qualification row by name — using first row.")
-        qual_row = qual_rows[0]
-
-    # ── 7. Click "Attachments" (expand/toggle) ───────────────────────────────
-    log("Opening Attachments panel...")
-    attachments_toggle = WebDriverWait(qual_row, 10).until(
-        EC.element_to_be_clickable(
-            (By.XPATH, ".//a[contains(translate(text(),'ATTACHMENTS','attachments'),'attachment')]"
-                       " | .//button[contains(translate(text(),'ATTACHMENTS','attachments'),'attachment')]"
-                       " | .//a[contains(@id,'Proof') or contains(@id,'proof') or contains(@id,'Attach')]")
-        )
-    )
-    safe_click(driver, attachments_toggle)
+    # ── 6. Refresh and re-navigate to General Qualifications ─────────────────
+    log("Refreshing page to load qualification row...")
+    driver.refresh()
     wait_for_preloader(driver)
     wait_for_aspx_load(driver)
-    time.sleep(0.5)
+    time.sleep(1)
 
-    # ── 8. Upload the PDF via the file input ──────────────────────────────────
-    log(f"Uploading PDF: {pdf_path}...")
-    # The file input may have a dynamic ctrl index — find it within the qual row
-    file_input = WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located(
-            (By.XPATH,
-             "//input[@type='file' and contains(@id,'AttachmentFileUpload')]")
+    for tab_text in ["Qualifications & Awards", "General Qualifications"]:
+        tab = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located(
+                (By.XPATH, f"//a[contains(text(), '{tab_text}')]")
+            )
+        )
+        safe_click(driver, tab)
+        wait_for_preloader(driver)
+        wait_for_aspx_load(driver)
+        time.sleep(0.5)
+
+    # ── 7. Find the ctrl index for our qualification ──────────────────────────
+    # Each qual row is a <tr> whose first <td> text matches the qual name.
+    # The sibling row's inputs encode the ctrl index, e.g. lvQualifications_ctrl0_...
+    log(f"Finding ctrl index for '{qualification_name}'...")
+
+    target = qualification_name.strip().lower()
+
+    qual_table_rows = WebDriverWait(driver, 20).until(
+        EC.presence_of_all_elements_located(
+            (By.XPATH, "//table[contains(@id,'Qualification') or @class[contains(.,'tablelist')]]//tr[not(contains(@class,'sibling')) and td]")
         )
     )
-    file_input.send_keys(pdf_path)
+
+    ctrl_index = None
+    for i, row in enumerate(qual_table_rows):
+        cells = row.find_elements(By.TAG_NAME, "td")
+        if cells and target in cells[0].text.strip().lower():
+            ctrl_index = i
+            break
+
+    if ctrl_index is None:
+        # Fallback: scan edit link IDs to find the right ctrl number
+        edit_links = driver.find_elements(
+            By.XPATH, "//a[contains(@id,'lvQualifications_ctrl') and contains(@id,'_lbEdit')]"
+        )
+        for link in edit_links:
+            link_id = link.get_attribute("id")
+            # Walk up to the parent <tr> and check its text
+            parent_tr = link.find_element(By.XPATH, "./ancestor::tr[1]")
+            if target in parent_tr.text.strip().lower():
+                ctrl_index = int(link_id.split("_ctrl")[1].split("_")[0])
+                break
+
+    if ctrl_index is None:
+        raise ValueError(f"Could not find qualification row for '{qualification_name}' after refresh.")
+
+    log(f"Found qualification at ctrl index {ctrl_index}.")
+
+    # ── 8. Show the sibling row via JS (toggleSibling has no ID to click) ────
+    log("Revealing attachments panel via JavaScript...")
+    sibling_rows = driver.find_elements(By.XPATH, "//tr[contains(@class,'sibling')]")
+
+    if ctrl_index >= len(sibling_rows):
+        raise ValueError(
+            f"Sibling row index {ctrl_index} out of range (only {len(sibling_rows)} sibling rows found)."
+        )
+
+    sibling_row = sibling_rows[ctrl_index]
+    driver.execute_script("arguments[0].style.display = 'table-row';", sibling_row)
     time.sleep(0.5)
 
-    # ── 9. Enter description "Assessment Sheet" ───────────────────────────────
+# ── 9. Upload each PDF one at a time ─────────────────────────────────────
+    # pdf_path is now a list; we upload each, waiting for the postback between each.
+    pdf_paths = [pdf_path] if isinstance(pdf_path, str) else pdf_path
+
+    for i, path in enumerate(pdf_paths):
+        path = os.path.abspath(path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"PDF not found: {path}")
+
+        log(f"Uploading PDF {i+1}/{len(pdf_paths)}: {path}...")
+
+        # Re-show sibling row (postback after previous upload may have hidden it again)
+        sibling_rows = driver.find_elements(By.XPATH, "//tr[contains(@class,'sibling')]")
+        sibling_row = sibling_rows[ctrl_index]
+        driver.execute_script("arguments[0].style.display = 'table-row';", sibling_row)
+        time.sleep(0.5)
+
+        # After the first upload the table switches from emptydatatemplate to a
+        # footer insert row — the input IDs change from ctl01 to a higher index.
+        # So we always locate by contains(@id,...) scoped to the correct ctrl.
+        ctrl_prefix = (
+            f"ctl00_ctl00_cphBaseBody_cphBody_lvQualifications_ctrl{ctrl_index}"
+            f"_gvQualificationProofs"
+        )
+
+        file_input = WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located(
+                (By.XPATH,
+                 f"//input[@type='file' and contains(@id,'{ctrl_prefix}') "
+                 f"and contains(@id,'AttachmentFileUpload')]")
+            )
+        )
+        file_input.send_keys(path)
+        time.sleep(0.5)
+
+        # Description field — same scoped search
+        desc_input = driver.find_element(
+            By.XPATH,
+            f"//input[@type='text' and contains(@id,'{ctrl_prefix}') "
+            f"and (contains(@id,'txtEmptyInsertDescription') or contains(@id,'txtFooterDescription'))]"
+        )
+        desc_input.clear()
+        desc_input.send_keys("Assessment Sheet")
+        time.sleep(0.3)
+
+        # Add button — same scoped search
+        add_btn = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable(
+                (By.XPATH,
+                 f"//a[contains(@id,'{ctrl_prefix}') "
+                 f"and (contains(@id,'lbAddEmptyInsert') or contains(@id,'lbAddFooterInsert'))]")
+            )
+        )
+        safe_click(driver, add_btn)
+        wait_for_preloader(driver)
+        wait_for_aspx_load(driver)
+        time.sleep(1)
+
+        log(f"✓ PDF {i+1} attached.")
+
+    log(f"Done — qualification '{qualification_name}' with {len(pdf_paths)} PDF(s) saved for CIN {cin_str}.")
+
+    # ── 10. Enter description ─────────────────────────────────────────────────
     log("Entering description 'Assessment Sheet'...")
-    desc_input = WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located(
-            (By.XPATH,
-             "//input[@type='text' and contains(@id,'txtFooterDescription')]")
-        )
+    desc_input_id = (
+        f"ctl00_ctl00_cphBaseBody_cphBody_lvQualifications_ctrl{ctrl_index}"
+        f"_gvQualificationProofs_ctl01_txtEmptyInsertDescription"
     )
+    desc_input = driver.find_element(By.ID, desc_input_id)
     desc_input.clear()
     desc_input.send_keys("Assessment Sheet")
     time.sleep(0.3)
 
-    # ── 10. Click "Add" to save the attachment ────────────────────────────────
+    # ── 11. Click Add ─────────────────────────────────────────────────────────
     log("Clicking Add to save the attachment...")
-    add_attachment_btn = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable(
-            (By.XPATH,
-             "//a[contains(@id,'lbAddQualificationProof')]")
-        )
+    add_btn_id = (
+        f"ctl00_ctl00_cphBaseBody_cphBody_lvQualifications_ctrl{ctrl_index}"
+        f"_gvQualificationProofs_ctl01_lbAddEmptyInsert"
     )
-    safe_click(driver, add_attachment_btn)
+    add_btn = WebDriverWait(driver, 15).until(
+        EC.element_to_be_clickable((By.ID, add_btn_id))
+    )
+    safe_click(driver, add_btn)
     wait_for_preloader(driver)
     wait_for_aspx_load(driver)
     time.sleep(1)
