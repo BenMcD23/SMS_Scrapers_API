@@ -674,7 +674,7 @@ async def generate_leadership_assessment(
 
 # How many passed assessments are needed per type to unlock upload
 UPLOAD_THRESHOLDS: dict[str, int] = {
-    "leadership": 2,
+    "Blue Leadership": 2,
     # everything else defaults to 1
 }
 
