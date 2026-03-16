@@ -38,6 +38,7 @@ class CadetQualification(Base):
     qual_type = Column(Text, nullable=False)  # one of QUALIFICATION_TYPES
     status   = Column(Text, nullable=False)   # "blue" | "bronze..." | "false, basic, intermediate... - for swimming" | "true/false"
     date_achieved = Column(DateTime, nullable=True)
+    date_expires  = Column(DateTime, nullable=True) 
 
     cadet = relationship("Cadet", back_populates="qualifications")
 

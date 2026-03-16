@@ -152,19 +152,35 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
 
             for row in rows:
                 cols = row.find_elements(By.TAG_NAME, 'td')
-                if cols and cols[0].text.strip():
-                    cadetQualifications.append(cols[0].text.replace("\n", " ").strip())
+                if not cols or not cols[0].text.strip():
+                    continue
+
+                qual_type = cols[0].text.replace("\n", " ").strip()
+
+                # Date achieved — col 1
+                date_achieved = None
+                if len(cols) > 1:
+                    try:
+                        date_achieved = datetime.strptime(cols[1].text.strip(), "%d/%m/%Y")
+                    except (ValueError, IndexError):
+                        pass
+
+                # Date expires — col 2 ("N/A" means no expiry)
+                date_expires = None
+                if len(cols) > 2:
+                    try:
+                        date_expires = datetime.strptime(cols[2].text.strip(), "%d/%m/%Y")
+                    except (ValueError, IndexError):
+                        pass  # "N/A" or empty — leave as None
+
+                cadetQualifications.append({
+                    "qual_type":     qual_type,
+                    "status":        "true",
+                    "date_achieved": date_achieved,
+                    "date_expires":  date_expires,
+                })
+
         except Exception as e:
             print(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
-
-        cadet_data.append({
-            "cin":            cin,
-            "first_name":     first_name,
-            "last_name":      last_name,
-            "rank":           rank,
-            "flight":         flight,
-            "date_of_birth":  date_of_birth,
-            "qualifications": cadetQualifications,
-        })
 
     return cadet_data
