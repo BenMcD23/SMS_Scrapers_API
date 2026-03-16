@@ -8,6 +8,7 @@ import httpx
 import io
 from dotenv import load_dotenv
 from datetime import datetime
+from functools import partial
 
 from typing import AsyncGenerator
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File, Query
@@ -645,7 +646,7 @@ async def generate_leadership_assessment(
     pdf_bytes  = generate_leadership_pdf(processed)
 
     sheet = AssessmentSheet(
-        assessment_type="leadership",
+        assessment_type="Blue Leadership",
         fields={
             "scores":           processed["scores"],
             "total_score":      processed["total_score"],
@@ -657,6 +658,7 @@ async def generate_leadership_assessment(
             "debriefing_notes": processed["debriefing_notes"],
         },
         pdf_data=pdf_bytes,
+        uploaded=False,
         pdf_mime_type="application/pdf",
         created_at=datetime.utcnow(),
         cadet_id=cadet.cin,
@@ -738,13 +740,8 @@ async def assessments_overview(
             can_upload   = passed_count >= required
 
             # Check if qualification already uploaded
-            # You can track this however you like — here we check a field in the sheet fields
-            # e.g. fields["qualification_uploaded"] = True set by the upload endpoint
-            uploaded = any(
-                s.fields.get("qualification_uploaded") is True
-                for s in type_sheets
-                if s.fields
-            )
+            uploaded = any(s.uploaded for s in type_sheets)
+
 
             groups.append({
                 "assessment_type":    atype,
@@ -800,11 +797,8 @@ async def upload_qualification(
             detail=f"Cadet needs {required} passed {assessment_type} assessment(s) to upload qualification (has {passed_count}).",
         )
 
-    # Mark all sheets for this cadet+type as uploaded
     for sheet in sheets:
-        if sheet.fields is None:
-            sheet.fields = {}
-        sheet.fields = {**sheet.fields, "qualification_uploaded": True}
+        sheet.uploaded = True
 
     db.commit()
 
@@ -964,3 +958,76 @@ async def patch_cadet(
     db.refresh(cadet)
 
     return {"status": "success", "message": f"Cadet {cin} updated.", "updated_fields": list(update_data.keys())}
+
+
+
+# ── In the scraper_map dict inside start_scraper, add: ───────────────────────
+#   "upload-qualifications": upload_qualifications_scraper,
+# But this scraper needs extra args (assessment_ids), so we use functools.partial.
+
+from functools import partial
+
+
+class UploadQualificationsRequest(BaseModel):
+    assessment_ids: list[int]
+
+
+@app.post("/assessments/upload-to-bader")
+async def upload_qualifications_to_bader(
+    data: UploadQualificationsRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    global scraper_running, current_scraper_user, current_scraper_name
+
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    if not user.bader_credentials:
+        raise HTTPException(
+            status_code=400,
+            detail="Bader credentials not saved. Please go to Settings first.",
+        )
+
+    if not data.assessment_ids:
+        raise HTTPException(status_code=400, detail="No assessment IDs provided.")
+
+    # ── Validate all assessment IDs exist and have PDFs before starting ───────
+    sheets = (
+        db.query(AssessmentSheet)
+        .filter(AssessmentSheet.id.in_(data.assessment_ids))
+        .all()
+    )
+    found_ids = {s.id for s in sheets}
+    missing = set(data.assessment_ids) - found_ids
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Assessment ID(s) not found: {sorted(missing)}",
+        )
+
+    with scraper_state_lock:
+        if scraper_running:
+            raise HTTPException(status_code=400, detail="A scraper is already running.")
+        scraper_running = True
+
+    current_scraper_user = idinfo.get("email")
+    current_scraper_name = "upload-qualifications"
+
+    with scraper_lock:
+        scraper_messages.clear()
+        scraper_messages.append(
+            json.dumps({
+                "type":         "status",
+                "value":        "running",
+                "started_by":   current_scraper_user,
+                "scraper_name": current_scraper_name,
+            })
+        )
+
+    # Bind the assessment_ids into the scraper function signature
+    bound_scraper = partial(upload_qualifications_scraper, assessment_ids=data.assessment_ids)
+    background_tasks.add_task(run_scraper_task, bound_scraper, user.id)
+
+    return {"status": "started", "assessment_ids": data.assessment_ids}

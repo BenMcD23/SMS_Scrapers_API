@@ -2,10 +2,15 @@ from scripts.scraper_utils import init_scraper, push_to_google_apps_script, logi
 from scripts.quali_scraper import *
 from scripts.event_scraper import *
 from scripts.alergies import *
+from scripts.add_quali import add_qualification_with_attachment
+
 import json
 
 from database.models import Cadet, CadetQualification
 from google_admin_api.get_all_users import get_workspace_users
+
+import os
+import tempfile
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
@@ -330,5 +335,151 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
             scraper_messages.append(json.dumps({"type": "error", "value": f"Medical Scraper Error: {str(e)}"}))
     finally:
         # Cleanup browser resources
+        if driver:
+            driver.quit()
+
+
+
+
+# Map assessment_type → exact qualification name as it appears in the Bader dropdown
+ASSESSMENT_TYPE_TO_QUAL_NAME: dict[str, str] = {
+    "Blue Leadership": "Blue Leadership",
+    "first_aid":       "First Aid",
+    "radio":           "Radio Operator",
+}
+
+
+def upload_qualifications_scraper(
+    scraper_messages,
+    scraper_lock,
+    user_id: int,
+    db_session,
+    stop_event,
+    assessment_ids: list[int],
+):
+    driver = None
+
+    def log(msg: str, level: str = "info"):
+        payload = json.dumps({"type": level, "value": msg})
+        if scraper_messages is not None and scraper_lock is not None:
+            with scraper_lock:
+                scraper_messages.append(payload)
+        else:
+            print(msg)
+
+    try:
+        driver, credentials = init_scraper(user_id, db_session)
+        driver.set_page_load_timeout(50)
+
+        if stop_event.is_set():
+            return
+
+        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        log("✓ Logged in to Bader SMS.")
+
+        # ── Load all requested sheets ─────────────────────────────────────────
+        from database.models import AssessmentSheet
+        sheets = (
+            db_session.query(AssessmentSheet)
+            .filter(AssessmentSheet.id.in_(assessment_ids))
+            .all()
+        )
+
+        # ── Group by (cadet_id, assessment_type) ──────────────────────────────
+        # We want one add_qualification_with_attachment call per cadet+type,
+        # passing ALL the PDFs for that group at once.
+        from collections import defaultdict
+        groups: dict[tuple[int, str], list[AssessmentSheet]] = defaultdict(list)
+        for sheet in sheets:
+            groups[(sheet.cadet_id, sheet.assessment_type)].append(sheet)
+
+        total_groups = len(groups)
+        log(f"Processing {total_groups} qualification group(s)...")
+
+        for group_num, ((cadet_id, assessment_type), group_sheets) in enumerate(groups.items(), 1):
+            if stop_event.is_set():
+                log("Upload stopped by timeout.", "error")
+                return
+
+            # ── Validate ──────────────────────────────────────────────────────
+            cadet = group_sheets[0].cadet
+            if not cadet:
+                log(f"No cadet linked to assessment group (cadet_id={cadet_id}) — skipping.", "warning")
+                continue
+
+            qual_name = ASSESSMENT_TYPE_TO_QUAL_NAME.get(assessment_type)
+            if not qual_name:
+                log(
+                    f"No Bader qualification mapped for type '{assessment_type}' "
+                    f"(cadet {cadet_id}) — skipping.",
+                    "warning",
+                )
+                continue
+
+            sheets_with_pdf = [s for s in group_sheets if s.pdf_data]
+            if not sheets_with_pdf:
+                log(
+                    f"No PDFs stored for {assessment_type} / CIN {cadet.cin} — skipping.",
+                    "warning",
+                )
+                continue
+
+            log(
+                f"[{group_num}/{total_groups}] Uploading '{qual_name}' for "
+                f"{cadet.first_name} {cadet.last_name} (CIN {cadet.cin}) — "
+                f"{len(sheets_with_pdf)} PDF(s)..."
+            )
+
+            # ── Write each PDF to a temp file ─────────────────────────────────
+            tmp_paths = []
+            try:
+                for s in sheets_with_pdf:
+                    tmp_fd, tmp_path = tempfile.mkstemp(
+                        suffix=".pdf",
+                        prefix=f"assessment_{s.id}_",
+                    )
+                    os.close(tmp_fd)
+                    with open(tmp_path, "wb") as f:
+                        f.write(s.pdf_data)
+                    tmp_paths.append(tmp_path)
+
+                # ── Call the Bader scraper ────────────────────────────────────
+                add_qualification_with_attachment(
+                    driver=driver,
+                    cadet_cin=cadet.cin,
+                    qualification_name=qual_name,
+                    pdf_paths=tmp_paths,
+                    scraper_messages=scraper_messages,
+                    scraper_lock=scraper_lock,
+                )
+
+            except Exception as qual_err:
+                log(
+                    f"Failed to upload '{qual_name}' for CIN {cadet.cin}: {qual_err}",
+                    "error",
+                )
+                raise  # stop the whole job on hard failure
+
+            finally:
+                for p in tmp_paths:
+                    if os.path.exists(p):
+                        os.remove(p)
+
+            # ── Mark all sheets in this group as uploaded ─────────────────────
+            for s in group_sheets:
+                s.uploaded = True
+            db_session.commit()
+
+            log(
+                f"✓ '{qual_name}' uploaded for "
+                f"{cadet.first_name} {cadet.last_name} (CIN {cadet.cin})."
+            )
+
+        log("All qualifications processed.", "status")
+
+    except Exception as e:
+        db_session.rollback()
+        log(f"Upload scraper error: {e}", "error")
+    finally:
         if driver:
             driver.quit()
