@@ -29,8 +29,9 @@ from assessment_builders.leadership import generate_leadership_pdf, process_asse
 
 from utils.crypto import encrypt_password
 
-from google.oauth2 import id_token
+from google.oauth2 import id_token, service_account
 from google.auth.transport import requests
+from googleapiclient.discovery import build as google_build
 
 from pydantic import BaseModel, EmailStr
 from typing import Optional
@@ -107,21 +108,69 @@ def get_or_create_user(db: Session, google_id: str, email: str) -> User:
         db.refresh(user)
     return user
 
-ALLOWED_EMAILS = {"ci.mcdonald@317atc.co.uk"}
+STAFF_GROUP = "staff@317atc.co.uk"
+NCO_GROUP = "NCOs@317atc.co.uk"
+_SA_EMAIL = os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
+_SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\n", "\n").strip('"')
+_IMPERSONATE_EMAIL = os.getenv("GOOGLE_IMPERSONATE_EMAIL", "ci.mcdonald@317atc.co.uk")
+
+_role_cache: dict = {}
+_role_cache_lock = threading.Lock()
+
+def _fetch_user_role(email: str) -> str | None:
+    if not _SA_EMAIL or not _SA_PRIVATE_KEY:
+        return None
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            {
+                "type": "service_account",
+                "client_email": _SA_EMAIL,
+                "private_key": _SA_PRIVATE_KEY,
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "private_key_id": "",
+                "client_id": "",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            },
+            scopes=["https://www.googleapis.com/auth/admin.directory.group.member.readonly"],
+        ).with_subject(_IMPERSONATE_EMAIL)
+        admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+        for group, role in [(STAFF_GROUP, "staff"), (NCO_GROUP, "nco")]:
+            try:
+                admin.members().get(groupKey=group, memberKey=email).execute()
+                return role
+            except Exception:
+                continue
+        return None
+    except Exception as e:
+        print(f"[_fetch_user_role] error: {e}")
+        return None
+
+def get_user_role(email: str) -> str | None:
+    with _role_cache_lock:
+        cached = _role_cache.get(email)
+        if cached and time.time() < cached[1]:
+            return cached[0]
+    role = _fetch_user_role(email)
+    with _role_cache_lock:
+        _role_cache[email] = (role, time.time() + 300)
+    return role
 
 def verify_token(authorization: str) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         token = authorization.split(" ")[1]
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-        if idinfo["email"] not in ALLOWED_EMAILS:
-            raise HTTPException(status_code=403, detail="Forbidden")
-        return idinfo
+        return id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid Token")
+
+def verify_token_staff_only(authorization: str) -> dict:
+    idinfo = verify_token(authorization)
+    if get_user_role(idinfo["email"]) != "staff":
+        raise HTTPException(status_code=403, detail="Staff access required")
+    return idinfo
 
 # ===============================
 # SCRAPER LOGIC
@@ -167,7 +216,7 @@ async def start_scraper(
 ):
     global scraper_running, current_scraper_user, current_scraper_name
 
-    idinfo = verify_token(authorization)
+    idinfo = verify_token_staff_only(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
     # Scraper specifically needs bader credentials to be set
@@ -220,7 +269,7 @@ async def save_credentials(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    idinfo = verify_token(authorization)
+    idinfo = verify_token_staff_only(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
     # Upsert BaderCredentials
@@ -1004,7 +1053,7 @@ async def upload_qualifications_to_bader(
 ):
     global scraper_running, current_scraper_user, current_scraper_name
 
-    idinfo = verify_token(authorization)
+    idinfo = verify_token_staff_only(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
 
     if not user.bader_credentials:
