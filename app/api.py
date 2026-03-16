@@ -32,6 +32,21 @@ from utils.crypto import encrypt_password
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
+from pydantic import BaseModel, EmailStr
+from typing import Optional
+
+from functools import partial
+
+class UploadQualificationsRequest(BaseModel):
+    assessment_ids: list[int]
+
+class CadetPatch(BaseModel):
+    email: Optional[str] = None
+
+class AssessorNamePatch(BaseModel):
+    assessor_name: str
+
+
 init_db()
 
 app = FastAPI()
@@ -222,11 +237,6 @@ async def save_credentials(
     db.commit()
     return {"status": "success", "message": f"Settings saved for {user.email}"}
 
-
-# ===============================
-# SIGNATURE ENDPOINTS
-# ===============================
-
 @app.post("/save-signature")
 async def save_signature(
     file: UploadFile = File(...),
@@ -288,6 +298,28 @@ async def delete_signature(
     db.delete(user.signature)
     db.commit()
     return {"status": "success", "message": "Signature deleted"}
+
+
+@app.get("/settings/assessor-name")
+async def get_assessor_name(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    return {"assessor_name": user.assessor_name or ""}
+
+@app.patch("/settings/assessor-name")
+async def update_assessor_name(
+    data: AssessorNamePatch,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user.assessor_name = data.assessor_name.strip()
+    db.commit()
+    return {"status": "success", "assessor_name": user.assessor_name}
 
 # ===============================
 # SERVER SENT EVENTS
@@ -643,6 +675,10 @@ async def generate_leadership_assessment(
             raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")
 
     processed = process_assessment_data(data)
+
+    if user.assessor_name:
+        processed["assessor_name"] = user.assessor_name
+
     pdf_bytes  = generate_leadership_pdf(processed)
 
     sheet = AssessmentSheet(
@@ -852,13 +888,6 @@ async def delete_assessment(
 # Add these into your main FastAPI app (main.py)
 # ===============================
 
-from pydantic import BaseModel, EmailStr
-from typing import Optional
-
-
-class CadetPatch(BaseModel):
-    email: Optional[str] = None
-
 @app.get("/cadets")
 async def list_cadets(
     db: Session = Depends(get_db),
@@ -964,13 +993,6 @@ async def patch_cadet(
 # ── In the scraper_map dict inside start_scraper, add: ───────────────────────
 #   "upload-qualifications": upload_qualifications_scraper,
 # But this scraper needs extra args (assessment_ids), so we use functools.partial.
-
-from functools import partial
-
-
-class UploadQualificationsRequest(BaseModel):
-    assessment_ids: list[int]
-
 
 @app.post("/assessments/upload-to-bader")
 async def upload_qualifications_to_bader(

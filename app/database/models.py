@@ -140,6 +140,7 @@ class User(Base):
     id        = Column(Integer, primary_key=True, autoincrement=True)
     google_id = Column(Text, unique=True, nullable=False, index=True)
     email     = Column(Text, nullable=False)
+    assessor_name = Column(Text, nullable=True)
 
     bader_credentials  = relationship("BaderCredentials", back_populates="user",
                                        uselist=False, cascade="all, delete-orphan")
