@@ -173,6 +173,15 @@ def verify_token_staff_only(authorization: str) -> dict:
     return idinfo
 
 # ===============================
+# HEALTH CHECK
+# ===============================
+
+@app.get("/health")
+def health_check(authorization: str = Header(default=None)):
+    idinfo = verify_token(authorization)
+    return {"ok": True, "email": idinfo["email"]}
+
+# ===============================
 # SCRAPER LOGIC
 # ===============================
 
