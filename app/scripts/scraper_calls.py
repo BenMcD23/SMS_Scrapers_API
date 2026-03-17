@@ -211,9 +211,9 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
         if stop_event.is_set(): return
         login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        # 3. Get initial links
+        # 3. Get all event names and count
         if stop_event.is_set(): return
-        event_names, number_of_events, event_links_317 = get_event_names_and_317_links(driver)
+        event_names, number_of_events = get_all_event_names(driver)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Got event names, starting to get cadets on events"}))
@@ -261,9 +261,9 @@ def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_
         if stop_event.is_set(): return
         login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        # 3. Fetch Event Links
+        # 3. Fetch 317 event links
         if stop_event.is_set(): return
-        event_names, number_of_events, event_links_317 = get_event_names_and_317_links(driver)
+        event_links_317 = get_317_event_links(driver)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(event_links_317)} event links. Syncing to database..."}))
