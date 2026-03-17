@@ -26,6 +26,7 @@ from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
 
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
+from assessment_builders.radio import generate_radio_pdf, process_radio_data
 
 from utils.crypto import encrypt_password
 
@@ -825,6 +826,61 @@ async def generate_leadership_assessment(
 
     return {"status": "success", "assessment_id": sheet.id}
 
+
+# ── Radio assessment endpoint ────────────────────────────────────────────────
+
+@app.post("/assessments/radio/add-assessment")
+async def generate_radio_assessment(
+    data: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+
+    cadet_cin = data.get("cadet_cin")
+    if cadet_cin:
+        cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+        if not cadet:
+            raise HTTPException(status_code=404, detail=f"Cadet with CIN {cadet_cin} not found.")
+    else:
+        cadet_name = data.get("cadet_name", "").strip()
+        if not cadet_name:
+            raise HTTPException(status_code=400, detail="cadet_cin or cadet_name is required.")
+        cadet = db.query(Cadet).filter(
+            (Cadet.first_name + " " + Cadet.last_name).ilike(cadet_name)
+        ).first()
+        if not cadet:
+            raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")
+
+    if user.assessor_name:
+        data["assessor_name"] = user.assessor_name
+
+    processed = process_radio_data(data, cadet)
+    pdf_bytes = generate_radio_pdf(processed)
+
+    sheet = AssessmentSheet(
+        assessment_type="Blue Radio",
+        fields={
+            "criteria":       processed["criteria"],
+            "passed":         processed["passed"],
+            "cyber_sec_date": processed["cyber_sec_date"],
+            "comments":       processed["comments"],
+            "assessor_name":  processed["assessor_name"],
+            "date":           processed["date"],
+        },
+        pdf_data=pdf_bytes,
+        uploaded=False,
+        pdf_mime_type="application/pdf",
+        created_at=datetime.utcnow(),
+        cadet_id=cadet.cin,
+        assessor_id=user.id,
+    )
+    db.add(sheet)
+    db.commit()
+    db.refresh(sheet)
+
+    return {"status": "success", "assessment_id": sheet.id}
 
 
 # How many passed assessments are needed per type to unlock upload
