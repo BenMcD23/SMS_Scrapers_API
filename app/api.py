@@ -43,6 +43,7 @@ class UploadQualificationsRequest(BaseModel):
 
 class CadetPatch(BaseModel):
     email: Optional[str] = None
+    banned: Optional[bool] = None
 
 class AssessorNamePatch(BaseModel):
     assessor_name: str
@@ -512,6 +513,29 @@ async def get_cadet_events(
             ],
         }
         for e in events
+    ]
+
+
+@app.get("/bans")
+async def get_bans(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    banned = db.query(Cadet).filter(Cadet.banned == True).all()
+    return [
+        {
+            "cin":        c.cin,
+            "first_name": c.first_name,
+            "last_name":  c.last_name,
+            "rank":       c.rank,
+            "events": [
+                {"event_id": ce.event_id, "event_title": ce.event.title if ce.event else f"Event {ce.event_id}"}
+                for ce in c.cadet_events
+                if ce.event
+            ],
+        }
+        for c in banned
     ]
 
 
@@ -1055,6 +1079,7 @@ async def get_cadet(
         "date_of_birth": cadet.date_of_birth.isoformat() if cadet.date_of_birth else None,
         "rank": cadet.rank,
         "flight": cadet.flight,
+        "banned": cadet.banned,
         "qualifications": qualifications,
         "events": events,
         "assessments": assessments,

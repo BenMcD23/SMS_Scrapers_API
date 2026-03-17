@@ -17,6 +17,7 @@ class Cadet(Base):
     date_of_birth = Column(DateTime, nullable=True)
     rank          = Column(Text, nullable=True)
     flight        = Column(Text, nullable=True)
+    banned        = Column(Boolean, nullable=False, default=False, server_default="0")
     # classification = Column(Text, nullable=True)
 
     qualifications = relationship("CadetQualification", back_populates="cadet")
