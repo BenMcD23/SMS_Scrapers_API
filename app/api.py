@@ -20,7 +20,7 @@ from sqlalchemy import or_
 
 from database.create_db import init_db
 from database.database import engine
-from database.models import Event317, User, BaderCredentials, UserSignature, AssessmentSheet, Cadet, CadetQualification, StatsSnapshot
+from database.models import Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, AssessmentSheet, Cadet, CadetQualification, StatsSnapshot
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
@@ -485,6 +485,34 @@ async def scraper_status(authorization: str = Header(None)):
 @app.get("/events")
 async def get_events(db: Session = Depends(get_db)):
     return db.query(Event317).all()
+
+
+@app.get("/cadet-events")
+async def get_cadet_events(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    events = db.query(AllEvent).all()
+    return [
+        {
+            "id": e.id,
+            "title": e.title,
+            "cadet_count": len(e.cadet_events),
+            "cadets": [
+                {
+                    "cin":        ce.cadet.cin,
+                    "first_name": ce.cadet.first_name,
+                    "last_name":  ce.cadet.last_name,
+                    "rank":       ce.cadet.rank,
+                    "flight":     ce.cadet.flight,
+                }
+                for ce in e.cadet_events
+                if ce.cadet
+            ],
+        }
+        for e in events
+    ]
 
 
 @app.get("/generate-doc/{event_id}/{action}")
