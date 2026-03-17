@@ -6,7 +6,7 @@ from scripts.add_quali import add_qualification_with_attachment
 
 import json
 
-from database.models import Cadet, CadetQualification
+from database.models import Cadet, CadetQualification, AllEvent, CadetEvent
 from google_admin_api.get_all_users import get_workspace_users
 
 import os
@@ -227,23 +227,83 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             scraper_lock,
         )
         
-        # 5. Push data if not interrupted
-        if not stop_event.is_set():
-            push_to_google_apps_script({"events": event_attendees}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
-            with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
-        else:
+        if stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped: Timeout reached."}))
+            return
+
+        # 5. Save events and attendees to DB
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Saving events to database..."}))
+
+        # Clear existing data so we get a fresh sync each run
+        db_session.query(CadetEvent).delete()
+        db_session.query(AllEvent).delete()
+        db_session.commit()
+
+        saved_events = 0
+        unmatched_cadets = 0
+
+        # Build a name lookup: (first_upper, last_upper) -> cin
+        all_cadets = db_session.query(Cadet).all()
+        cadet_lookup = {
+            (c.first_name.strip().upper(), c.last_name.strip().upper()): c.cin
+            for c in all_cadets
+        }
+
+        for entry in event_attendees:
+            attendees = entry.get("attendees")
+
+            # Skip events with no real attendees
+            if not attendees or not isinstance(attendees, list):
+                continue
+
+            event = AllEvent(title=entry["event_name"])
+            db_session.add(event)
+            db_session.flush()  # get event.id before linking cadets
+
+            for row in attendees:
+                if not isinstance(row, list) or len(row) < 2:
+                    continue
+
+                # Bader attendees table uses the same column layout as the cadets table:
+                # col 0 = row index, col 1 = first name, col 2 = last name
+                first = row[1].strip().upper() if len(row) > 1 else ""
+                last  = row[2].strip().upper() if len(row) > 2 else ""
+
+                cin = cadet_lookup.get((first, last))
+                if not cin:
+                    # Fallback: try first-initial match
+                    initial = first[0] if first else ""
+                    cin = next(
+                        (v for (f, l), v in cadet_lookup.items() if l == last and f.startswith(initial)),
+                        None,
+                    )
+
+                if cin:
+                    db_session.add(CadetEvent(event_id=event.id, cadet_id=cin))
+                else:
+                    unmatched_cadets += 1
+
+            saved_events += 1
+
+        db_session.commit()
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Saved {saved_events} events. {unmatched_cadets} attendee(s) could not be matched to a cadet.",
+            }))
+            scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
     except TimeoutException:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": "Page load timed out."}))
     except Exception as e:
+        db_session.rollback()
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": f"Internal Error: {str(e)}"}))
     finally:
-        # Crucial: Always kill the browser process
         if driver:
             driver.quit()
 
