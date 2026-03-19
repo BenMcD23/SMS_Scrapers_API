@@ -856,6 +856,20 @@ async def generate_radio_assessment(
     if user.assessor_name:
         data["assessor_name"] = user.assessor_name
 
+    if not data.get("cyber_sec_date", "").strip():
+        raise HTTPException(status_code=400, detail="Cyber Security video date is required.")
+
+    if not data.get("assessor_signature", ""):
+        raise HTTPException(status_code=400, detail="Assessor signature is required.")
+
+    comments = data.get("comments", "")
+    if len(comments) > 140:
+        raise HTTPException(status_code=400, detail="Comments must be 140 characters or fewer.")
+
+    # Pass is determined solely by whether all criteria are ticked
+    criteria = data.get("criteria", {})
+    data["passed"] = all(criteria.get(c) for c in criteria)
+
     processed = process_radio_data(data, cadet)
     pdf_bytes = generate_radio_pdf(processed)
 
