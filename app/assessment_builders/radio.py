@@ -17,38 +17,38 @@ INITIAL_X = 522
 # Y positions for each criterion row in the "Initial" column
 # (reportlab coords: 0 = bottom of page)
 CRITERIA_Y = {
-    "callsigns":            319,
-    "auth_1a":              301,
-    "auth_1b":              284,
-    "radio_2a":             268,
-    "radio_2b":             249,
-    "tactical_3":           233,
-    "say_again_4":          216,
-    "say_again_5":          200,
-    "prowords":             160,
-    "verbal_understanding": 130,
-    "verbal_security":      108,  # estimated — adjust if needed
+    "callsigns":            314,
+    "auth_1a":              296,
+    "auth_1b":              279,
+    "radio_2a":             262,
+    "radio_2b":             246,
+    "tactical_3":           228,
+    "say_again_4":          212,
+    "say_again_5":          195,
+    "prowords":             178,
+    "verbal_understanding": 157,
+    "verbal_security":      128,
 }
 
 TEXT_FIELDS = {
     "cadet_surname":    (152, 772),
     "forename":         (346, 772),
-    "rank":             (490, 772),
+    "rank":             (463, 772),
     # sqn and wing are fixed — 317 and GM respectively
-    "sqn":              (95,  746),
-    "wing":             (325, 746),
+    "sqn":              (95,  742),
+    "wing":             (325, 742),
     "cyber_sec_date":   (378, 108),
     "pass_circle":      (84,  93),    # centre of circle around "PASS"
     "fail_circle":      (114, 93),    # centre of circle around "FAIL"
-    "comments":         (204, 92),
-    "assessor_name":    (200, 66),
-    "assessor_sig":     (346, 67),
+    "comments":         (204, 91),
+    "assessor_name":    (200, 64),
+    "assessor_sig":     (346, 64),
     "date":             (446, 66),
 }
 
 # Radius of the pass/fail circle
-PASS_FAIL_CIRCLE_R = 12
-
+PASS_FAIL_CIRCLE_R = 10
+PASS_FAIL_ELLIPSE_RX = 12
 
 def _get_initials(name: str) -> str:
     """Extract initials from a full name, e.g. 'John Smith' -> 'JS'."""
@@ -98,11 +98,15 @@ def _build_overlay(
     if passed:
         c.setStrokeColor(HexColor("#16a34a"))
         cx, cy = TEXT_FIELDS["pass_circle"]
-        c.circle(cx, cy, PASS_FAIL_CIRCLE_R, stroke=1, fill=0)
+        c.ellipse(cx - PASS_FAIL_ELLIPSE_RX, cy - PASS_FAIL_CIRCLE_R,
+                cx + PASS_FAIL_ELLIPSE_RX, cy + PASS_FAIL_CIRCLE_R,
+                stroke=1, fill=0)
     else:
         c.setStrokeColor(HexColor("#dc2626"))
         cx, cy = TEXT_FIELDS["fail_circle"]
-        c.circle(cx, cy, PASS_FAIL_CIRCLE_R, stroke=1, fill=0)
+        c.ellipse(cx - PASS_FAIL_ELLIPSE_RX, cy - PASS_FAIL_CIRCLE_R,
+                cx + PASS_FAIL_ELLIPSE_RX, cy + PASS_FAIL_CIRCLE_R,
+                stroke=1, fill=0)
 
     # -- 5. Comments --
     if comments:
@@ -138,10 +142,10 @@ def _build_overlay(
             pil_img.save(cropped_buf, format="PNG")
             cropped_buf.seek(0)
 
-            BOX_X1, BOX_Y1 = 346, 58
-            BOX_X2, BOX_Y2 = 430, 80
-            box_w = BOX_X2 - BOX_X1
-            box_h = BOX_Y2 - BOX_Y1
+            BOX_X1, BOX_Y1 = 340, 765.89   # ← updated
+            BOX_X2, BOX_Y2 = 409, 778.89   # ← updated
+            box_w = BOX_X2 - BOX_X1        # 69
+            box_h = BOX_Y2 - BOX_Y1        # 13
 
             aspect = img_w / img_h
             draw_w = box_w
