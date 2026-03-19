@@ -37,9 +37,9 @@ TEXT_FIELDS = {
     # sqn and wing are fixed — 317 and GM respectively
     "sqn":              (95,  742),
     "wing":             (325, 742),
-    "cyber_sec_date":   (378, 108),
-    "pass_circle":      (84,  93),    # centre of circle around "PASS"
-    "fail_circle":      (114, 93),    # centre of circle around "FAIL"
+    "cyber_sec_date":   (378, 105),
+    "pass_circle":      (84,  91),    # centre of circle around "PASS"
+    "fail_circle":      (114, 91),    # centre of circle around "FAIL"
     "comments":         (204, 91),
     "assessor_name":    (200, 64),
     "assessor_sig":     (346, 64),
@@ -111,7 +111,8 @@ def _build_overlay(
     # -- 5. Comments --
     if comments:
         from reportlab.lib.utils import simpleSplit
-        lines = simpleSplit(comments, "Helvetica", 9, 450)
+        # Comments field starts at x=204; wrap at x=544 → available width = 340 pts
+        lines = simpleSplit(comments, "Helvetica", 9, 340)
         x, y = TEXT_FIELDS["comments"]
         for line in lines:
             c.setFont("Helvetica", 9)
@@ -142,8 +143,8 @@ def _build_overlay(
             pil_img.save(cropped_buf, format="PNG")
             cropped_buf.seek(0)
 
-            BOX_X1, BOX_Y1 = 340, 765.89   # ← updated
-            BOX_X2, BOX_Y2 = 409, 778.89   # ← updated
+            BOX_X1, BOX_Y1 = 340, 58
+            BOX_X2, BOX_Y2 = 417, 78
             box_w = BOX_X2 - BOX_X1        # 69
             box_h = BOX_Y2 - BOX_Y1        # 13
 
