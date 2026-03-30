@@ -20,7 +20,11 @@ from sqlalchemy import or_
 
 from database.create_db import init_db
 from database.database import engine
-from database.models import Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, AssessmentSheet, Cadet, CadetQualification, StatsSnapshot
+from database.models import (
+    Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature,
+    AssessmentSheet, Cadet, CadetQualification, StatsSnapshot,
+    StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
+)
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
 from scripts.scraper_calls import *
@@ -1426,3 +1430,318 @@ async def create_stats_snapshot(
     db.add(snapshot)
     db.commit()
     return {"status": "ok", "captured_at": snapshot.captured_at.isoformat()}
+
+# ===============================
+# STORES ENDPOINTS
+# ===============================
+
+def _item_to_dict(item: StoresItem) -> dict:
+    return {
+        "id":       str(item.id),
+        "itemType": item.item_type,
+        "size":     item.size,
+        "box":      item.box.label,
+        "section":  item.section.label,
+        "quantity": item.quantity,
+        "gender":   item.gender,
+    }
+
+
+def _order_to_dict(order: StoresOrder) -> dict:
+    return {
+        "id":         str(order.id),
+        "cadetName":  f"{order.cadet.first_name} {order.cadet.last_name}",
+        "cadetCin":   order.cadet.cin,
+        "timestamp":  order.created_at.isoformat(),
+        "items": [
+            {
+                "id":         str(oi.id),
+                "itemType":   oi.item_type,
+                "size":       oi.size,
+                "needSizing": oi.need_sizing,
+            }
+            for oi in order.order_items
+        ],
+    }
+
+
+# ── Structure ─────────────────────────────────────────────────────────────────
+
+@app.get("/stores/structure")
+def stores_get_structure(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    boxes = db.query(StoresBox).order_by(StoresBox.label).all()
+    return {
+        box.label: sorted(s.label for s in box.sections)
+        for box in boxes
+    }
+
+
+@app.post("/stores/structure")
+def stores_post_structure(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    action  = body.get("action")
+    box_lbl = body.get("box", "").strip().upper()
+    sec_lbl = body.get("section", "").strip() if body.get("section") else None
+
+    if action == "add-box":
+        if not box_lbl:
+            raise HTTPException(status_code=400, detail="Box label required")
+        if db.query(StoresBox).filter(StoresBox.label == box_lbl).first():
+            raise HTTPException(status_code=400, detail="Box already exists")
+        db.add(StoresBox(label=box_lbl))
+        db.commit()
+
+    elif action == "delete-box":
+        box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        db.delete(box)
+        db.commit()
+
+    elif action == "add-section":
+        if not box_lbl or not sec_lbl:
+            raise HTTPException(status_code=400, detail="Box and section required")
+        box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        exists = any(s.label == sec_lbl for s in box.sections)
+        if exists:
+            raise HTTPException(status_code=400, detail="Section already exists")
+        db.add(StoresSection(box_id=box.id, label=sec_lbl))
+        db.commit()
+
+    elif action == "delete-section":
+        if not box_lbl or not sec_lbl:
+            raise HTTPException(status_code=400, detail="Box and section required")
+        box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        section = next((s for s in box.sections if s.label == sec_lbl), None)
+        if not section:
+            raise HTTPException(status_code=404, detail="Section not found")
+        db.delete(section)
+        db.commit()
+
+    else:
+        raise HTTPException(status_code=400, detail="Unknown action")
+
+    boxes = db.query(StoresBox).order_by(StoresBox.label).all()
+    return {
+        box.label: sorted(s.label for s in box.sections)
+        for box in boxes
+    }
+
+
+# ── Stock ─────────────────────────────────────────────────────────────────────
+
+@app.get("/stores/stock")
+def stores_get_stock(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    items = db.query(StoresItem).all()
+    return [_item_to_dict(i) for i in items]
+
+
+@app.post("/stores/stock", status_code=201)
+def stores_create_stock(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    item_type = body.get("itemType", "").strip()
+    size      = body.get("size",     "").strip()
+    box_lbl   = body.get("box",      "").strip().upper()
+    sec_lbl   = body.get("section",  "").strip()
+    quantity  = body.get("quantity", 0)
+
+    if not item_type or not size or not box_lbl or not sec_lbl:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+    if not box:
+        raise HTTPException(status_code=404, detail="Box not found")
+    section = next((s for s in box.sections if s.label == sec_lbl), None)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+
+    gender = ITEM_GENDER_MAP.get(item_type, "unisex")
+    item = StoresItem(
+        item_type  = item_type,
+        size       = size,
+        quantity   = int(quantity),
+        gender     = gender,
+        box_id     = box.id,
+        section_id = section.id,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _item_to_dict(item)
+
+
+@app.patch("/stores/stock/{item_id}")
+def stores_update_stock(
+    item_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    if "quantity" in body:
+        item.quantity = int(body["quantity"])
+    if "itemType" in body:
+        item.item_type = body["itemType"]
+        item.gender    = ITEM_GENDER_MAP.get(body["itemType"], "unisex")
+    if "size" in body:
+        item.size = body["size"]
+    if "box" in body:
+        box = db.query(StoresBox).filter(StoresBox.label == body["box"].strip().upper()).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        item.box_id = box.id
+        # reset section if box changed
+        item.section_id = box.sections[0].id if box.sections else item.section_id
+    if "section" in body:
+        box = db.query(StoresBox).filter(StoresBox.id == item.box_id).first()
+        section = next((s for s in box.sections if s.label == body["section"]), None) if box else None
+        if not section:
+            raise HTTPException(status_code=404, detail="Section not found")
+        item.section_id = section.id
+
+    db.commit()
+    db.refresh(item)
+    return _item_to_dict(item)
+
+
+@app.delete("/stores/stock/{item_id}", status_code=204)
+def stores_delete_stock(
+    item_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    db.delete(item)
+    db.commit()
+
+
+# ── Orders ────────────────────────────────────────────────────────────────────
+
+@app.get("/stores/orders")
+def stores_get_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    orders = db.query(StoresOrder).order_by(StoresOrder.created_at.desc()).all()
+    return [_order_to_dict(o) for o in orders]
+
+
+@app.post("/stores/orders", status_code=201)
+def stores_create_order(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    cadet_cin = body.get("cadetCin")
+    items     = body.get("items", [])
+
+    if not cadet_cin or not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="cadetCin and items required")
+
+    cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+
+    order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for raw in items:
+        if not raw.get("itemType"):
+            continue
+        db.add(StoresOrderItem(
+            order_id    = order.id,
+            item_type   = raw["itemType"],
+            size        = raw.get("size", ""),
+            need_sizing = bool(raw.get("needSizing", False)),
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.patch("/stores/orders/{order_id}")
+def stores_update_order(
+    order_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if "items" in body:
+        # Replace all order items with the new list.
+        # Items with a numeric-string id are matched to existing rows; others are new.
+        existing = {str(oi.id): oi for oi in order.order_items}
+        new_items = []
+        for raw in body["items"]:
+            raw_id = str(raw.get("id", "")) if raw.get("id") else ""
+            if raw_id and raw_id in existing:
+                oi = existing.pop(raw_id)
+                oi.item_type   = raw.get("itemType",   oi.item_type)
+                oi.size        = raw.get("size",        oi.size)
+                oi.need_sizing = bool(raw.get("needSizing", oi.need_sizing))
+                new_items.append(oi)
+            else:
+                oi = StoresOrderItem(
+                    order_id    = order.id,
+                    item_type   = raw.get("itemType", ""),
+                    size        = raw.get("size", ""),
+                    need_sizing = bool(raw.get("needSizing", False)),
+                )
+                db.add(oi)
+                new_items.append(oi)
+        # Delete items that were removed
+        for removed in existing.values():
+            db.delete(removed)
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.delete("/stores/orders/{order_id}", status_code=204)
+def stores_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    db.delete(order)
+    db.commit()

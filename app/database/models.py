@@ -20,9 +20,10 @@ class Cadet(Base):
     banned        = Column(Boolean, nullable=False, default=False, server_default="0")
     # classification = Column(Text, nullable=True)
 
-    qualifications = relationship("CadetQualification", back_populates="cadet")
-    cadet_events       = relationship("CadetEvent", back_populates="cadet")
-    assessment_sheets  = relationship("AssessmentSheet", back_populates="cadet")
+    qualifications    = relationship("CadetQualification", back_populates="cadet")
+    cadet_events      = relationship("CadetEvent",         back_populates="cadet")
+    assessment_sheets = relationship("AssessmentSheet",    back_populates="cadet")
+    stores_orders     = relationship("StoresOrder",        back_populates="cadet")
 
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -189,3 +190,77 @@ class StatsSnapshot(Base):
     id          = Column(Integer, primary_key=True, autoincrement=True)
     captured_at = Column(DateTime, nullable=False)
     data        = Column(JSON, nullable=False)
+
+
+# ─── Stores tables ────────────────────────────────────────────────────────────
+
+# Maps item type → gender category stored in the DB
+ITEM_GENDER_MAP: dict[str, str] = {
+    "Jumper":             "unisex",
+    "Trousers":           "male",
+    "Slacks":             "female",
+    "Skirts":             "female",
+    "Wedgewood Male":     "male",
+    "Wedgewood Female":   "female",
+    "Working Blue Male":  "male",
+    "Working Blue Female": "female",
+}
+
+
+class StoresBox(Base):
+    __tablename__ = "Stores_Boxes"
+
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    label = Column(Text, nullable=False, unique=True)
+
+    sections = relationship("StoresSection", back_populates="box", cascade="all, delete-orphan")
+    items    = relationship("StoresItem",    back_populates="box", cascade="all, delete-orphan")
+
+
+class StoresSection(Base):
+    __tablename__ = "Stores_Sections"
+
+    id     = Column(Integer, primary_key=True, autoincrement=True)
+    box_id = Column(Integer, ForeignKey("Stores_Boxes.id", ondelete="CASCADE"), nullable=False)
+    label  = Column(Text, nullable=False)
+
+    box   = relationship("StoresBox",    back_populates="sections")
+    items = relationship("StoresItem",   back_populates="section", cascade="all, delete-orphan")
+
+
+class StoresItem(Base):
+    __tablename__ = "Stores_Items"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    item_type  = Column(Text,    nullable=False)
+    size       = Column(Text,    nullable=False)
+    quantity   = Column(Integer, nullable=False, default=0)
+    gender     = Column(Text,    nullable=False)  # "male" | "female" | "unisex"
+    box_id     = Column(Integer, ForeignKey("Stores_Boxes.id",    ondelete="CASCADE"), nullable=False)
+    section_id = Column(Integer, ForeignKey("Stores_Sections.id", ondelete="CASCADE"), nullable=False)
+
+    box     = relationship("StoresBox",    back_populates="items")
+    section = relationship("StoresSection", back_populates="items")
+
+
+class StoresOrder(Base):
+    __tablename__ = "Stores_Orders"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    cadet_id   = Column(Integer,  ForeignKey("Cadets.cin"), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    cadet       = relationship("Cadet",           back_populates="stores_orders")
+    order_items = relationship("StoresOrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class StoresOrderItem(Base):
+    __tablename__ = "Stores_Order_Items"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    order_id    = Column(Integer, ForeignKey("Stores_Orders.id", ondelete="CASCADE"), nullable=False)
+    item_type   = Column(Text,    nullable=False)
+    size        = Column(Text,    nullable=False, default="")
+    need_sizing = Column(Boolean, nullable=False, default=False)
+
+    order = relationship("StoresOrder", back_populates="order_items")
