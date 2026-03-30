@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt install poppler-utils
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
