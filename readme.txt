@@ -1,4 +1,7 @@
-uvicorn api:app --reload
+PYTHONPATH=app:. uvicorn api:app --reload
+
+# Start DB
+docker compose up db -d
 
 docker compose up -d
 docker exec -d tailscale tailscale funnel http://172.18.0.2:8000
@@ -11,3 +14,4 @@ sudo apt install poppler-utils
 
 alembic -c database/alembic.ini revision --autogenerate -m "<what_it_is>"
 alembic -c database/alembic.ini upgrade head
+
