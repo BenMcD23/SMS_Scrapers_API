@@ -21,7 +21,7 @@ from sqlalchemy import or_
 from database.create_db import init_db
 from database.database import engine
 from database.models import (
-    Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature,
+    Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, UserProfile,
     AssessmentSheet, Cadet, CadetQualification, StatsSnapshot,
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
 )
@@ -50,8 +50,22 @@ class CadetPatch(BaseModel):
     email: Optional[str] = None
     banned: Optional[bool] = None
 
-class AssessorNamePatch(BaseModel):
-    assessor_name: str
+class UserProfilePatch(BaseModel):
+    # Fixed fields
+    rank:        Optional[str] = None
+    initials:    Optional[str] = None
+    surname:     Optional[str] = None
+    jpa_number:  Optional[str] = None
+    appointment: Optional[str] = None
+    no:          Optional[str] = None
+    sqn_vgs_no:  Optional[str] = None
+    wing_ccf:    Optional[str] = None
+    # Editable fields
+    home_address: Optional[str] = None
+    car_reg:      Optional[str] = None
+    # User table fields
+    first_name: Optional[str] = None
+    last_name:  Optional[str] = None
 
 
 init_db()
@@ -373,26 +387,56 @@ async def delete_signature(
     return {"status": "success", "message": "Signature deleted"}
 
 
-@app.get("/settings/assessor-name")
-async def get_assessor_name(
+@app.get("/settings/user-profile")
+async def get_user_profile(
     authorization: str = Header(None),
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
-    return {"assessor_name": user.assessor_name or ""}
+    p = user.profile
+    return {
+        "first_name":   user.first_name or "",
+        "last_name":    user.last_name or "",
+        "rank":         p.rank        if p else "",
+        "initials":     p.initials    if p else "",
+        "surname":      p.surname     if p else "",
+        "jpa_number":   p.jpa_number  if p else "",
+        "appointment":  p.appointment if p else "",
+        "no":           p.no          if p else "",
+        "sqn_vgs_no":   p.sqn_vgs_no  if p else "",
+        "wing_ccf":     p.wing_ccf    if p else "",
+        "home_address": p.home_address if p else "",
+        "car_reg":      p.car_reg      if p else "",
+    }
 
-@app.patch("/settings/assessor-name")
-async def update_assessor_name(
-    data: AssessorNamePatch,
+@app.patch("/settings/user-profile")
+async def update_user_profile(
+    data: UserProfilePatch,
     authorization: str = Header(None),
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
-    user.assessor_name = data.assessor_name.strip()
+
+    if data.first_name is not None:
+        user.first_name = data.first_name.strip()
+    if data.last_name is not None:
+        user.last_name = data.last_name.strip()
+
+    p = user.profile
+    if not p:
+        p = UserProfile(user_id=user.id)
+        db.add(p)
+
+    for field in ("rank", "initials", "surname", "jpa_number", "appointment",
+                  "no", "sqn_vgs_no", "wing_ccf", "home_address", "car_reg"):
+        val = getattr(data, field)
+        if val is not None:
+            setattr(p, field, val.strip())
+
     db.commit()
-    return {"status": "success", "assessor_name": user.assessor_name}
+    return {"status": "success"}
 
 # ===============================
 # SERVER SENT EVENTS
@@ -800,8 +844,9 @@ async def generate_leadership_assessment(
 
     processed = process_assessment_data(data)
 
-    if user.assessor_name:
-        processed["assessor_name"] = user.assessor_name
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if full_name:
+        processed["assessor_name"] = full_name
 
     pdf_bytes  = generate_leadership_pdf(processed)
 
@@ -857,8 +902,9 @@ async def generate_radio_assessment(
         if not cadet:
             raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")
 
-    if user.assessor_name:
-        data["assessor_name"] = user.assessor_name
+    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if full_name:
+        data["assessor_name"] = full_name
 
     if not data.get("cyber_sec_date", "").strip():
         raise HTTPException(status_code=400, detail="Cyber Security video date is required.")

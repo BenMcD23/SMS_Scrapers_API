@@ -143,13 +143,16 @@ class User(Base):
     id        = Column(Integer, primary_key=True, autoincrement=True)
     google_id = Column(Text, unique=True, nullable=False, index=True)
     email     = Column(Text, nullable=False)
-    assessor_name = Column(Text, nullable=True)
+    first_name = Column(Text, nullable=True)
+    last_name  = Column(Text, nullable=True)
 
     bader_credentials  = relationship("BaderCredentials", back_populates="user",
                                        uselist=False, cascade="all, delete-orphan")
     signature          = relationship("UserSignature", back_populates="user",
                                        uselist=False, cascade="all, delete-orphan")
     assessment_sheets  = relationship("AssessmentSheet", back_populates="assessor")
+    profile            = relationship("UserProfile", back_populates="user",
+                                       uselist=False, cascade="all, delete-orphan")
 
 
 class BaderCredentials(Base):
@@ -176,6 +179,30 @@ class UserSignature(Base):
     mime_type  = Column(Text, nullable=False, default="image/png")
 
     user = relationship("User", back_populates="signature")
+
+
+class UserProfile(Base):
+    __tablename__ = "User_Profiles"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    user_id     = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"),
+                          unique=True, nullable=False)
+
+    # Fixed fields (set once, not editable by user)
+    rank        = Column(Text, nullable=True)
+    initials    = Column(Text, nullable=True)
+    surname     = Column(Text, nullable=True)
+    jpa_number  = Column(Text, nullable=True)
+    appointment = Column(Text, nullable=True)
+    no          = Column(Text, nullable=True)
+    sqn_vgs_no  = Column(Text, nullable=True)
+    wing_ccf    = Column(Text, nullable=True)
+
+    # Editable fields
+    home_address = Column(Text, nullable=True)
+    car_reg      = Column(Text, nullable=True)
+
+    user = relationship("User", back_populates="profile")
 
 
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────
