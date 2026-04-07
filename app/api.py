@@ -442,6 +442,45 @@ async def update_user_profile(
     db.commit()
     return {"status": "success"}
 
+class MileageRequest(BaseModel):
+    from_address: str
+    to_address: str
+
+async def geocode(client: httpx.AsyncClient, address: str) -> tuple[float, float]:
+    resp = await client.get(
+        "https://nominatim.openstreetmap.org/search",
+        params={"q": address, "format": "json", "limit": 1},
+        headers={"User-Agent": "317-SMS-Site/1.0"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    results = resp.json()
+    if not results:
+        raise HTTPException(status_code=422, detail=f"Could not geocode address: {address}")
+    return float(results[0]["lon"]), float(results[0]["lat"])
+
+@app.post("/form-generators/calculate-mileage")
+async def calculate_mileage(
+    data: MileageRequest,
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    async with httpx.AsyncClient() as client:
+        from_lon, from_lat = await geocode(client, data.from_address)
+        to_lon, to_lat = await geocode(client, data.to_address)
+        resp = await client.get(
+            f"https://router.project-osrm.org/route/v1/driving/{from_lon},{from_lat};{to_lon},{to_lat}",
+            params={"overview": "false"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        route = resp.json()
+    if route.get("code") != "Ok" or not route.get("routes"):
+        raise HTTPException(status_code=422, detail="Could not calculate route between addresses.")
+    distance_metres = route["routes"][0]["distance"]
+    miles = round(distance_metres / 1609.344, 1)
+    return {"miles": miles}
+
 @app.get("/settings/assessor-name")
 async def get_assessor_name(
     authorization: str = Header(None),
