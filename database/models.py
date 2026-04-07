@@ -199,8 +199,9 @@ class UserProfile(Base):
     wing_ccf    = Column(Text, nullable=True)
 
     # Editable fields
-    home_address = Column(Text, nullable=True)
-    car_reg      = Column(Text, nullable=True)
+    home_address  = Column(Text, nullable=True)
+    car_reg       = Column(Text, nullable=True)
+    assessor_name = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="profile")
 

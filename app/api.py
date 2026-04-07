@@ -444,6 +444,37 @@ async def update_user_profile(
     db.commit()
     return {"status": "success"}
 
+@app.get("/settings/assessor-name")
+async def get_assessor_name(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
+    p = user.profile
+    return {"assessor_name": p.assessor_name if p else ""}
+
+class AssessorNamePatch(BaseModel):
+    assessor_name: str
+
+@app.patch("/settings/assessor-name")
+async def update_assessor_name(
+    data: AssessorNamePatch,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
+
+    p = user.profile
+    if not p:
+        p = UserProfile(user_id=user.id)
+        db.add(p)
+
+    p.assessor_name = data.assessor_name.strip()
+    db.commit()
+    return {"status": "success"}
+
 # ===============================
 # SERVER SENT EVENTS
 # ===============================
@@ -850,9 +881,10 @@ async def generate_leadership_assessment(
 
     processed = process_assessment_data(data)
 
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if full_name:
-        processed["assessor_name"] = full_name
+    profile_name = user.profile.assessor_name if user.profile else None
+    assessor_name = profile_name or f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if assessor_name:
+        processed["assessor_name"] = assessor_name
 
     pdf_bytes  = generate_leadership_pdf(processed)
 
@@ -908,9 +940,10 @@ async def generate_radio_assessment(
         if not cadet:
             raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")
 
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if full_name:
-        data["assessor_name"] = full_name
+    profile_name = user.profile.assessor_name if user.profile else None
+    assessor_name = profile_name or f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if assessor_name:
+        data["assessor_name"] = assessor_name
 
     if not data.get("cyber_sec_date", "").strip():
         raise HTTPException(status_code=400, detail="Cyber Security video date is required.")
