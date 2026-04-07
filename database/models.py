@@ -194,7 +194,6 @@ class UserProfile(Base):
     surname     = Column(Text, nullable=True)
     jpa_number  = Column(Text, nullable=True)
     appointment = Column(Text, nullable=True)
-    no          = Column(Text, nullable=True)
     sqn_vgs_no  = Column(Text, nullable=True)
     wing_ccf    = Column(Text, nullable=True)
 

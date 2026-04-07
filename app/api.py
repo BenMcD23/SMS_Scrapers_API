@@ -57,7 +57,6 @@ class UserProfilePatch(BaseModel):
     surname:     Optional[str] = None
     jpa_number:  Optional[str] = None
     appointment: Optional[str] = None
-    no:          Optional[str] = None
     sqn_vgs_no:  Optional[str] = None
     wing_ccf:    Optional[str] = None
     # Editable fields
@@ -409,7 +408,6 @@ async def get_user_profile(
         "surname":      p.surname     if p else "",
         "jpa_number":   p.jpa_number  if p else "",
         "appointment":  p.appointment if p else "",
-        "no":           p.no          if p else "",
         "sqn_vgs_no":   p.sqn_vgs_no  if p else "",
         "wing_ccf":     p.wing_ccf    if p else "",
         "home_address": p.home_address if p else "",
@@ -436,7 +434,7 @@ async def update_user_profile(
         db.add(p)
 
     for field in ("rank", "initials", "surname", "jpa_number", "appointment",
-                  "no", "sqn_vgs_no", "wing_ccf", "home_address", "car_reg"):
+                  "sqn_vgs_no", "wing_ccf", "home_address", "car_reg"):
         val = getattr(data, field)
         if val is not None:
             setattr(p, field, val.strip())
