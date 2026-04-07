@@ -6,6 +6,7 @@ import time
 import base64
 import httpx
 import io
+import tempfile
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from functools import partial
@@ -38,7 +39,7 @@ from google.oauth2 import id_token, service_account
 from google.auth.transport import requests
 from googleapiclient.discovery import build as google_build
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
 from functools import partial
@@ -480,6 +481,95 @@ async def calculate_mileage(
     distance_metres = route["routes"][0]["distance"]
     miles = round(distance_metres / 1609.344, 1)
     return {"miles": miles}
+
+class F1771eJourney(BaseModel):
+    model_config = {"populate_by_name": True}
+    dateOfJourney:      str
+    timeOfDeparture:    str
+    timeOfArrival:      str
+    from_:              str = Field(alias="from")
+    to:                 str
+    natureOfActivity:   str
+    nameRankNo:         str
+    gbtHotelRef:        str
+    miscExpenses:       str
+    numberOfPassengers: str
+    method:             str
+    mileageClaimed:     str
+
+class F1771eRequest(BaseModel):
+    journeys: list[F1771eJourney]
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "word_templates", "F1771e_template.docx")
+
+@app.post("/form-generators/f1771e")
+async def generate_f1771e(
+    data: F1771eRequest,
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    from form_generators.F1771e_gen import fill_form
+
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
+    p = user.profile
+
+    personal = {
+        "rank":        p.rank        if p else "",
+        "initials":    p.initials    if p else "",
+        "surname":     p.surname     if p else "",
+        "jpa_number":  p.jpa_number  if p else "",
+        "appointment": p.appointment if p else "",
+        "car_reg":     p.car_reg     if p else "",
+    }
+
+    journeys = []
+    for j in data.journeys:
+        try:
+            date_str = datetime.strptime(j.dateOfJourney, "%Y-%m-%d").strftime("%d/%m/%y")
+        except ValueError:
+            date_str = j.dateOfJourney
+
+        journeys.append({
+            "date":          date_str,
+            "time_depart":   j.timeOfDeparture,
+            "time_arrive":   j.timeOfArrival,
+            "from":          j.from_.replace("\n", ", "),
+            "to":            j.to.replace("\n", ", "),
+            "activity":      j.natureOfActivity,
+            "name_rank_pax": j.nameRankNo,
+            "hotel_ref":     j.gbtHotelRef,
+            "misc_expenses": j.miscExpenses,
+            "passengers":    j.numberOfPassengers,
+            "method":        j.method,
+            "miles":         j.mileageClaimed,
+        })
+
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        fill_form(
+            template_path=TEMPLATE_PATH,
+            output_path=tmp_path,
+            personal=personal,
+            journeys=journeys,
+        )
+        with open(tmp_path, "rb") as f:
+            doc_bytes = f.read()
+    finally:
+        os.unlink(tmp_path)
+
+    today = datetime.now().strftime("%Y%m%d")
+    surname = (personal["surname"] or "UNKNOWN").upper().replace(" ", "-")
+    jpa = (personal["jpa_number"] or "UNKNOWN").replace(" ", "")
+    filename = f"{today}-F1771-{surname}-{jpa}-OSP.docx"
+
+    return StreamingResponse(
+        io.BytesIO(doc_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 @app.get("/settings/assessor-name")
 async def get_assessor_name(
