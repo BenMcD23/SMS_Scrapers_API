@@ -115,17 +115,23 @@ def get_db():
     finally:
         db.close()
 
-def get_or_create_user(db: Session, google_id: str, email: str) -> User:
+def get_or_create_user(db: Session, google_id: str, email: str, first_name: str = None, last_name: str = None) -> User:
     """
     Fetch the User row by google_id, creating one if it doesn't exist yet.
     This means users no longer need to save credentials before doing anything.
     """
     user = db.query(User).filter(User.google_id == google_id).first()
     if not user:
-        user = User(google_id=google_id, email=email)
+        user = User(google_id=google_id, email=email, first_name=first_name, last_name=last_name)
         db.add(user)
         db.commit()
         db.refresh(user)
+    else:
+        if first_name is not None and user.first_name != first_name:
+            user.first_name = first_name
+        if last_name is not None and user.last_name != last_name:
+            user.last_name = last_name
+        db.commit()
     return user
 
 STAFF_GROUP = "staff@317atc.co.uk"
@@ -255,7 +261,7 @@ async def start_scraper(
     global scraper_running, current_scraper_user, current_scraper_name
 
     idinfo = verify_token_staff_only(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     # Scraper specifically needs bader credentials to be set
     if not user.bader_credentials:
@@ -308,7 +314,7 @@ async def save_credentials(
     authorization: str = Header(None),
 ):
     idinfo = verify_token_staff_only(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     # Upsert BaderCredentials
     creds = user.bader_credentials
@@ -331,7 +337,7 @@ async def save_signature(
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     if file.content_type not in ("image/png", "image/jpeg"):
         raise HTTPException(status_code=400, detail="Only PNG or JPEG images are accepted")
@@ -359,7 +365,7 @@ async def get_signature(
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     if not user.signature:
         raise HTTPException(status_code=404, detail="No signature saved")
@@ -377,7 +383,7 @@ async def delete_signature(
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     if not user.signature:
         raise HTTPException(status_code=404, detail="No signature to delete")
@@ -393,7 +399,7 @@ async def get_user_profile(
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
     p = user.profile
     return {
         "first_name":   user.first_name or "",
@@ -417,7 +423,7 @@ async def update_user_profile(
     db: Session = Depends(get_db),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     if data.first_name is not None:
         user.first_name = data.first_name.strip()
@@ -824,7 +830,7 @@ async def generate_leadership_assessment(
     authorization: str = Header(None),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     # Resolve cadet by CIN (preferred) or fall back to name search
     cadet_cin = data.get("cadet_cin")
@@ -885,7 +891,7 @@ async def generate_radio_assessment(
     authorization: str = Header(None),
 ):
     idinfo = verify_token(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     cadet_cin = data.get("cadet_cin")
     if cadet_cin:
@@ -1245,7 +1251,7 @@ async def upload_qualifications_to_bader(
     global scraper_running, current_scraper_user, current_scraper_name
 
     idinfo = verify_token_staff_only(authorization)
-    user = get_or_create_user(db, idinfo["sub"], idinfo["email"])
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
     if not user.bader_credentials:
         raise HTTPException(
