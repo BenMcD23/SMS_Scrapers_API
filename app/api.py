@@ -1788,6 +1788,20 @@ def stores_create_stock(
         raise HTTPException(status_code=404, detail="Section not found")
 
     gender = ITEM_GENDER_MAP.get(item_type, "unisex")
+
+    existing = db.query(StoresItem).filter(
+        StoresItem.item_type  == item_type,
+        StoresItem.size       == size,
+        StoresItem.box_id     == box.id,
+        StoresItem.section_id == section.id,
+    ).first()
+
+    if existing:
+        existing.quantity += int(quantity)
+        db.commit()
+        db.refresh(existing)
+        return _item_to_dict(existing)
+
     item = StoresItem(
         item_type  = item_type,
         size       = size,
@@ -1834,6 +1848,22 @@ def stores_update_stock(
         if not section:
             raise HTTPException(status_code=404, detail="Section not found")
         item.section_id = section.id
+
+    # If the edited item now matches another existing item, merge them
+    duplicate = db.query(StoresItem).filter(
+        StoresItem.id         != item.id,
+        StoresItem.item_type  == item.item_type,
+        StoresItem.size       == item.size,
+        StoresItem.box_id     == item.box_id,
+        StoresItem.section_id == item.section_id,
+    ).first()
+
+    if duplicate:
+        duplicate.quantity += item.quantity
+        db.delete(item)
+        db.commit()
+        db.refresh(duplicate)
+        return _item_to_dict(duplicate)
 
     db.commit()
     db.refresh(item)
