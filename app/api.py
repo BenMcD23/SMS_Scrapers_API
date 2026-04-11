@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 from database.create_db import init_db
 from database.database import engine
@@ -1659,6 +1659,38 @@ def _item_to_dict(item: StoresItem) -> dict:
     }
 
 
+def _box_to_dict(box: StoresBox) -> dict:
+    sections_sorted = sorted(
+        box.sections,
+        key=lambda s: ((s.section_row or 0), (s.position or 0), s.label),
+    )
+    return {
+        "label":         box.label,
+        "shelfLevel":    box.shelf_level    if box.shelf_level    is not None else 1,
+        "shelfPosition": box.shelf_position if box.shelf_position is not None else 0,
+        "boxWidth":      box.box_width      if box.box_width      is not None else 100,
+        "topEnd":        box.top_end        if box.top_end        is not None else "left",
+        "sections": [
+            {
+                "label":        s.label,
+                "row":          s.section_row   if s.section_row   is not None else 0,
+                "position":     s.position      if s.position      is not None else 0,
+                "sectionWidth": s.section_width if s.section_width is not None else 100,
+            }
+            for s in sections_sorted
+        ],
+    }
+
+
+def _full_structure(db: Session) -> dict:
+    boxes = (
+        db.query(StoresBox)
+        .order_by(StoresBox.shelf_level, StoresBox.shelf_position, StoresBox.label)
+        .all()
+    )
+    return {"boxes": [_box_to_dict(b) for b in boxes]}
+
+
 def _order_to_dict(order: StoresOrder) -> dict:
     return {
         "id":         str(order.id),
@@ -1685,11 +1717,7 @@ def stores_get_structure(
     authorization: str = Header(None),
 ):
     verify_token(authorization)
-    boxes = db.query(StoresBox).order_by(StoresBox.label).all()
-    return {
-        box.label: sorted(s.label for s in box.sections)
-        for box in boxes
-    }
+    return _full_structure(db)
 
 
 @app.post("/stores/structure")
@@ -1708,14 +1736,29 @@ def stores_post_structure(
             raise HTTPException(status_code=400, detail="Box label required")
         if db.query(StoresBox).filter(StoresBox.label == box_lbl).first():
             raise HTTPException(status_code=400, detail="Box already exists")
-        db.add(StoresBox(label=box_lbl))
+        level1_max = db.query(func.max(StoresBox.shelf_position)).filter(
+            StoresBox.shelf_level == 1
+        ).scalar()
+        new_pos = (level1_max if level1_max is not None else -1) + 1
+        db.add(StoresBox(label=box_lbl, shelf_level=1, shelf_position=new_pos, top_end='left'))
         db.commit()
 
     elif action == "delete-box":
         box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
         if not box:
             raise HTTPException(status_code=404, detail="Box not found")
+        old_level = box.shelf_level or 1
         db.delete(box)
+        db.commit()
+        # Compact shelf_position on that level
+        remaining = (
+            db.query(StoresBox)
+            .filter(StoresBox.shelf_level == old_level)
+            .order_by(StoresBox.shelf_position)
+            .all()
+        )
+        for i, b in enumerate(remaining):
+            b.shelf_position = i
         db.commit()
 
     elif action == "add-section":
@@ -1724,10 +1767,13 @@ def stores_post_structure(
         box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
         if not box:
             raise HTTPException(status_code=404, detail="Box not found")
-        exists = any(s.label == sec_lbl for s in box.sections)
-        if exists:
+        if any(s.label == sec_lbl for s in box.sections):
             raise HTTPException(status_code=400, detail="Section already exists")
-        db.add(StoresSection(box_id=box.id, label=sec_lbl))
+        max_pos = db.query(func.max(StoresSection.position)).filter(
+            StoresSection.box_id == box.id
+        ).scalar()
+        new_pos = (max_pos if max_pos is not None else -1) + 1
+        db.add(StoresSection(box_id=box.id, label=sec_lbl, position=new_pos, section_row=0, section_width=100))
         db.commit()
 
     elif action == "delete-section":
@@ -1739,17 +1785,115 @@ def stores_post_structure(
         section = next((s for s in box.sections if s.label == sec_lbl), None)
         if not section:
             raise HTTPException(status_code=404, detail="Section not found")
+        box_id = box.id
         db.delete(section)
+        db.commit()
+        # Compact section positions for this box
+        remaining = (
+            db.query(StoresSection)
+            .filter(StoresSection.box_id == box_id)
+            .order_by(StoresSection.position)
+            .all()
+        )
+        for i, s in enumerate(remaining):
+            s.position = i
         db.commit()
 
     else:
         raise HTTPException(status_code=400, detail="Unknown action")
 
-    boxes = db.query(StoresBox).order_by(StoresBox.label).all()
-    return {
-        box.label: sorted(s.label for s in box.sections)
-        for box in boxes
-    }
+    return _full_structure(db)
+
+
+@app.patch("/stores/boxes/{box_label}/layout")
+def stores_patch_box_layout(
+    box_label: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    box = db.query(StoresBox).filter(StoresBox.label == box_label.upper()).first()
+    if not box:
+        raise HTTPException(status_code=404, detail="Box not found")
+
+    if "topEnd" in body:
+        if body["topEnd"] not in ("left", "right"):
+            raise HTTPException(status_code=400, detail="topEnd must be 'left' or 'right'")
+        box.top_end = body["topEnd"]
+
+    if "boxWidth" in body:
+        box.box_width = max(10, int(body["boxWidth"]))
+
+    if "shelfLevel" in body or "shelfPosition" in body:
+        new_level = int(body.get("shelfLevel", box.shelf_level or 1))
+        new_pos   = int(body.get("shelfPosition", box.shelf_position or 0))
+
+        if new_level not in (1, 2, 3):
+            raise HTTPException(status_code=400, detail="shelfLevel must be 1, 2, or 3")
+
+        old_level = box.shelf_level or 1
+
+        if old_level != new_level:
+            # Compact old level after removal
+            others_old = (
+                db.query(StoresBox)
+                .filter(StoresBox.shelf_level == old_level, StoresBox.id != box.id)
+                .order_by(StoresBox.shelf_position)
+                .all()
+            )
+            for i, b in enumerate(others_old):
+                b.shelf_position = i
+
+        # Shift boxes on destination level to make room
+        others_new = (
+            db.query(StoresBox)
+            .filter(StoresBox.shelf_level == new_level, StoresBox.id != box.id)
+            .order_by(StoresBox.shelf_position)
+            .all()
+        )
+        new_pos = max(0, min(new_pos, len(others_new)))
+        for i, b in enumerate(others_new):
+            b.shelf_position = i if i < new_pos else i + 1
+
+        box.shelf_level    = new_level
+        box.shelf_position = new_pos
+
+    db.commit()
+    db.refresh(box)
+    return _full_structure(db)
+
+
+@app.patch("/stores/boxes/{box_label}/sections/reorder")
+def stores_reorder_sections(
+    box_label: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    box = db.query(StoresBox).filter(StoresBox.label == box_label.upper()).first()
+    if not box:
+        raise HTTPException(status_code=404, detail="Box not found")
+
+    sections_data: list = body.get("sections", [])
+    section_map = {s.label: s for s in box.sections}
+
+    incoming_labels = {str(sd["label"]) for sd in sections_data}
+    if incoming_labels != set(section_map.keys()):
+        raise HTTPException(
+            status_code=400,
+            detail="sections must contain exactly the existing section labels",
+        )
+
+    for sd in sections_data:
+        s = section_map[str(sd["label"])]
+        s.section_row   = int(sd.get("row", 0))
+        s.position      = int(sd.get("position", 0))
+        s.section_width = max(10, int(sd.get("sectionWidth", 100)))
+
+    db.commit()
+    return _full_structure(db)
 
 
 # ── Stock ─────────────────────────────────────────────────────────────────────
