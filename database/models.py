@@ -237,8 +237,12 @@ ITEM_GENDER_MAP: dict[str, str] = {
 class StoresBox(Base):
     __tablename__ = "Stores_Boxes"
 
-    id    = Column(Integer, primary_key=True, autoincrement=True)
-    label = Column(Text, nullable=False, unique=True)
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    label          = Column(Text,    nullable=False, unique=True)
+    shelf_level    = Column(Integer, nullable=True,  default=1,      server_default='1')
+    shelf_position = Column(Integer, nullable=True,  default=0,      server_default='0')
+    box_width      = Column(Integer, nullable=True,  default=100,    server_default='100')
+    top_end        = Column(Text,    nullable=True,  default='left', server_default='left')
 
     sections = relationship("StoresSection", back_populates="box", cascade="all, delete-orphan")
     items    = relationship("StoresItem",    back_populates="box", cascade="all, delete-orphan")
@@ -247,9 +251,12 @@ class StoresBox(Base):
 class StoresSection(Base):
     __tablename__ = "Stores_Sections"
 
-    id     = Column(Integer, primary_key=True, autoincrement=True)
-    box_id = Column(Integer, ForeignKey("Stores_Boxes.id", ondelete="CASCADE"), nullable=False)
-    label  = Column(Text, nullable=False)
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    box_id   = Column(Integer, ForeignKey("Stores_Boxes.id", ondelete="CASCADE"), nullable=False)
+    label         = Column(Text,    nullable=False)
+    position      = Column(Integer, nullable=True, default=0,   server_default='0')
+    section_row   = Column(Integer, nullable=True, default=0,   server_default='0')
+    section_width = Column(Integer, nullable=True, default=100, server_default='100')
 
     box   = relationship("StoresBox",    back_populates="sections")
     items = relationship("StoresItem",   back_populates="section", cascade="all, delete-orphan")
