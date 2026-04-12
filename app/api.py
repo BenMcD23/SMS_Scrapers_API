@@ -1743,11 +1743,23 @@ def stores_post_structure(
         db.add(StoresBox(label=box_lbl, shelf_level=1, shelf_position=new_pos, top_end='left'))
         db.commit()
 
+    elif action == "add-area":
+        if not box_lbl:
+            raise HTTPException(status_code=400, detail="Area label required")
+        if db.query(StoresBox).filter(StoresBox.label == box_lbl).first():
+            raise HTTPException(status_code=400, detail="Label already exists")
+        misc_max = db.query(func.max(StoresBox.shelf_position)).filter(
+            StoresBox.shelf_level == 0
+        ).scalar()
+        new_pos = (misc_max if misc_max is not None else -1) + 1
+        db.add(StoresBox(label=box_lbl, shelf_level=0, shelf_position=new_pos, top_end='left'))
+        db.commit()
+
     elif action == "delete-box":
         box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
         if not box:
             raise HTTPException(status_code=404, detail="Box not found")
-        old_level = box.shelf_level or 1
+        old_level = box.shelf_level if box.shelf_level is not None else 1
         db.delete(box)
         db.commit()
         # Compact shelf_position on that level
