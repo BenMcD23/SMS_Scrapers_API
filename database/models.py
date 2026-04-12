@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, Float, Boolean, Text, DateTime,
+    Column, Integer, BigInteger, Float, Boolean, Text, DateTime,
     ForeignKey, LargeBinary, JSON,
 )
 from sqlalchemy.orm import relationship
@@ -9,7 +9,7 @@ from database.database import Base
 class Cadet(Base):
     __tablename__ = "Cadets"
 
-    cin         = Column(Integer, primary_key=True)  # CIN is the real ID, no autoincrement
+    cin         = Column(BigInteger, primary_key=True)  # CIN is the real ID, no autoincrement
     first_name  = Column(Text, nullable=False)
     last_name   = Column(Text, nullable=False)
     email       = Column(Text, nullable=True)
@@ -36,7 +36,7 @@ class CadetQualification(Base):
     __tablename__ = "Cadet_Qualifications"
 
     id      = Column(Integer, primary_key=True, autoincrement=True)
-    cadet_id = Column(Integer, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
     qual_type = Column(Text, nullable=False)  # one of QUALIFICATION_TYPES
     status   = Column(Text, nullable=False)   # "blue" | "bronze..." | "false, basic, intermediate... - for swimming" | "true/false"
     date_achieved = Column(DateTime, nullable=True)
@@ -86,7 +86,7 @@ class CadetEvent(Base):
 
     id        = Column(Integer, primary_key=True, autoincrement=True)
     event_id  = Column(Integer, ForeignKey("All_Events.id"), nullable=False)
-    cadet_id  = Column(Integer, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
 
     cadet = relationship("Cadet", back_populates="cadet_events")
     event = relationship("AllEvent", back_populates="cadet_events")
@@ -128,7 +128,7 @@ class AssessmentSheet(Base):
     created_at      = Column(DateTime, nullable=False)
     uploaded        = Column(Boolean, nullable=False, default=False, server_default="0")
 
-    cadet_id  = Column(Integer, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
     assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False)  # the user who did it
 
     cadet    = relationship("Cadet", back_populates="assessment_sheets")
@@ -281,7 +281,7 @@ class StoresOrder(Base):
     __tablename__ = "Stores_Orders"
 
     id         = Column(Integer,  primary_key=True, autoincrement=True)
-    cadet_id   = Column(Integer,  ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin"), nullable=False)
     created_at = Column(DateTime, nullable=False)
 
     cadet       = relationship("Cadet",           back_populates="stores_orders")
