@@ -23,7 +23,7 @@ from database.create_db import init_db
 from database.database import engine
 from database.models import (
     Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, UserProfile,
-    AssessmentSheet, Cadet, CadetQualification, StatsSnapshot,
+    AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, ScraperRun,
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
 )
 
@@ -103,6 +103,31 @@ scraper_state_lock = threading.Lock()
 
 current_scraper_user = None
 current_scraper_name = None
+
+# ── Per-scraper state (for the 4 named scrapers run in parallel) ──────────────
+NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical"]
+
+named_scraper_states: dict = {
+    name: {
+        "messages": [],
+        "lock": threading.Lock(),
+        "running": False,
+        "started_by": None,
+        "stop_event": threading.Event(),
+        "driver": None,   # live Selenium WebDriver reference while scraper runs
+    }
+    for name in NAMED_SCRAPERS
+}
+
+def _quit_driver(state: dict):
+    """Forcefully quit the WebDriver stored in a scraper state slot, if any."""
+    driver = state.get("driver")
+    if driver:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        state["driver"] = None
 
 # ===============================
 # DATABASE
@@ -251,6 +276,68 @@ def run_scraper_task(scraper_func, user_id: int):
         current_scraper_user = None
         current_scraper_name = None
 
+
+def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: str):
+    """Background task for the 4 named scrapers — each has its own state slot."""
+    state = named_scraper_states[name]
+    db = Session(engine)
+    stop_event = state["stop_event"]
+    stop_event.clear()  # reset from any previous run
+    state["driver"] = None
+    success = False
+
+    def on_driver_ready(driver):
+        state["driver"] = driver
+
+    def monitor_timeout():
+        time.sleep(900)
+        if state["running"]:
+            stop_event.set()
+            _quit_driver(state)
+
+    threading.Thread(target=monitor_timeout, daemon=True).start()
+
+    try:
+        scraper_func(state["messages"], state["lock"], user_id, db, stop_event, on_driver_ready=on_driver_ready)
+
+        with state["lock"]:
+            if stop_event.is_set():
+                state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
+            else:
+                if name == "cadet-quali":
+                    try:
+                        stats = compute_stats(db)
+                        snapshot = StatsSnapshot(captured_at=datetime.now(), data=stats)
+                        db.add(snapshot)
+                        db.commit()
+                    except Exception as snap_err:
+                        print(f"[stats snapshot] failed: {snap_err}")
+                state["messages"].append(json.dumps({"type": "status", "value": "done"}))
+                success = True
+    except Exception as e:
+        if not stop_event.is_set():
+            with state["lock"]:
+                state["messages"].append(json.dumps({"type": "error", "value": f"Crash: {str(e)}"}))
+    finally:
+        state["driver"] = None
+        # Record run in DB
+        try:
+            run_db = Session(engine)
+            run_db.add(ScraperRun(
+                scraper_id=name,
+                ran_at=datetime.now(),
+                success=success,
+                ran_by=user_email,
+            ))
+            run_db.commit()
+            run_db.close()
+        except Exception as rec_err:
+            print(f"[scraper run record] failed: {rec_err}")
+        db.close()
+        state["running"] = False
+        state["started_by"] = None
+
+
 @app.get("/run-scraper/{name}")
 async def start_scraper(
     name: str,
@@ -258,12 +345,9 @@ async def start_scraper(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    global scraper_running, current_scraper_user, current_scraper_name
-
     idinfo = verify_token_staff_only(authorization)
     user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
 
-    # Scraper specifically needs bader credentials to be set
     if not user.bader_credentials:
         raise HTTPException(
             status_code=400,
@@ -280,26 +364,27 @@ async def start_scraper(
     if name not in scraper_map:
         raise HTTPException(status_code=404, detail="Scraper not found")
 
-    with scraper_state_lock:
-        if scraper_running:
-            raise HTTPException(status_code=400, detail="Scraper already running")
-        scraper_running = True
+    state = named_scraper_states[name]
+    if state["running"]:
+        raise HTTPException(status_code=400, detail="Scraper already running")
 
-    current_scraper_user = idinfo.get("email")
-    current_scraper_name = name
+    state["running"] = True
+    state["started_by"] = idinfo.get("email")
 
-    with scraper_lock:
-        scraper_messages.clear()
-        scraper_messages.append(
+    with state["lock"]:
+        state["messages"].clear()
+        state["messages"].append(
             json.dumps({
                 "type": "status",
                 "value": "running",
-                "started_by": current_scraper_user,
-                "scraper_name": current_scraper_name,
+                "started_by": state["started_by"],
+                "scraper_name": name,
             })
         )
 
-    background_tasks.add_task(run_scraper_task, scraper_map[name], user.id)
+    background_tasks.add_task(
+        run_named_scraper_task, name, scraper_map[name], user.id, idinfo.get("email", "")
+    )
     return {"status": "started"}
 
 
@@ -690,6 +775,102 @@ async def scraper_status(authorization: str = Header(None)):
         "scraper_name": current_scraper_name,
         "recent_logs": logs[-50:],
     }
+
+
+@app.get("/scraper-stream/{name}")
+async def named_scraper_stream(
+    name: str,
+    authorization: str = Header(None),
+    token: str = Query(None),
+):
+    auth = authorization or (f"Bearer {token}" if token else None)
+    verify_token(auth)
+
+    if name not in named_scraper_states:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"detail": "Unknown scraper"})
+
+    state = named_scraper_states[name]
+
+    async def event_generator():
+        with state["lock"]:
+            if state["running"] and state["started_by"]:
+                yield f"data: {json.dumps({'type': 'status', 'value': 'running', 'started_by': state['started_by'], 'scraper_name': name})}\n\n"
+            last_idx = len(state["messages"])
+            for msg in state["messages"]:
+                yield f"data: {msg}\n\n"
+
+        while True:
+            await asyncio.sleep(0.5)
+            with state["lock"]:
+                current_len = len(state["messages"])
+            if last_idx < current_len:
+                with state["lock"]:
+                    new_msgs = state["messages"][last_idx:]
+                for msg in new_msgs:
+                    yield f"data: {msg}\n\n"
+                last_idx = current_len
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/scraper-last-runs")
+async def scraper_last_runs(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
+    verify_token(authorization)
+    result = {}
+    for name in NAMED_SCRAPERS:
+        run = (
+            db.query(ScraperRun)
+            .filter(ScraperRun.scraper_id == name)
+            .order_by(ScraperRun.ran_at.desc())
+            .first()
+        )
+        result[name] = {
+            "ran_at": run.ran_at.isoformat() if run else None,
+            "success": run.success if run else None,
+            "ran_by": run.ran_by if run else None,
+        }
+    return result
+
+
+@app.get("/scrapers-running")
+async def scrapers_running(authorization: str = Header(None)):
+    """Returns the running state of each named scraper."""
+    verify_token(authorization)
+    return {
+        name: {
+            "running": state["running"],
+            "started_by": state["started_by"],
+        }
+        for name, state in named_scraper_states.items()
+    }
+
+
+@app.post("/stop-scraper/{name}")
+async def stop_scraper(
+    name: str,
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    if name not in named_scraper_states:
+        raise HTTPException(status_code=404, detail="Unknown scraper")
+    state = named_scraper_states[name]
+    if not state["running"]:
+        raise HTTPException(status_code=400, detail="Scraper is not running")
+    # Signal the loop to stop at the next iteration check
+    state["stop_event"].set()
+    # Immediately kill the browser so any blocking Selenium call throws right now
+    _quit_driver(state)
+    with state["lock"]:
+        state["messages"].append(json.dumps({"type": "warning", "value": "[STOPPED] Scraper was manually stopped."}))
+    return {"status": "stopping"}
 
 
 # ===============================
