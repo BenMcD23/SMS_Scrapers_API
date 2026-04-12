@@ -45,10 +45,13 @@ def get_cadet_names(driver):
 
     return cadetNames, numberOfCadets
 
-def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock):
+def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None):
     cadet_data = []
 
     for i in range(numberOfCadets):
+        if stop_event and stop_event.is_set():
+            return cadet_data
+
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}"}))
 

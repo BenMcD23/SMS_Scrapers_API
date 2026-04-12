@@ -112,12 +112,14 @@ def get_317_event_links(driver):
     return event_links_317
 
 
-def get_event_attendees(driver, event_names, number_of_events, scraper_messages, scraper_lock):
+def get_event_attendees(driver, event_names, number_of_events, scraper_messages, scraper_lock, stop_event=None):
     """Scrape the list of attending cadets for every event."""
     _setup_events_table(driver)
 
     event_attendees = []
     for i in range(number_of_events):
+        if stop_event and stop_event.is_set():
+            return event_attendees
         with scraper_lock:
             scraper_messages.append(f"On event number {i+1} out of {number_of_events}")
         try:
@@ -210,7 +212,7 @@ def _get_textarea(driver, label_text):
     return value.strip()
 
 
-def get_317_event_info(driver, event_links_317, scraper_messages, scraper_lock):
+def get_317_event_info(driver, event_links_317, scraper_messages, scraper_lock, stop_event=None):
     """Scrape full details for each 317-unit event and sync them to the database."""
     session = SessionLocal()
     try:
@@ -219,6 +221,9 @@ def get_317_event_info(driver, event_links_317, scraper_messages, scraper_lock):
 
         num_links = len(event_links_317)
         for index, link in enumerate(event_links_317):
+            if stop_event and stop_event.is_set():
+                break
+
             with scraper_lock:
                 scraper_messages.append(f"On event {index+1} out of {num_links}")
 

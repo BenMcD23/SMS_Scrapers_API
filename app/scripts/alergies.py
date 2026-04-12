@@ -38,10 +38,13 @@ def smart_click(driver, locator, timeout=20):
 # MAIN SCRAPER FUNCTION
 # ---------------------------------------------
 
-def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock):
+def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None):
     cadet_data = []
 
     for i in range(numberOfCadets):
+        if stop_event and stop_event.is_set():
+            return cadet_data
+
         cadet_name = cadetNames[i]
 
         # Thread-safe status update

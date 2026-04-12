@@ -205,6 +205,19 @@ class UserProfile(Base):
     user = relationship("User", back_populates="profile")
 
 
+# ─── Scraper Runs ─────────────────────────────────────────────────────────────
+
+class ScraperRun(Base):
+    """Records when each scraper last ran and whether it succeeded."""
+    __tablename__ = "Scraper_Runs"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    scraper_id = Column(Text, nullable=False)   # e.g. "cadet-quali"
+    ran_at     = Column(DateTime, nullable=False)
+    success    = Column(Boolean, nullable=False, default=True)
+    ran_by     = Column(Text, nullable=True)    # email of triggering user
+
+
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────
 
 class StatsSnapshot(Base):
