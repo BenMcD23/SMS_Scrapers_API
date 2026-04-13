@@ -86,6 +86,8 @@ GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleuse
 
 load_dotenv()
 
+UNIFORM_FORM_API_KEY = os.getenv("UNIFORM_FORM_API_KEY")
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "BenMcD23/cadet-website"
 GITHUB_BRANCH = "master"
@@ -2310,6 +2312,72 @@ def stores_update_order(
     db.commit()
     db.refresh(order)
     return _order_to_dict(order)
+
+
+@app.post("/stores/orders/form-import", status_code=201)
+def stores_form_import(
+    body: dict,
+    db: Session = Depends(get_db),
+    x_import_key: str = Header(None),
+):
+    """
+    Import a batch of orders from a Google Form response sheet.
+    Each entry matches a cadet by email and creates one order with the provided items.
+    Uses a pre-shared API key (UNIFORM_FORM_API_KEY env var) instead of a user Bearer token.
+    """
+    if not UNIFORM_FORM_API_KEY or x_import_key != UNIFORM_FORM_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid import key")
+
+    rows = body.get("rows", [])
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="rows must be a list")
+
+    results = []
+    for row in rows:
+        email     = (row.get("email") or "").strip().lower()
+        items     = row.get("items", [])
+        timestamp = row.get("timestamp")
+
+        if not email:
+            results.append({"email": email, "status": "error", "detail": "Missing email"})
+            continue
+
+        cadet = db.query(Cadet).filter(func.lower(Cadet.email) == email).first()
+        if not cadet:
+            results.append({"email": email, "status": "error", "detail": "Cadet not found"})
+            continue
+
+        if not items:
+            results.append({"email": email, "status": "skipped", "detail": "No items"})
+            continue
+
+        created_at = datetime.now()
+        if timestamp:
+            try:
+                created_at = datetime.fromisoformat(timestamp)
+            except ValueError:
+                pass
+
+        order = StoresOrder(cadet_id=cadet.cin, created_at=created_at)
+        db.add(order)
+        db.flush()
+
+        for raw in items:
+            item_type = raw.get("itemType", "").strip()
+            if not item_type:
+                continue
+            db.add(StoresOrderItem(
+                order_id    = order.id,
+                item_type   = item_type,
+                size        = raw.get("size", ""),
+                need_sizing = bool(raw.get("needSizing", False)),
+            ))
+
+        db.commit()
+        db.refresh(order)
+        results.append({"email": email, "status": "created", "orderId": order.id})
+
+    return {"results": results}
 
 
 @app.delete("/stores/orders/{order_id}", status_code=204)
