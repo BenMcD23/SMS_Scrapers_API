@@ -308,10 +308,12 @@ class StoresOrder(Base):
 class StoresOrderItem(Base):
     __tablename__ = "Stores_Order_Items"
 
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    order_id    = Column(Integer, ForeignKey("Stores_Orders.id", ondelete="CASCADE"), nullable=False)
-    item_type   = Column(Text,    nullable=False)
-    size        = Column(Text,    nullable=False, default="")
-    need_sizing = Column(Boolean, nullable=False, default=False)
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    order_id        = Column(Integer, ForeignKey("Stores_Orders.id", ondelete="CASCADE"), nullable=False)
+    item_type       = Column(Text,    nullable=False)
+    size            = Column(Text,    nullable=False, default="")
+    need_sizing     = Column(Boolean, nullable=False, default=False)
+    sizing_details  = Column(Text,    nullable=False, default="")
+    qm_notes        = Column(Text,    nullable=False, default="")  # JSON array of {id, content, timestamp, addedBy}
 
     order = relationship("StoresOrder", back_populates="order_items")
