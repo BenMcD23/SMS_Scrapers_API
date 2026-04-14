@@ -1882,12 +1882,14 @@ def _order_to_dict(order: StoresOrder) -> dict:
         "timestamp":  order.created_at.isoformat(),
         "items": [
             {
-                "id":         str(oi.id),
-                "itemType":   oi.item_type,
-                "size":       oi.size,
-                "needSizing": oi.need_sizing,
+                "id":            str(oi.id),
+                "itemType":      oi.item_type,
+                "size":          oi.size,
+                "needSizing":    oi.need_sizing,
+                "sizingDetails": getattr(oi, "sizing_details", ""),
+                "qmNotes":       (lambda v: json.loads(v) if v and v.strip().startswith("[") else [])(getattr(oi, "qm_notes", None)),
             }
-            for oi in order.order_items
+            for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
     }
 
@@ -2260,10 +2262,12 @@ def stores_create_order(
         if not raw.get("itemType"):
             continue
         db.add(StoresOrderItem(
-            order_id    = order.id,
-            item_type   = raw["itemType"],
-            size        = raw.get("size", ""),
-            need_sizing = bool(raw.get("needSizing", False)),
+            order_id       = order.id,
+            item_type      = raw["itemType"],
+            size           = raw.get("size", ""),
+            need_sizing    = bool(raw.get("needSizing", False)),
+            sizing_details = raw.get("sizingDetails", ""),
+            qm_notes       = "[]",
         ))
 
     db.commit()
@@ -2292,16 +2296,21 @@ def stores_update_order(
             raw_id = str(raw.get("id", "")) if raw.get("id") else ""
             if raw_id and raw_id in existing:
                 oi = existing.pop(raw_id)
-                oi.item_type   = raw.get("itemType",   oi.item_type)
-                oi.size        = raw.get("size",        oi.size)
-                oi.need_sizing = bool(raw.get("needSizing", oi.need_sizing))
+                oi.item_type      = raw.get("itemType",      oi.item_type)
+                oi.size           = raw.get("size",           oi.size)
+                oi.need_sizing    = bool(raw.get("needSizing", oi.need_sizing))
+                oi.sizing_details = raw.get("sizingDetails",  oi.sizing_details)
+                if "qmNotes" in raw:
+                    oi.qm_notes = json.dumps(raw["qmNotes"])
                 new_items.append(oi)
             else:
                 oi = StoresOrderItem(
-                    order_id    = order.id,
-                    item_type   = raw.get("itemType", ""),
-                    size        = raw.get("size", ""),
-                    need_sizing = bool(raw.get("needSizing", False)),
+                    order_id       = order.id,
+                    item_type      = raw.get("itemType", ""),
+                    size           = raw.get("size", ""),
+                    need_sizing    = bool(raw.get("needSizing", False)),
+                    sizing_details = raw.get("sizingDetails", ""),
+                    qm_notes       = "[]",
                 )
                 db.add(oi)
                 new_items.append(oi)
@@ -2367,10 +2376,12 @@ def stores_form_import(
             if not item_type:
                 continue
             db.add(StoresOrderItem(
-                order_id    = order.id,
-                item_type   = item_type,
-                size        = raw.get("size", ""),
-                need_sizing = bool(raw.get("needSizing", False)),
+                order_id       = order.id,
+                item_type      = item_type,
+                size           = raw.get("size", ""),
+                need_sizing    = bool(raw.get("needSizing", False)),
+                sizing_details = raw.get("sizingDetails", ""),
+                qm_notes       = "[]",
             ))
 
         db.commit()
