@@ -1,17 +1,40 @@
-PYTHONPATH=app:. uvicorn api:app --reload
+# SMS Scrapers API
 
-# Start DB
+FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, and cadet management.
+
+## Prerequisites
+
+- Docker & Docker Compose
+- `poppler-utils` for PDF processing: `sudo apt install poppler-utils`
+
+## Running
+
+```bash
+# Start the database
 docker compose up db -d
 
+# Start all services
 docker compose up -d
+
+# Expose via Tailscale funnel
 docker exec -d tailscale tailscale funnel http://172.18.0.2:8000
 
+# Stop all services
 docker compose down
+```
 
-Need service_account.json in app dir for the google api
+### Local dev (without Docker)
 
-sudo apt install poppler-utils
+```bash
+PYTHONPATH=app:. uvicorn api:app --reload
+```
 
-alembic -c database/alembic.ini revision --autogenerate -m "<what_it_is>"
+## Database Migrations (Alembic)
+
+```bash
+# Generate a new migration
+alembic -c database/alembic.ini revision --autogenerate -m "<description>"
+
+# Apply migrations
 alembic -c database/alembic.ini upgrade head
-
+```
