@@ -880,7 +880,8 @@ async def stop_scraper(
 # ===============================
 
 @app.get("/events")
-async def get_events(db: Session = Depends(get_db)):
+async def get_events(db: Session = Depends(get_db), authorization: str = Header(None)):
+    verify_token(authorization)
     return db.query(Event317).all()
 
 
@@ -936,7 +937,8 @@ async def get_bans(
 
 
 @app.get("/generate-doc/{event_id}/{action}")
-async def generate_doc_endpoint(event_id: int, action: str, db: Session = Depends(get_db)):
+async def generate_doc_endpoint(event_id: int, action: str, db: Session = Depends(get_db), authorization: str = Header(None)):
+    verify_token(authorization)
     event = db.query(Event317).filter(Event317.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -951,14 +953,17 @@ async def generate_doc_endpoint(event_id: int, action: str, db: Session = Depend
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
 
+        safe_filename = filename.replace('"', '').replace('\n', '').replace('\r', '')
         return StreamingResponse(
             file_buffer,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'}
         )
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error generating document: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to generate document")
 
 
 # ===============================
@@ -1460,7 +1465,7 @@ async def delete_assessment(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
 
     sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
     if not sheet:
@@ -1562,7 +1567,7 @@ async def patch_cadet(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
 
     cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
     if not cadet:
@@ -2164,7 +2169,7 @@ def stores_update_stock(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -2217,7 +2222,7 @@ def stores_delete_stock(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -2282,7 +2287,7 @@ def stores_update_order(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -2397,7 +2402,7 @@ def stores_delete_order(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
