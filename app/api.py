@@ -25,6 +25,7 @@ from database.models import (
     Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, UserProfile,
     AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, ScraperRun,
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
+    StoresItemIssuance, ISSUANCE_ITEM_TYPE_MAP, ISSUANCE_CATEGORIES,
 )
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
@@ -1893,6 +1894,8 @@ def _order_to_dict(order: StoresOrder) -> dict:
                 "needSizing":    oi.need_sizing,
                 "sizingDetails": getattr(oi, "sizing_details", ""),
                 "qmNotes":       (lambda v: json.loads(v) if v and v.strip().startswith("[") else [])(getattr(oi, "qm_notes", None)),
+                "givenAt":       oi.given_at.isoformat() if oi.given_at else None,
+                "givenBy":       oi.given_by,
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -2408,3 +2411,93 @@ def stores_delete_order(
         raise HTTPException(status_code=404, detail="Order not found")
     db.delete(order)
     db.commit()
+
+
+# ─── Stores Issuances ─────────────────────────────────────────────────────────
+
+def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
+    return {
+        "id": issuance.id,
+        "itemCategory": issuance.item_category,
+        "lastGiven": issuance.last_given.isoformat(),
+        "sizeGiven": issuance.size_given,
+    }
+
+
+@app.get("/stores/issuances/{cadet_cin}")
+def stores_get_issuances(
+    cadet_cin: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    cadet = db.query(Cadet).filter(Cadet.cin == cadet_cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.cadet_id == cadet_cin)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
+@app.post("/stores/issuances/{cadet_cin}", status_code=200)
+def stores_mark_as_given(
+    cadet_cin: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cadet = db.query(Cadet).filter(Cadet.cin == cadet_cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+
+    items = body.get("items", [])
+    given_by = body.get("givenBy") or "Unknown"
+    now = datetime.utcnow()
+    updated = []
+
+    for item in items:
+        raw_type = item.get("itemType", "")
+        size = item.get("sizeGiven") or item.get("size") or None
+        order_item_id = item.get("orderItemId")
+        category = ISSUANCE_ITEM_TYPE_MAP.get(raw_type)
+        if not category:
+            continue
+
+        # Upsert issuance record
+        existing = (
+            db.query(StoresItemIssuance)
+            .filter(
+                StoresItemIssuance.cadet_id == cadet_cin,
+                StoresItemIssuance.item_category == category,
+            )
+            .first()
+        )
+        if existing:
+            existing.last_given = now
+            existing.size_given = size
+            updated.append(existing)
+        else:
+            new_issuance = StoresItemIssuance(
+                cadet_id=cadet_cin,
+                item_category=category,
+                last_given=now,
+                size_given=size,
+            )
+            db.add(new_issuance)
+            updated.append(new_issuance)
+
+        # Stamp the order item
+        if order_item_id:
+            order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
+            if order_item:
+                order_item.given_at = now
+                order_item.given_by = given_by
+
+    db.commit()
+    for i in updated:
+        db.refresh(i)
+    return [_issuance_to_dict(i) for i in updated]
