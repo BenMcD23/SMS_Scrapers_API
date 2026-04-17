@@ -1290,6 +1290,9 @@ async def generate_radio_assessment(
     assessor_name = profile_name or f"{user.first_name or ''} {user.last_name or ''}".strip()
     if assessor_name:
         data["assessor_name"] = assessor_name
+    data["assessor_initials"] = (
+        (user.first_name or "")[:1].upper() + (user.last_name or "")[:1].upper()
+    )
 
     if not data.get("cyber_sec_date", "").strip():
         raise HTTPException(status_code=400, detail="Cyber Security video date is required.")

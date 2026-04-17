@@ -6,9 +6,11 @@ import base64
 from reportlab.lib.utils import ImageReader
 from PIL import Image as PILImage
 from datetime import datetime
+from pathlib import Path
+import textwrap
 
 # --- Configuration ---
-TEMPLATE_PATH = "assessment_sheets/Blue_Leadership.pdf"
+TEMPLATE_PATH = str(Path(__file__).parent.parent / "assessment_sheets" / "Blue_Leadership.pdf")
 PAGE_W, PAGE_H = 595.28, 841.89
 CIRCLE_RADIUS = 10 
 
@@ -161,8 +163,7 @@ def _build_overlay(
 
     # -- 7. Multiline Debrief --
     if debriefing_notes:
-        from reportlab.lib.utils import simpleSplit
-        lines = simpleSplit(debriefing_notes, "Helvetica", 9, 450)
+        lines = textwrap.wrap(debriefing_notes, width=90)[:6]
         x, y = TEXT_FIELDS["debrief_notes"]
         for line in lines:
             c.setFont("Helvetica", 9)

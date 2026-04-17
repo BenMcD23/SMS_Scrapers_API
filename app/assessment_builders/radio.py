@@ -6,9 +6,10 @@ import base64
 from reportlab.lib.utils import ImageReader
 from PIL import Image as PILImage
 from datetime import datetime
+from pathlib import Path
 
 # --- Configuration ---
-TEMPLATE_PATH = "assessment_sheets/Blue_Radio.pdf"
+TEMPLATE_PATH = str(Path(__file__).parent.parent / "assessment_sheets" / "Blue_Radio.pdf")
 PAGE_W, PAGE_H = 595.28, 841.89
 
 # X position of the "Initial" column
@@ -28,6 +29,7 @@ CRITERIA_Y = {
     "prowords":             178,
     "verbal_understanding": 157,
     "verbal_security":      128,
+    "cyber_video":          106,
 }
 
 TEXT_FIELDS = {
@@ -67,11 +69,12 @@ def _build_overlay(
     assessor_name: str,
     assessor_signature: str,  # base64 data URL or plain text
     date: str,
+    assessor_initials: str = "",
 ) -> bytes:
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
 
-    initials = _get_initials(assessor_name)
+    initials = assessor_initials or _get_initials(assessor_name)
 
     # -- 1. Header fields --
     c.setFont("Helvetica", 10)
@@ -87,6 +90,8 @@ def _build_overlay(
     for key, checked in criteria.items():
         if checked and key in CRITERIA_Y:
             c.drawCentredString(INITIAL_X, CRITERIA_Y[key], initials)
+    if cyber_sec_date:
+        c.drawCentredString(INITIAL_X, CRITERIA_Y["cyber_video"], initials)
 
     # -- 3. Cyber security video date --
     if cyber_sec_date:
@@ -192,6 +197,7 @@ def generate_radio_pdf(data: dict) -> bytes:
         assessor_name=data.get("assessor_name", ""),
         assessor_signature=data.get("assessor_signature", ""),
         date=data.get("date", ""),
+        assessor_initials=data.get("assessor_initials", ""),
     )
 
     try:
@@ -235,6 +241,7 @@ def process_radio_data(payload: dict, cadet) -> dict:
         "passed": payload.get("passed", False),
         "comments": payload.get("comments", ""),
         "assessor_name": payload.get("assessor_name", ""),
+        "assessor_initials": payload.get("assessor_initials", ""),
         "assessor_signature": payload.get("assessor_signature"),
         "date": date,
     }
