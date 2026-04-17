@@ -301,6 +301,7 @@ class StoresOrder(Base):
     id         = Column(Integer,  primary_key=True, autoincrement=True)
     cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin"), nullable=False)
     created_at = Column(DateTime, nullable=False)
+    completed  = Column(Boolean,  nullable=False, default=False, server_default="0")
 
     cadet       = relationship("Cadet",           back_populates="stores_orders")
     order_items = relationship("StoresOrderItem", back_populates="order", cascade="all, delete-orphan")
