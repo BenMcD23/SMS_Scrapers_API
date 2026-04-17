@@ -24,6 +24,7 @@ class Cadet(Base):
     cadet_events      = relationship("CadetEvent",         back_populates="cadet")
     assessment_sheets = relationship("AssessmentSheet",    back_populates="cadet")
     stores_orders     = relationship("StoresOrder",        back_populates="cadet")
+    item_issuances    = relationship("StoresItemIssuance", back_populates="cadet", cascade="all, delete-orphan")
 
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -315,5 +316,47 @@ class StoresOrderItem(Base):
     need_sizing     = Column(Boolean, nullable=False, default=False)
     sizing_details  = Column(Text,    nullable=False, default="")
     qm_notes        = Column(Text,    nullable=False, default="")  # JSON array of {id, content, timestamp, addedBy}
+    given_at        = Column(DateTime, nullable=True)
+    given_by        = Column(Text,     nullable=True)
 
     order = relationship("StoresOrder", back_populates="order_items")
+
+
+ISSUANCE_ITEM_TYPE_MAP: dict[str, str] = {
+    "Wedgewood Male":     "Wedgewood Shirt",
+    "Wedgewood Female":   "Wedgewood Shirt",
+    "Working Blue Male":  "Working Blue Shirt",
+    "Working Blue Female": "Working Blue Shirt",
+    "Trousers":           "Slacks/Trousers",
+    "Slacks":             "Slacks/Trousers",
+    "Skirts":             "Skirt",
+    "Beret":              "Beret",
+    "Jumper":             "Jumper",
+    "Tie":                "Tie",
+    "Brassard":           "Brassard",
+    "Belt":               "Belt",
+}
+
+ISSUANCE_CATEGORIES = [
+    "Beret",
+    "Wedgewood Shirt",
+    "Working Blue Shirt",
+    "Jumper",
+    "Slacks/Trousers",
+    "Skirt",
+    "Tie",
+    "Brassard",
+    "Belt",
+]
+
+
+class StoresItemIssuance(Base):
+    __tablename__ = "Stores_Item_Issuances"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    item_category = Column(Text,       nullable=False)
+    last_given    = Column(DateTime,   nullable=False)
+    size_given    = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="item_issuances")
