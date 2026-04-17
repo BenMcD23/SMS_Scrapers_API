@@ -11,16 +11,18 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from functools import partial
 
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
 from database.create_db import init_db
-from database.database import engine
+from database.database import engine, SessionLocal
 from database.models import (
     Event317, AllEvent, CadetEvent, User, BaderCredentials, UserSignature, UserProfile,
     AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, ScraperRun,
@@ -71,7 +73,35 @@ class UserProfilePatch(BaseModel):
 
 init_db()
 
-app = FastAPI()
+
+def _cleanup_old_completed_orders():
+    cutoff = datetime.now() - timedelta(days=182)
+    db = SessionLocal()
+    try:
+        orders = (
+            db.query(StoresOrder)
+            .filter(StoresOrder.completed == True, StoresOrder.created_at < cutoff)
+            .all()
+        )
+        for order in orders:
+            db.delete(order)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Allow Next.js to talk to FastAPI
 app.add_middleware(
@@ -1886,6 +1916,7 @@ def _order_to_dict(order: StoresOrder) -> dict:
         "cadetName":  f"{order.cadet.first_name} {order.cadet.last_name}",
         "cadetCin":   order.cadet.cin,
         "timestamp":  order.created_at.isoformat(),
+        "completed":  bool(getattr(order, "completed", False)),
         "items": [
             {
                 "id":            str(oi.id),
@@ -2294,6 +2325,9 @@ def stores_update_order(
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
+    if "completed" in body:
+        order.completed = bool(body["completed"])
 
     if "items" in body:
         # Replace all order items with the new list.
