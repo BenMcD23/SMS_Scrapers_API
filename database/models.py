@@ -181,7 +181,7 @@ class UserSignature(Base):
 
     user = relationship("User", back_populates="signature")
 
-
+# For F1771e
 class UserProfile(Base):
     __tablename__ = "User_Profiles"
 
@@ -189,7 +189,6 @@ class UserProfile(Base):
     user_id     = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"),
                           unique=True, nullable=False)
 
-    # Fixed fields (set once, not editable by user)
     rank        = Column(Text, nullable=True)
     initials    = Column(Text, nullable=True)
     surname     = Column(Text, nullable=True)
