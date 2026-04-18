@@ -262,42 +262,62 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             for c in all_cadets
         }
 
-        for entry in event_attendees:
-            attendees = entry.get("attendees")
-
-            # Skip events with no real attendees
-            if not attendees or not isinstance(attendees, list):
-                continue
-
-            event = AllEvent(title=entry["event_name"])
-            db_session.add(event)
-            db_session.flush()  # get event.id before linking cadets
-
+        def _save_cadet_events(event_db_id, attendees, unmatched_ref):
             for row in attendees:
-                if not isinstance(row, list) or len(row) < 2:
+                if not isinstance(row, list) or len(row) < 3:
                     continue
-
-                # Bader attendees table uses the same column layout as the cadets table:
-                # col 0 = row index, col 1 = first name, col 2 = last name
-                first = row[1].strip().upper() if len(row) > 1 else ""
-                last  = row[2].strip().upper() if len(row) > 2 else ""
-
+                first = row[1].strip().upper()
+                last  = row[2].strip().upper()
                 cin = cadet_lookup.get((first, last))
                 if not cin:
-                    # Fallback: try first-initial match
                     initial = first[0] if first else ""
                     cin = next(
                         (v for (f, l), v in cadet_lookup.items() if l == last and f.startswith(initial)),
                         None,
                     )
-
                 if cin:
-                    db_session.add(CadetEvent(event_id=event.id, cadet_id=cin))
+                    db_session.add(CadetEvent(event_id=event_db_id, cadet_id=cin))
                 else:
-                    unmatched_cadets += 1
+                    unmatched_ref[0] += 1
 
-            saved_events += 1
+        unmatched_ref = [0]
 
+        for entry in event_attendees:
+            attendees = entry.get("attendees")
+            sub_apps  = entry.get("sub_apps", [])
+            has_direct = isinstance(attendees, list)
+            has_subs   = any(isinstance(s.get("attendees"), list) for s in sub_apps)
+
+            if sub_apps:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({"type": "info", "value":
+                        f"[DEBUG] '{entry['event_name']}': attendees={repr(attendees)[:80]}, "
+                        f"sub_apps count={len(sub_apps)}, "
+                        f"sub_apps={[(s['sub_app_name'], type(s.get('attendees')).__name__, len(s['attendees']) if isinstance(s.get('attendees'), list) else s.get('attendees')) for s in sub_apps]}"
+                    }))
+
+            if not has_direct and not has_subs:
+                continue
+
+            parent_event = AllEvent(title=entry["event_name"], parent_id=None)
+            db_session.add(parent_event)
+            db_session.flush()
+
+            if has_direct:
+                _save_cadet_events(parent_event.id, attendees, unmatched_ref)
+                saved_events += 1
+
+            for sub in sub_apps:
+                sub_attendees = sub.get("attendees")
+                if not isinstance(sub_attendees, list):
+                    continue
+                sub_event = AllEvent(title=sub["sub_app_name"], parent_id=parent_event.id)
+                db_session.add(sub_event)
+                db_session.flush()
+                _save_cadet_events(sub_event.id, sub_attendees, unmatched_ref)
+                saved_events += 1
+
+        unmatched_cadets = unmatched_ref[0]
         db_session.commit()
 
         with scraper_lock:

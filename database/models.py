@@ -2,7 +2,7 @@ from sqlalchemy import (
     Column, Integer, BigInteger, Float, Boolean, Text, DateTime,
     ForeignKey, LargeBinary, JSON,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from database.database import Base
 
 
@@ -76,10 +76,16 @@ class Location(Base):
 class AllEvent(Base):
     __tablename__ = "All_Events"
 
-    id    = Column(Integer, primary_key=True, autoincrement=True)
-    title = Column(Text, nullable=False)
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    title     = Column(Text, nullable=False)
+    parent_id = Column(Integer, ForeignKey("All_Events.id", ondelete="CASCADE"), nullable=True)
 
     cadet_events = relationship("CadetEvent", back_populates="event")
+    sub_apps     = relationship(
+        "AllEvent",
+        backref=backref("parent", remote_side=[id]),
+        foreign_keys=[parent_id],
+    )
 
 
 class CadetEvent(Base):

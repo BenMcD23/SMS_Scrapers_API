@@ -922,25 +922,38 @@ async def get_cadet_events(
     authorization: str = Header(None),
 ):
     verify_token(authorization)
-    events = db.query(AllEvent).all()
+    parent_events = db.query(AllEvent).filter(AllEvent.parent_id == None).all()
+
+    def cadet_list(event):
+        return [
+            {
+                "cin":        ce.cadet.cin,
+                "first_name": ce.cadet.first_name,
+                "last_name":  ce.cadet.last_name,
+                "rank":       ce.cadet.rank,
+                "flight":     ce.cadet.flight,
+            }
+            for ce in event.cadet_events
+            if ce.cadet
+        ]
+
     return [
         {
-            "id": e.id,
-            "title": e.title,
+            "id":          e.id,
+            "title":       e.title,
             "cadet_count": len(e.cadet_events),
-            "cadets": [
+            "cadets":      cadet_list(e),
+            "sub_apps": [
                 {
-                    "cin":        ce.cadet.cin,
-                    "first_name": ce.cadet.first_name,
-                    "last_name":  ce.cadet.last_name,
-                    "rank":       ce.cadet.rank,
-                    "flight":     ce.cadet.flight,
+                    "id":          s.id,
+                    "title":       s.title,
+                    "cadet_count": len(s.cadet_events),
+                    "cadets":      cadet_list(s),
                 }
-                for ce in e.cadet_events
-                if ce.cadet
+                for s in e.sub_apps
             ],
         }
-        for e in events
+        for e in parent_events
     ]
 
 
