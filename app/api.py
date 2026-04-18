@@ -28,6 +28,7 @@ from database.models import (
     AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, ScraperRun,
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
     StoresItemIssuance, ISSUANCE_ITEM_TYPE_MAP, ISSUANCE_CATEGORIES,
+    BadgeGridConfig, BadgeGridCell, BadgeItem,
 )
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
@@ -2551,3 +2552,253 @@ def stores_mark_as_given(
     for i in updated:
         db.refresh(i)
     return [_issuance_to_dict(i) for i in updated]
+
+
+# ─── Badge Grid ───────────────────────────────────────────────────────────────
+
+def _cell_to_dict(cell: BadgeGridCell) -> dict:
+    return {
+        "id": cell.id,
+        "row": cell.row,
+        "col": cell.col,
+        "label": cell.label,
+        "items": [{"id": i.id, "name": i.name, "quantity": i.quantity} for i in cell.items],
+    }
+
+
+def _badge_full_response(db: Session) -> dict:
+    cfg = _get_or_create_badge_config(db)
+    cells = db.query(BadgeGridCell).order_by(BadgeGridCell.row, BadgeGridCell.col).all()
+    return {
+        "config": {"numRows": cfg.num_rows, "numCols": cfg.num_cols},
+        "cells": [_cell_to_dict(c) for c in cells],
+    }
+
+
+def _get_or_create_badge_config(db: Session) -> BadgeGridConfig:
+    cfg = db.query(BadgeGridConfig).first()
+    if not cfg:
+        cfg = BadgeGridConfig(num_rows=1, num_cols=1)
+        db.add(cfg)
+        db.commit()
+        db.refresh(cfg)
+    return cfg
+
+
+@app.get("/stores/badges")
+def badge_get_all(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    return _badge_full_response(db)
+
+
+@app.patch("/stores/badges/config")
+def badge_patch_config(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cfg = _get_or_create_badge_config(db)
+    old_rows = cfg.num_rows
+    old_cols = cfg.num_cols
+    if "numRows" in body:
+        cfg.num_rows = max(1, int(body["numRows"]))
+    if "numCols" in body:
+        cfg.num_cols = max(1, int(body["numCols"]))
+    db.commit()
+
+    # Auto-create cells for newly added rows
+    if cfg.num_rows > old_rows:
+        for r in range(old_rows, cfg.num_rows):
+            for c in range(cfg.num_cols):
+                exists = db.query(BadgeGridCell).filter(
+                    BadgeGridCell.row == r, BadgeGridCell.col == c
+                ).first()
+                if not exists:
+                    db.add(BadgeGridCell(row=r, col=c, label=f"Row {r+1} Col {c+1}"))
+
+    # Auto-create cells for newly added columns
+    if cfg.num_cols > old_cols:
+        for c in range(old_cols, cfg.num_cols):
+            for r in range(cfg.num_rows):
+                exists = db.query(BadgeGridCell).filter(
+                    BadgeGridCell.row == r, BadgeGridCell.col == c
+                ).first()
+                if not exists:
+                    db.add(BadgeGridCell(row=r, col=c, label=f"Row {r+1} Col {c+1}"))
+
+    db.commit()
+    return _badge_full_response(db)
+
+
+@app.post("/stores/badges/cells", status_code=201)
+def badge_create_cell(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    row = int(body.get("row", 0))
+    col = int(body.get("col", 0))
+    label = body.get("label") or None
+    existing = db.query(BadgeGridCell).filter(
+        BadgeGridCell.row == row, BadgeGridCell.col == col
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Position already occupied")
+    cell = BadgeGridCell(row=row, col=col, label=label)
+    db.add(cell)
+    db.commit()
+    db.refresh(cell)
+    return _cell_to_dict(cell)
+
+
+@app.delete("/stores/badges/cells/{cell_id}", status_code=204)
+def badge_delete_cell(
+    cell_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == cell_id).first()
+    if not cell:
+        raise HTTPException(status_code=404, detail="Cell not found")
+    db.delete(cell)
+    db.commit()
+
+
+@app.patch("/stores/badges/cells/{cell_id}")
+def badge_patch_cell(
+    cell_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == cell_id).first()
+    if not cell:
+        raise HTTPException(status_code=404, detail="Cell not found")
+
+    if "row" in body or "col" in body:
+        new_row = int(body.get("row", cell.row))
+        new_col = int(body.get("col", cell.col))
+        other = db.query(BadgeGridCell).filter(
+            BadgeGridCell.row == new_row,
+            BadgeGridCell.col == new_col,
+            BadgeGridCell.id != cell_id,
+        ).first()
+        if other:
+            other.row, other.col = cell.row, cell.col
+        cell.row = new_row
+        cell.col = new_col
+
+    if "label" in body:
+        cell.label = body["label"] or None
+
+    db.commit()
+    return _badge_full_response(db)
+
+
+@app.post("/stores/badges/cells/{cell_id}/items", status_code=201)
+def badge_add_item(
+    cell_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == cell_id).first()
+    if not cell:
+        raise HTTPException(status_code=404, detail="Cell not found")
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    quantity = max(1, int(body.get("quantity", 1)))
+    item = BadgeItem(cell_id=cell_id, name=name, quantity=quantity)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "name": item.name, "quantity": item.quantity}
+
+
+@app.patch("/stores/badges/items/{item_id}")
+def badge_patch_item(
+    item_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    item = db.query(BadgeItem).filter(BadgeItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if "name" in body:
+        name = (body["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name required")
+        item.name = name
+    if "quantity" in body:
+        item.quantity = max(1, int(body["quantity"]))
+    if "cellId" in body:
+        cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == int(body["cellId"])).first()
+        if not cell:
+            raise HTTPException(status_code=404, detail="Cell not found")
+        item.cell_id = cell.id
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "name": item.name, "quantity": item.quantity, "cellId": item.cell_id}
+
+
+@app.delete("/stores/badges/items/{item_id}", status_code=204)
+def badge_delete_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    item = db.query(BadgeItem).filter(BadgeItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    db.delete(item)
+    db.commit()
+
+
+@app.delete("/stores/badges/rows/{row_index}")
+def badge_delete_row(
+    row_index: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cfg = _get_or_create_badge_config(db)
+    if cfg.num_rows <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete last row")
+    for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row == row_index).all():
+        db.delete(cell)
+    for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row > row_index).all():
+        cell.row -= 1
+    cfg.num_rows -= 1
+    db.commit()
+    return _badge_full_response(db)
+
+
+@app.delete("/stores/badges/cols/{col_index}")
+def badge_delete_col(
+    col_index: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    cfg = _get_or_create_badge_config(db)
+    if cfg.num_cols <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete last column")
+    for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col == col_index).all():
+        db.delete(cell)
+    for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col > col_index).all():
+        cell.col -= 1
+    cfg.num_cols -= 1
+    db.commit()
+    return _badge_full_response(db)
