@@ -262,7 +262,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             for c in all_cadets
         }
 
-        def _save_cadet_events(event_db_id, attendees, unmatched_ref):
+        def _save_cadet_events(event_db_id, attendees, matched_ref, unmatched_ref):
             for row in attendees:
                 if not isinstance(row, list) or len(row) < 3:
                     continue
@@ -277,9 +277,11 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     )
                 if cin:
                     db_session.add(CadetEvent(event_id=event_db_id, cadet_id=cin))
+                    matched_ref[0] += 1
                 else:
                     unmatched_ref[0] += 1
 
+        matched_ref   = [0]
         unmatched_ref = [0]
 
         for entry in event_attendees:
@@ -287,14 +289,6 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             sub_apps  = entry.get("sub_apps", [])
             has_direct = isinstance(attendees, list)
             has_subs   = any(isinstance(s.get("attendees"), list) for s in sub_apps)
-
-            if sub_apps:
-                with scraper_lock:
-                    scraper_messages.append(json.dumps({"type": "info", "value":
-                        f"[DEBUG] '{entry['event_name']}': attendees={repr(attendees)[:80]}, "
-                        f"sub_apps count={len(sub_apps)}, "
-                        f"sub_apps={[(s['sub_app_name'], type(s.get('attendees')).__name__, len(s['attendees']) if isinstance(s.get('attendees'), list) else s.get('attendees')) for s in sub_apps]}"
-                    }))
 
             if not has_direct and not has_subs:
                 continue
@@ -304,7 +298,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             db_session.flush()
 
             if has_direct:
-                _save_cadet_events(parent_event.id, attendees, unmatched_ref)
+                _save_cadet_events(parent_event.id, attendees, matched_ref, unmatched_ref)
                 saved_events += 1
 
             for sub in sub_apps:
@@ -314,16 +308,21 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 sub_event = AllEvent(title=sub["sub_app_name"], parent_id=parent_event.id)
                 db_session.add(sub_event)
                 db_session.flush()
-                _save_cadet_events(sub_event.id, sub_attendees, unmatched_ref)
+                _save_cadet_events(sub_event.id, sub_attendees, matched_ref, unmatched_ref)
                 saved_events += 1
 
+        matched_cadets   = matched_ref[0]
         unmatched_cadets = unmatched_ref[0]
         db_session.commit()
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"Saved {saved_events} events. {unmatched_cadets} attendee(s) could not be matched to a cadet.",
+                "value": (
+                    f"Saved {saved_events} event(s). "
+                    f"{matched_cadets} cadet attendance(s) matched. "
+                    + (f"{unmatched_cadets} attendee(s) could not be matched to a cadet." if unmatched_cadets else "All attendees matched successfully.")
+                ),
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 

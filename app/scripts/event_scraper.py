@@ -128,6 +128,9 @@ def get_sub_app_attendees(driver, event_id, scraper_messages, scraper_lock):
         if num_sub_apps == 0:
             return []
 
+        with scraper_lock:
+            scraper_messages.append(f"Found {num_sub_apps} sub-app{'s' if num_sub_apps != 1 else ''}, scraping each one.")
+
         sub_app_names = []
 
         for btn_tag in btn_tags:
@@ -145,92 +148,75 @@ def get_sub_app_attendees(driver, event_id, scraper_messages, scraper_lock):
 
         results = []
         for i in range(num_sub_apps):
-            print("sub app", i)
             sub_app_name = sub_app_names[i]
+            with scraper_lock:
+                scraper_messages.append(f"Scraping sub-app {i+1} of {num_sub_apps}: {sub_app_name}")
             button_id = f"ctl00_ctl00_cphBaseBody_cphBody_rpEvents_ctl{i:02d}_eventCard_fvEventCard_lbAttendees"
-            print("got here")
-
-            # try:
-            button = WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.ID, button_id))
-            )
-            classes = driver.find_element(By.ID, button_id).get_attribute("class") or ""
-
-            print("got here 2")
-
-            if "disabled" in classes:
-                results.append({"sub_app_name": sub_app_name, "attendees": "No access/Disabled"})
-                continue
-            print("got here 3")
-
-            safe_click(driver, button)
-            wait_for_aspx_load(driver)
-            print("got here 4")
-
-            modal = WebDriverWait(driver, 20).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, ".modal.show .modal-content"))
-            )
-            wait_for_preloader(driver)
-
-            print("got here 5")
-
-            close_button = WebDriverWait(driver, 20).until(
-                EC.element_to_be_clickable((
-                    By.ID,
-                    "ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_btnCloseModal"
-                ))
-            )
-
-            print("got here 6")
-            if "None of your Cadets are attending this event" in modal.text:
-                results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
-                safe_click(driver, close_button)
-                continue
 
             try:
-                Select(WebDriverWait(driver, 20).until(EC.element_to_be_clickable(
-                    (By.NAME, 'ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_gvCadetsAttendees_length')
-                ))).select_by_value('-1')
+                button = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.ID, button_id))
+                )
+                classes = driver.find_element(By.ID, button_id).get_attribute("class") or ""
+
+                if "disabled" in classes:
+                    results.append({"sub_app_name": sub_app_name, "attendees": "No access/Disabled"})
+                    continue
+
+                safe_click(driver, button)
+                wait_for_aspx_load(driver)
+
+                modal = WebDriverWait(driver, 20).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, ".modal.show .modal-content"))
+                )
                 wait_for_preloader(driver)
-            except Exception:
-                print("-1 not working")
-                pass
-            print("got here 7")
 
-            print("got here 8")
+                close_button = WebDriverWait(driver, 20).until(
+                    EC.element_to_be_clickable((
+                        By.ID,
+                        "ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_btnCloseModal"
+                    ))
+                )
 
-            tables = modal.find_elements(By.XPATH, './/tbody')
-            if not tables:
-                print("no tables")
-                raise Exception("No rows found in attendees table")
-            print("got here 9")
+                if "None of your Cadets are attending this event" in modal.text:
+                    results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
+                    safe_click(driver, close_button)
+                    continue
 
-            rows = tables[0].find_elements(By.TAG_NAME, "tr")
-            print(rows)
-            print(tables)
-            if "None of your Cadets are attending this event" in rows[0].text.strip():
+                try:
+                    Select(WebDriverWait(driver, 20).until(EC.element_to_be_clickable(
+                        (By.NAME, 'ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_gvCadetsAttendees_length')
+                    ))).select_by_value('-1')
+                    wait_for_preloader(driver)
+                except Exception:
+                    pass
+
+                tables = modal.find_elements(By.XPATH, './/tbody')
+                if not tables:
+                    raise Exception("No rows found in attendees table")
+
+                rows = tables[0].find_elements(By.TAG_NAME, "tr")
+
+                if "None of your Cadets are attending this event" in rows[0].text.strip():
+                    results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
+                else:
+                    results.append({
+                        "sub_app_name": sub_app_name,
+                        "attendees": [[col.text for col in row.find_elements(By.TAG_NAME, 'td')] for row in rows],
+                    })
+                safe_click(driver, close_button)
+                WebDriverWait(driver, 10).until(
+                    EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal.show"))
+                )
+
+            except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as e:
+                with scraper_lock:
+                    scraper_messages.append(f"Exception for sub-app '{sub_app_name}': {type(e).__name__}: {e}")
                 results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
-            else:
-                results.append({
-                    "sub_app_name": sub_app_name,
-                    "attendees": [[col.text for col in row.find_elements(By.TAG_NAME, 'td')] for row in rows],
-                })
-                print(results)
-            safe_click(driver, close_button)
-            WebDriverWait(driver, 10).until(
-                EC.invisibility_of_element_located((By.CSS_SELECTOR, ".modal.show"))
-            )
-            print("got here 10")
-
-            # except (ElementClickInterceptedException, StaleElementReferenceException, TimeoutException) as e:
-            #     with scraper_lock:
-            #         scraper_messages.append(f"Exception for sub-app '{sub_app_name}': {type(e).__name__}: {e}")
-            #     results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
 
         return results
 
     except Exception as e:
-        print("Error", e)
         with scraper_lock:
             scraper_messages.append(f"Sub-app scraping failed for event {event_id}: {e}")
         return []
@@ -242,10 +228,6 @@ def get_event_attendees(driver, event_names, number_of_events, scraper_messages,
 
     event_attendees = []
     for i in range(number_of_events):
-        if i < 5:
-            continue
-        if i == 6:
-            break
         if stop_event and stop_event.is_set():
             return event_attendees
         with scraper_lock:
@@ -282,7 +264,11 @@ def get_event_attendees(driver, event_names, number_of_events, scraper_messages,
                 with scraper_lock:
                     scraper_messages.append(f"Skipping event {i+1} because the View button is disabled, checking sub-apps.")
                 event_attendees[-1]["attendees"] = "No access/Disabled"
-                event_attendees[-1]["sub_apps"] = get_sub_app_attendees(driver, event_id, scraper_messages, scraper_lock)
+                sub_apps = get_sub_app_attendees(driver, event_id, scraper_messages, scraper_lock)
+                event_attendees[-1]["sub_apps"] = sub_apps
+                if not sub_apps:
+                    with scraper_lock:
+                        scraper_messages.append(f"No sub-apps found for event {i+1}.")
                 _setup_events_table(driver)
                 continue
 
