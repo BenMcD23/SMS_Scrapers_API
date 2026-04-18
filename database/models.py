@@ -366,3 +366,35 @@ class StoresItemIssuance(Base):
     size_given    = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="item_issuances")
+
+
+# ─── Badge Grid ───────────────────────────────────────────────────────────────
+
+class BadgeGridConfig(Base):
+    __tablename__ = "Badge_Grid_Config"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    num_rows = Column(Integer, nullable=False, default=1)
+    num_cols = Column(Integer, nullable=False, default=1)
+
+
+class BadgeGridCell(Base):
+    __tablename__ = "Badge_Grid_Cells"
+
+    id    = Column(Integer, primary_key=True, autoincrement=True)
+    row   = Column(Integer, nullable=False)
+    col   = Column(Integer, nullable=False)
+    label = Column(Text,    nullable=True)
+
+    items = relationship("BadgeItem", back_populates="cell", cascade="all, delete-orphan")
+
+
+class BadgeItem(Base):
+    __tablename__ = "Badge_Items"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    cell_id  = Column(Integer, ForeignKey("Badge_Grid_Cells.id", ondelete="CASCADE"), nullable=False)
+    name     = Column(Text, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1, server_default="1")
+
+    cell = relationship("BadgeGridCell", back_populates="items")
