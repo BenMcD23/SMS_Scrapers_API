@@ -63,6 +63,18 @@ docker exec tailscale-dev  tailscale up --accept-dns=false
 
 Open the printed login URLs in a browser. State is persisted in `./tailscale_data` so this only needs to be done once per container.
 
+## Logs
+
+```bash
+# All containers
+cd ~/sms-api/prod && docker compose -p sms-prod logs -f
+cd ~/sms-api/dev  && docker compose -p sms-dev logs -f
+
+# Single container (api, db, tailscale-prod, tailscale-dev)
+docker compose -p sms-prod logs -f api
+docker compose -p sms-dev  logs -f api
+```
+
 ## Local dev (without Docker)
 
 ```bash
