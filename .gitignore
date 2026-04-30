@@ -6,3 +6,4 @@ data/
 *.db
 tailscale_data/
 service_account.json
+tailscale_secrets.txt

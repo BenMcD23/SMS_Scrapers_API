@@ -1,0 +1,16 @@
+services:
+  db:
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+
+  api:
+    ports:
+      - "8001:8000"
+
+  tailscale:
+    hostname: 317-sms-api-dev
+
+volumes:
+  postgres_data_dev:
