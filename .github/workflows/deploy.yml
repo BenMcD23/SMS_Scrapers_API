@@ -38,7 +38,7 @@ jobs:
             cd ~/sms-api/$ENV
             git pull origin ${{ github.ref_name }}
             if [[ "$ENV" == "prod" ]]; then
-              docker compose -p sms-prod up -d --build
+              docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             else
               docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --build
             fi
