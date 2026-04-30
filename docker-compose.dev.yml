@@ -10,6 +10,7 @@ services:
       - "8001:8000"
 
   tailscale:
+    container_name: tailscale-dev
     hostname: 317-sms-api-dev
 
 volumes:
