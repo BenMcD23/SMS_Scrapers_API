@@ -5,9 +5,6 @@ services:
       POSTGRES_DB: 317_SMS
       POSTGRES_USER: sms_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    # uncomment so can see db in gui
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
