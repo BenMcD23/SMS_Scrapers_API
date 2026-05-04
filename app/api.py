@@ -2611,25 +2611,14 @@ def badge_patch_config(
         cfg.num_cols = max(1, int(body["numCols"]))
     db.commit()
 
-    # Auto-create cells for newly added rows
-    if cfg.num_rows > old_rows:
-        for r in range(old_rows, cfg.num_rows):
-            for c in range(cfg.num_cols):
-                exists = db.query(BadgeGridCell).filter(
-                    BadgeGridCell.row == r, BadgeGridCell.col == c
-                ).first()
-                if not exists:
-                    db.add(BadgeGridCell(row=r, col=c, label=f"Row {r+1} Col {c+1}"))
-
-    # Auto-create cells for newly added columns
-    if cfg.num_cols > old_cols:
-        for c in range(old_cols, cfg.num_cols):
-            for r in range(cfg.num_rows):
-                exists = db.query(BadgeGridCell).filter(
-                    BadgeGridCell.row == r, BadgeGridCell.col == c
-                ).first()
-                if not exists:
-                    db.add(BadgeGridCell(row=r, col=c, label=f"Row {r+1} Col {c+1}"))
+    # Ensure every position in the grid has a cell (handles gaps including (0,0) on first use)
+    for r in range(cfg.num_rows):
+        for c in range(cfg.num_cols):
+            exists = db.query(BadgeGridCell).filter(
+                BadgeGridCell.row == r, BadgeGridCell.col == c
+            ).first()
+            if not exists:
+                db.add(BadgeGridCell(row=r, col=c, label=None))
 
     db.commit()
     return _badge_full_response(db)
