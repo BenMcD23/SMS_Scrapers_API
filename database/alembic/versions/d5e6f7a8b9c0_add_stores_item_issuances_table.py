@@ -18,14 +18,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        'Stores_Item_Issuances',
-        sa.Column('id',            sa.Integer(),    primary_key=True, autoincrement=True),
-        sa.Column('cadet_id',      sa.BigInteger(), sa.ForeignKey('Cadets.cin', ondelete='CASCADE'), nullable=False),
-        sa.Column('item_category', sa.Text(),       nullable=False),
-        sa.Column('last_given',    sa.DateTime(),   nullable=False),
-        sa.Column('size_given',    sa.Text(),       nullable=True),
-    )
+    conn = op.get_bind()
+    tables = {row[0] for row in conn.execute(sa.text(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+    ))}
+    if 'Stores_Item_Issuances' not in tables:
+        op.create_table(
+            'Stores_Item_Issuances',
+            sa.Column('id',            sa.Integer(),    primary_key=True, autoincrement=True),
+            sa.Column('cadet_id',      sa.BigInteger(), sa.ForeignKey('Cadets.cin', ondelete='CASCADE'), nullable=False),
+            sa.Column('item_category', sa.Text(),       nullable=False),
+            sa.Column('last_given',    sa.DateTime(),   nullable=False),
+            sa.Column('size_given',    sa.Text(),       nullable=True),
+        )
 
 
 def downgrade() -> None:

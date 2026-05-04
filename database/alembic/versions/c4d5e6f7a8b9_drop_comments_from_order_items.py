@@ -18,7 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_column('Stores_Order_Items', 'comments')
+    conn = op.get_bind()
+    cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Order_Items'"
+    ))}
+    if 'comments' in cols:
+        op.drop_column('Stores_Order_Items', 'comments')
 
 
 def downgrade() -> None:

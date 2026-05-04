@@ -18,17 +18,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('Stores_Boxes',
-        sa.Column('shelf_level', sa.Integer(), nullable=True, server_default='1'))
-    op.add_column('Stores_Boxes',
-        sa.Column('shelf_position', sa.Integer(), nullable=True, server_default='0'))
-    op.add_column('Stores_Boxes',
-        sa.Column('top_end', sa.Text(), nullable=True, server_default='left'))
+    conn = op.get_bind()
+    box_cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Boxes'"
+    ))}
+    sec_cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Sections'"
+    ))}
 
-    op.add_column('Stores_Sections',
-        sa.Column('position', sa.Integer(), nullable=True, server_default='0'))
+    if 'shelf_level' not in box_cols:
+        op.add_column('Stores_Boxes',
+            sa.Column('shelf_level', sa.Integer(), nullable=True, server_default='1'))
+    if 'shelf_position' not in box_cols:
+        op.add_column('Stores_Boxes',
+            sa.Column('shelf_position', sa.Integer(), nullable=True, server_default='0'))
+    if 'top_end' not in box_cols:
+        op.add_column('Stores_Boxes',
+            sa.Column('top_end', sa.Text(), nullable=True, server_default='left'))
 
-    # Assign unique sequential shelf_position to existing boxes (ordered by id)
+    if 'position' not in sec_cols:
+        op.add_column('Stores_Sections',
+            sa.Column('position', sa.Integer(), nullable=True, server_default='0'))
+
     op.execute("""
         UPDATE "Stores_Boxes"
         SET shelf_position = (
@@ -38,7 +49,6 @@ def upgrade() -> None:
         WHERE shelf_level = 1 OR shelf_level IS NULL
     """)
 
-    # Assign sequential position to existing sections within each box (ordered by id)
     op.execute("""
         UPDATE "Stores_Sections"
         SET position = (
