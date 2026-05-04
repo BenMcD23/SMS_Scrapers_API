@@ -13,7 +13,7 @@ from functools import partial
 
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File, Query
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, UploadFile, File, Query, Form
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -1176,6 +1176,117 @@ async def update_programme(
         "pdf": pdf_filename,
         "pages_converted": len(pages),
     }
+
+
+NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
+NEWSLETTER_BRANCH = "main"
+
+async def push_to_newsletter_github(client: httpx.AsyncClient, repo_path: str, file_bytes: bytes, commit_message: str):
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    api_url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{repo_path}"
+    encoded = base64.b64encode(file_bytes).decode("utf-8")
+
+    get_resp = await client.get(api_url, headers=headers, params={"ref": NEWSLETTER_BRANCH})
+    sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+
+    payload = {"message": commit_message, "content": encoded, "branch": NEWSLETTER_BRANCH}
+    if sha:
+        payload["sha"] = sha
+
+    put_resp = await client.put(api_url, headers=headers, json=payload, timeout=120.0)
+    if put_resp.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"GitHub push failed for {repo_path}: {put_resp.text}")
+
+
+@app.post("/upload-newsletter")
+async def upload_newsletter(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    date: str = Form(...),
+    issue: int = Form(...),
+    description: str = Form(...),
+    cover_color: str = Form("#1F2E4A"),
+    authorization: str = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        token = authorization.split(" ")[1]
+        id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Token")
+
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File must be a PDF")
+
+    pdf_bytes = await file.read()
+    newsletter_id = f"issue-{issue}"
+    filename = f"{newsletter_id}.pdf"
+    repo_pdf_path = f"317_newsletter/public/newsletters/{filename}"
+
+    # Fetch current newsletters.ts from GitHub
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+    ts_path = "317_newsletter/lib/newsletters.ts"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        ts_url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{ts_path}"
+        ts_get = await client.get(ts_url, headers=headers, params={"ref": NEWSLETTER_BRANCH})
+        if ts_get.status_code != 200:
+            raise HTTPException(status_code=500, detail="Could not fetch newsletters.ts from GitHub")
+
+        ts_data = ts_get.json()
+        ts_content = base64.b64decode(ts_data["content"]).decode("utf-8")
+        ts_sha = ts_data["sha"]
+
+        # Build the new entry and prepend it into the newsletters array
+        new_entry = (
+            f'  {{\n'
+            f'    id: "{newsletter_id}",\n'
+            f'    title: "{title}",\n'
+            f'    date: "{date}",\n'
+            f'    issue: {issue},\n'
+            f'    description: "{description}",\n'
+            f'    pdfPath: "/newsletters/{filename}",\n'
+            f'    coverColor: "{cover_color}",\n'
+            f'  }}'
+        )
+
+        # Insert after the opening `[` of the newsletters array
+        import re
+        ts_updated = re.sub(
+            r'(export const newsletters: Newsletter\[\] = \[)',
+            f'\\1\n{new_entry},',
+            ts_content,
+        )
+
+        if ts_updated == ts_content:
+            raise HTTPException(status_code=500, detail="Could not locate newsletters array in newsletters.ts")
+
+        ts_encoded = base64.b64encode(ts_updated.encode("utf-8")).decode("utf-8")
+        ts_put = await client.put(ts_url, headers=headers, json={
+            "message": f"Add newsletter {newsletter_id}: {title}",
+            "content": ts_encoded,
+            "branch": NEWSLETTER_BRANCH,
+            "sha": ts_sha,
+        })
+        if ts_put.status_code not in (200, 201):
+            raise HTTPException(status_code=500, detail=f"Failed to update newsletters.ts: {ts_put.text}")
+
+        # Push the PDF
+        await push_to_newsletter_github(client, repo_pdf_path, pdf_bytes, f"Add newsletter PDF {filename}")
+
+    return {
+        "status": "success",
+        "id": newsletter_id,
+        "filename": filename,
+    }
+
 
 # ===============================
 # ASSESSMENT ENDPOINTS
