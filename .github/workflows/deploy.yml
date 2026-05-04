@@ -42,4 +42,5 @@ jobs:
             else
               docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --build
             fi
+            docker compose -p sms-$ENV exec api alembic -c database/alembic.ini upgrade head
             docker image prune -f
