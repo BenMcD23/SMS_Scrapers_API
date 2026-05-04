@@ -108,6 +108,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "https://sms.317atc.co.uk", "https://317-sms-site.vercel.app"],
+    allow_origin_regex=r"https://317-sms-site.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],

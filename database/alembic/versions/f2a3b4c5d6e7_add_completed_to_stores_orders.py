@@ -19,7 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('Stores_Orders', sa.Column('completed', sa.Boolean(), nullable=False, server_default='0'))
+    conn = op.get_bind()
+    cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Orders'"
+    ))}
+    if 'completed' not in cols:
+        op.add_column('Stores_Orders', sa.Column('completed', sa.Boolean(), nullable=False, server_default='0'))
 
 
 def downgrade() -> None:
