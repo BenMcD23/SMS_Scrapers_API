@@ -18,7 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('Cadets', sa.Column('banned', sa.Boolean(), server_default='0', nullable=False))
+    conn = op.get_bind()
+    cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Cadets'"
+    ))}
+    if 'banned' not in cols:
+        op.add_column('Cadets', sa.Column('banned', sa.Boolean(), server_default='0', nullable=False))
 
 
 def downgrade() -> None:

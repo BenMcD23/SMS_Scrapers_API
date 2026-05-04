@@ -18,12 +18,23 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('Stores_Boxes',
-        sa.Column('box_width', sa.Integer(), nullable=True, server_default='100'))
-    op.add_column('Stores_Sections',
-        sa.Column('section_row', sa.Integer(), nullable=True, server_default='0'))
-    op.add_column('Stores_Sections',
-        sa.Column('section_width', sa.Integer(), nullable=True, server_default='100'))
+    conn = op.get_bind()
+    box_cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Boxes'"
+    ))}
+    sec_cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Sections'"
+    ))}
+
+    if 'box_width' not in box_cols:
+        op.add_column('Stores_Boxes',
+            sa.Column('box_width', sa.Integer(), nullable=True, server_default='100'))
+    if 'section_row' not in sec_cols:
+        op.add_column('Stores_Sections',
+            sa.Column('section_row', sa.Integer(), nullable=True, server_default='0'))
+    if 'section_width' not in sec_cols:
+        op.add_column('Stores_Sections',
+            sa.Column('section_width', sa.Integer(), nullable=True, server_default='100'))
 
 
 def downgrade() -> None:
