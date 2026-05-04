@@ -77,9 +77,41 @@ docker compose -p sms-dev  logs -f api
 
 ## Local dev (without Docker)
 
+You still need a running PostgreSQL instance. Use the local override to publish the port to `localhost:5432`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
+```
+
+Then set up the Python environment:
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Copy the env template and fill in secrets:
+
+```bash
+cp .env.tmpl .env
+# Edit .env — at minimum set POSTGRES_PASSWORD and any API keys you need
+```
+
+Set the database URL to point at the local Docker db and run migrations:
+
+```bash
+export DATABASE_URL="postgresql+psycopg2://sms_user:<POSTGRES_PASSWORD>@localhost:5432/317_SMS"
+alembic -c database/alembic.ini upgrade head
+```
+
+Start the dev server:
+
 ```bash
 PYTHONPATH=app:. uvicorn api:app --reload
 ```
+
+The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
 
 ## Database Migrations (Alembic)
 

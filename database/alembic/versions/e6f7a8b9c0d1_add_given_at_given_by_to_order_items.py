@@ -18,8 +18,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('Stores_Order_Items', sa.Column('given_at', sa.DateTime(), nullable=True))
-    op.add_column('Stores_Order_Items', sa.Column('given_by', sa.Text(),     nullable=True))
+    conn = op.get_bind()
+    cols = {row[0] for row in conn.execute(sa.text(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='Stores_Order_Items'"
+    ))}
+    if 'given_at' not in cols:
+        op.add_column('Stores_Order_Items', sa.Column('given_at', sa.DateTime(), nullable=True))
+    if 'given_by' not in cols:
+        op.add_column('Stores_Order_Items', sa.Column('given_by', sa.Text(), nullable=True))
 
 
 def downgrade() -> None:

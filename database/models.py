@@ -52,7 +52,7 @@ class Event317(Base):
     title          = Column(Text, nullable=False)
     reference      = Column(Text, nullable=False)
     adult_ic       = Column(Text, nullable=False)
-    contact_number = Column(Integer, nullable=False)
+    contact_number = Column(BigInteger, nullable=False)
     date_from      = Column(DateTime, nullable=False)
     date_to        = Column(DateTime, nullable=False)
     location_id    = Column(Integer, ForeignKey("Location.id"), nullable=False)
