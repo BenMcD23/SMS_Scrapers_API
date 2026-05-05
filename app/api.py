@@ -2576,6 +2576,161 @@ def stores_delete_order(
     db.commit()
 
 
+# ─── Cadet-scoped order endpoints ────────────────────────────────────────────
+# Cadets authenticate with their Google ID token. CIN is derived from the
+# token's email claim — cadets never supply their own CIN.
+
+class CadetOrderItemIn(BaseModel):
+    itemType: str
+    size: str = ""
+    needSizing: bool = False
+    sizingDetails: str = ""
+
+class CadetOrderCreate(BaseModel):
+    items: list[CadetOrderItemIn]
+
+class CadetOrderPatch(BaseModel):
+    items: list[CadetOrderItemIn]
+
+
+def _get_cadet_from_token(authorization: str, db: Session) -> Cadet:
+    idinfo = verify_token(authorization)
+    email = idinfo.get("email", "")
+    cadet = db.query(Cadet).filter(func.lower(Cadet.email) == email.lower()).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="You are not registered in the system. Please speak to a member of staff.")
+    return cadet
+
+
+@app.get("/cadets/me")
+def cadet_get_me(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    return {
+        "cin":   cadet.cin,
+        "name":  f"{cadet.first_name} {cadet.last_name}",
+        "email": cadet.email,
+    }
+
+
+@app.get("/cadets/me/orders")
+def cadet_get_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    orders = (
+        db.query(StoresOrder)
+        .filter(StoresOrder.cadet_id == cadet.cin)
+        .order_by(StoresOrder.created_at.desc())
+        .all()
+    )
+    return [_order_to_dict(o) for o in orders]
+
+
+@app.post("/cadets/me/orders", status_code=201)
+def cadet_create_order(
+    body: CadetOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+
+    order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.itemType:
+            continue
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.patch("/cadets/me/orders/{order_id}")
+def cadet_patch_order(
+    order_id: int,
+    body: CadetOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    # Items that have been given out must be preserved
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    new_items: list[StoresOrderItem] = []
+
+    # Always keep already-given items
+    for oi in given_items.values():
+        new_items.append(oi)
+
+    # Apply the patch items (skip any that were already given — client shouldn't be sending those)
+    for item in body.items:
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    # Delete all old non-given items
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.delete("/cadets/me/orders/{order_id}", status_code=204)
+def cadet_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
+    db.delete(order)
+    db.commit()
+
+
 # ─── Stores Issuances ─────────────────────────────────────────────────────────
 
 def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
