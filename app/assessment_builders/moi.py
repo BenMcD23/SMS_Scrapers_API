@@ -38,7 +38,7 @@ PAGE2_SCORES = {
 # Section comment anchor points — (page, x, y)
 SECTION_COMMENTS = {
     "identifying": (1, 32, 365),
-    "planning":    (1, 32, 255),
+    "planning":    (1, 32, 258),
     "resources":   (1, 32, 155),
     "delivery":    (1, 32,  57),
     "assessment":  (2, 32, 504),
@@ -309,52 +309,3 @@ def process_assessment_data(payload: dict) -> dict:
         "assessor_signature":  payload.get("assessor_signature"),
         "cadet_signature":     payload.get("cadet_signature"),
     }
-
-
-# ─── Test ─────────────────────────────────────────────────────────────────────
-
-def _test():
-    fake_payload = {
-        "cadet_surname":    "Smith",
-        "cadet_forename":   "James",
-        "sqn_df":           "317",
-        "wing_ccf":         "GM",
-        "date":             "2026-05-11",
-        "bader_reference":  "BADER-12345",
-        "place_of_assessment": "317 Squadron",
-        "scores": {
-            1: 1, 2: 2,
-            3: 3, 4: 4, 5: 5,
-            6: 5, 7: 4,
-            8: 3, 9: 4,
-            10: 5, 11: 4,
-            12: 3, 13: 4,
-        },
-        "section_comments": {
-            "identifying": "Needs well identified with clear SMART objectives set.",
-            "planning":    "Lesson plan was submitted on time and resources were ready.",
-            "resources":   "Good use of whiteboard and handouts throughout the session.",
-            "delivery":    "Confident delivery, managed the group well under pressure.",
-            "assessment":  "Regular questioning throughout. End assessment matched objectives.",
-            "evaluation":  "Adapted well when a student asked an unexpected question.",
-        },
-        "strengths_summary":    "Strong delivery and excellent resource use. Clearly prepared.",
-        "improvements_summary": "Could develop SMART objectives further. Debrief was brief.",
-        "general_comments":     "A solid MOI lesson. Minor refinements needed for full marks.",
-        "assessor_name":        "Fg Off B McDonald",
-        "assessor_role":        "Staff Instructor",
-        "assessor_signature":   None,
-        "cadet_signature":      None,
-    }
-
-    data = process_assessment_data(fake_payload)
-    pdf_bytes = generate_moi_pdf(data)
-
-    out_path = Path(__file__).parent / "moi_test_output.pdf"
-    out_path.write_bytes(pdf_bytes)
-    print(f"Test PDF written to: {out_path}")
-    print(f"Total score: {data['total_score']} / 65 — {'PASS' if data['passed'] else 'FAIL'}")
-
-
-if __name__ == "__main__":
-    _test()
