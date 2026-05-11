@@ -36,6 +36,7 @@ from scripts.scraper_calls import *
 
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
+from assessment_builders.moi import generate_moi_pdf, process_assessment_data as process_moi_data
 
 from utils.crypto import encrypt_password
 
@@ -1461,6 +1462,76 @@ async def generate_radio_assessment(
     return {"status": "success", "assessment_id": sheet.id}
 
 
+# ── MOI assessment endpoint ───────────────────────────────────────────────────
+
+@app.post("/assessments/moi/add-assessment")
+async def generate_moi_assessment(
+    data: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
+
+    cadet_cin = data.get("cadet_cin")
+    if not cadet_cin:
+        raise HTTPException(status_code=400, detail="cadet_cin is required.")
+    cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cadet_cin} not found.")
+
+    for field in ("strengths_summary", "improvements_summary", "general_comments"):
+        if len(data.get(field, "")) > 1150:
+            raise HTTPException(status_code=400, detail=f"{field} must be 1150 characters or fewer.")
+    section_comment_limits = {"identifying": 670, "delivery": 500}
+    for key, val in data.get("section_comments", {}).items():
+        limit = section_comment_limits.get(key, 900)
+        if len(val) > limit:
+            raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
+
+    processed = process_moi_data(data)
+
+    profile_name = user.profile.assessor_name if user.profile else None
+    assessor_name = profile_name or f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if assessor_name:
+        processed["assessor_name"] = assessor_name
+
+    pdf_bytes = generate_moi_pdf(processed)
+
+    sheet = AssessmentSheet(
+        assessment_type="MOI",
+        fields={
+            "scores":              processed["scores"],
+            "total_score":         processed["total_score"],
+            "passed":              processed["passed"],
+            "cadet_surname":       processed["cadet_surname"],
+            "cadet_forename":      processed["cadet_forename"],
+            "sqn_df":              processed["sqn_df"],
+            "wing_ccf":            processed["wing_ccf"],
+            "bader_reference":     processed["bader_reference"],
+            "place_of_assessment": processed["place_of_assessment"],
+            "section_comments":    processed["section_comments"],
+            "strengths":           processed["strengths"],
+            "improvements":        processed["improvements"],
+            "general_comments":    processed["general_comments"],
+            "assessor_name":       processed["assessor_name"],
+            "assessor_role":       processed["assessor_role"],
+            "date":                processed["date"],
+        },
+        pdf_data=pdf_bytes,
+        uploaded=False,
+        pdf_mime_type="application/pdf",
+        created_at=datetime.utcnow(),
+        cadet_id=cadet.cin,
+        assessor_id=user.id,
+    )
+    db.add(sheet)
+    db.commit()
+    db.refresh(sheet)
+
+    return {"status": "success", "assessment_id": sheet.id}
+
+
 # How many passed assessments are needed per type to unlock upload
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
@@ -2572,6 +2643,161 @@ def stores_delete_order(
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    db.delete(order)
+    db.commit()
+
+
+# ─── Cadet-scoped order endpoints ────────────────────────────────────────────
+# Cadets authenticate with their Google ID token. CIN is derived from the
+# token's email claim — cadets never supply their own CIN.
+
+class CadetOrderItemIn(BaseModel):
+    itemType: str
+    size: str = ""
+    needSizing: bool = False
+    sizingDetails: str = ""
+
+class CadetOrderCreate(BaseModel):
+    items: list[CadetOrderItemIn]
+
+class CadetOrderPatch(BaseModel):
+    items: list[CadetOrderItemIn]
+
+
+def _get_cadet_from_token(authorization: str, db: Session) -> Cadet:
+    idinfo = verify_token(authorization)
+    email = idinfo.get("email", "")
+    cadet = db.query(Cadet).filter(func.lower(Cadet.email) == email.lower()).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="You are not registered in the system. Please speak to a member of staff.")
+    return cadet
+
+
+@app.get("/cadets/me")
+def cadet_get_me(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    return {
+        "cin":   cadet.cin,
+        "name":  f"{cadet.first_name} {cadet.last_name}",
+        "email": cadet.email,
+    }
+
+
+@app.get("/cadets/me/orders")
+def cadet_get_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    orders = (
+        db.query(StoresOrder)
+        .filter(StoresOrder.cadet_id == cadet.cin)
+        .order_by(StoresOrder.created_at.desc())
+        .all()
+    )
+    return [_order_to_dict(o) for o in orders]
+
+
+@app.post("/cadets/me/orders", status_code=201)
+def cadet_create_order(
+    body: CadetOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+
+    order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.itemType:
+            continue
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.patch("/cadets/me/orders/{order_id}")
+def cadet_patch_order(
+    order_id: int,
+    body: CadetOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    # Items that have been given out must be preserved
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    new_items: list[StoresOrderItem] = []
+
+    # Always keep already-given items
+    for oi in given_items.values():
+        new_items.append(oi)
+
+    # Apply the patch items (skip any that were already given — client shouldn't be sending those)
+    for item in body.items:
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    # Delete all old non-given items
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.delete("/cadets/me/orders/{order_id}", status_code=204)
+def cadet_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
     db.delete(order)
     db.commit()
 
