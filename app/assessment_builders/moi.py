@@ -37,7 +37,7 @@ PAGE2_SCORES = {
 
 # Section comment anchor points — (page, x, y)
 SECTION_COMMENTS = {
-    "identifying": (1, 32, 350),
+    "identifying": (1, 32, 365),
     "planning":    (1, 32, 255),
     "resources":   (1, 32, 155),
     "delivery":    (1, 32,  57),
@@ -65,8 +65,8 @@ TEXT_FIELDS = {
 }
 
 # Signature bounding boxes — (x1, y1, x2, y2) in page 2 coords
-ASSESSOR_SIG_BOX  = (155, 77, 410, 107)
-CANDIDATE_SIG_BOX = (555, 77, 810, 107)
+ASSESSOR_SIG_BOX  = (225, 70, 419, 97)
+CANDIDATE_SIG_BOX = (620, 72, 810, 97)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
