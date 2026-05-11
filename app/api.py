@@ -36,6 +36,7 @@ from scripts.scraper_calls import *
 
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
+from assessment_builders.moi import generate_moi_pdf, process_assessment_data as process_moi_data
 
 from utils.crypto import encrypt_password
 
@@ -1446,6 +1447,76 @@ async def generate_radio_assessment(
             "comments":       processed["comments"],
             "assessor_name":  processed["assessor_name"],
             "date":           processed["date"],
+        },
+        pdf_data=pdf_bytes,
+        uploaded=False,
+        pdf_mime_type="application/pdf",
+        created_at=datetime.utcnow(),
+        cadet_id=cadet.cin,
+        assessor_id=user.id,
+    )
+    db.add(sheet)
+    db.commit()
+    db.refresh(sheet)
+
+    return {"status": "success", "assessment_id": sheet.id}
+
+
+# ── MOI assessment endpoint ───────────────────────────────────────────────────
+
+@app.post("/assessments/moi/add-assessment")
+async def generate_moi_assessment(
+    data: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(db, idinfo["sub"], idinfo["email"], idinfo.get("given_name"), idinfo.get("family_name"))
+
+    cadet_cin = data.get("cadet_cin")
+    if not cadet_cin:
+        raise HTTPException(status_code=400, detail="cadet_cin is required.")
+    cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cadet_cin} not found.")
+
+    for field in ("strengths_summary", "improvements_summary", "general_comments"):
+        if len(data.get(field, "")) > 1150:
+            raise HTTPException(status_code=400, detail=f"{field} must be 1150 characters or fewer.")
+    section_comment_limits = {"identifying": 670, "delivery": 500}
+    for key, val in data.get("section_comments", {}).items():
+        limit = section_comment_limits.get(key, 900)
+        if len(val) > limit:
+            raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
+
+    processed = process_moi_data(data)
+
+    profile_name = user.profile.assessor_name if user.profile else None
+    assessor_name = profile_name or f"{user.first_name or ''} {user.last_name or ''}".strip()
+    if assessor_name:
+        processed["assessor_name"] = assessor_name
+
+    pdf_bytes = generate_moi_pdf(processed)
+
+    sheet = AssessmentSheet(
+        assessment_type="MOI",
+        fields={
+            "scores":              processed["scores"],
+            "total_score":         processed["total_score"],
+            "passed":              processed["passed"],
+            "cadet_surname":       processed["cadet_surname"],
+            "cadet_forename":      processed["cadet_forename"],
+            "sqn_df":              processed["sqn_df"],
+            "wing_ccf":            processed["wing_ccf"],
+            "bader_reference":     processed["bader_reference"],
+            "place_of_assessment": processed["place_of_assessment"],
+            "section_comments":    processed["section_comments"],
+            "strengths":           processed["strengths"],
+            "improvements":        processed["improvements"],
+            "general_comments":    processed["general_comments"],
+            "assessor_name":       processed["assessor_name"],
+            "assessor_role":       processed["assessor_role"],
+            "date":                processed["date"],
         },
         pdf_data=pdf_bytes,
         uploaded=False,
