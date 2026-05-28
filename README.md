@@ -9,6 +9,7 @@ FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, an
 ## Environments
 
 Two stacks run on the server simultaneously:
+
 - **prod** — `main` branch, port 8000, exposed via `tailscale-prod`
 - **dev**  — `development` branch, port 8001, exposed via `tailscale-dev`
 
@@ -112,6 +113,40 @@ PYTHONPATH=app:. uvicorn api:app --reload
 ```
 
 The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
+
+## Seeding a test cadet
+
+To test the cadet portal locally, insert a fake cadet row whose email matches your Google account (`ci.mcdonald@317atc.co.uk`).
+
+**Local dev** (exec into the local db container — no `psql` install needed):
+
+```bash
+docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "
+INSERT INTO \"Cadets\" (cin, first_name, last_name, email, rank, flight, banned)
+VALUES (9999999999, 'Ben', 'McDonald', 'ci.mcdonald@317atc.co.uk', 'Cadet', 'A', false)
+ON CONFLICT (cin) DO NOTHING;
+"
+```
+
+**Dev Docker stack** (running on the server):
+
+```bash
+docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "
+INSERT INTO \"Cadets\" (cin, first_name, last_name, email, rank, flight, banned)
+VALUES (9999999999, 'Ben', 'McDonald', 'ci.mcdonald@317atc.co.uk', 'Cadet', 'A', false)
+ON CONFLICT (cin) DO NOTHING;
+"
+```
+
+The `ON CONFLICT DO NOTHING` makes it safe to re-run. To remove the test cadet afterwards:
+
+```bash
+# local
+docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"Cadets\" WHERE cin = 9999999999;"
+
+# dev Docker stack
+docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"Cadets\" WHERE cin = 9999999999;"
+```
 
 ## Database Migrations (Alembic)
 
