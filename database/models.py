@@ -25,6 +25,7 @@ class Cadet(Base):
     assessment_sheets = relationship("AssessmentSheet",    back_populates="cadet")
     stores_orders     = relationship("StoresOrder",        back_populates="cadet")
     item_issuances    = relationship("StoresItemIssuance", back_populates="cadet", cascade="all, delete-orphan")
+    badge_orders      = relationship("BadgeOrder",         back_populates="cadet")
 
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -366,6 +367,33 @@ class StoresItemIssuance(Base):
     size_given    = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="item_issuances")
+
+
+# ─── Badge Orders ─────────────────────────────────────────────────────────────
+
+class BadgeOrder(Base):
+    __tablename__ = "Badge_Orders"
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    created_at = Column(DateTime,   nullable=False)
+    completed  = Column(Boolean,    nullable=False, default=False, server_default="0")
+
+    cadet       = relationship("Cadet",          back_populates="badge_orders")
+    order_items = relationship("BadgeOrderItem", back_populates="order", cascade="all, delete-orphan")
+
+
+class BadgeOrderItem(Base):
+    __tablename__ = "Badge_Order_Items"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    order_id   = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
+    badge_name = Column(Text,    nullable=False)
+    qm_notes   = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
+    given_at   = Column(DateTime, nullable=True)
+    given_by   = Column(Text,     nullable=True)
+
+    order = relationship("BadgeOrder", back_populates="order_items")
 
 
 # ─── Badge Grid ───────────────────────────────────────────────────────────────
