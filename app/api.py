@@ -2803,6 +2803,59 @@ def cadet_delete_order(
     db.commit()
 
 
+# ─── Cadet Badge Orders ───────────────────────────────────────────────────────
+
+class CadetBadgeOrderItemIn(BaseModel):
+    badgeName: str
+
+class CadetBadgeOrderCreate(BaseModel):
+    items: list[CadetBadgeOrderItemIn]
+
+
+@app.get("/cadets/me/badge-orders")
+def cadet_get_badge_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    orders = (
+        db.query(BadgeOrder)
+        .filter(BadgeOrder.cadet_id == cadet.cin)
+        .order_by(BadgeOrder.created_at.desc())
+        .all()
+    )
+    return [_badge_order_to_dict(o) for o in orders]
+
+
+@app.post("/cadets/me/badge-orders", status_code=201)
+def cadet_create_badge_order(
+    body: CadetBadgeOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one badge is required")
+
+    order = BadgeOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.badgeName:
+            continue
+        db.add(BadgeOrderItem(
+            order_id   = order.id,
+            badge_name = item.badgeName,
+            qm_notes   = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
 # ─── Stores Issuances ─────────────────────────────────────────────────────────
 
 def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
