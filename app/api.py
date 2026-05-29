@@ -2811,6 +2811,9 @@ class CadetBadgeOrderItemIn(BaseModel):
 class CadetBadgeOrderCreate(BaseModel):
     items: list[CadetBadgeOrderItemIn]
 
+class CadetBadgeOrderPatch(BaseModel):
+    items: list[CadetBadgeOrderItemIn]
+
 
 @app.get("/cadets/me/badge-orders")
 def cadet_get_badge_orders(
@@ -2854,6 +2857,60 @@ def cadet_create_badge_order(
     db.commit()
     db.refresh(order)
     return _badge_order_to_dict(order)
+
+
+@app.patch("/cadets/me/badge-orders/{order_id}")
+def cadet_patch_badge_order(
+    order_id: int,
+    body: CadetBadgeOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(BadgeOrder).filter(
+        BadgeOrder.id == order_id,
+        BadgeOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    for item in body.items:
+        if item.badgeName:
+            db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, qm_notes="[]"))
+
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
+@app.delete("/cadets/me/badge-orders/{order_id}", status_code=204)
+def cadet_delete_badge_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(BadgeOrder).filter(
+        BadgeOrder.id == order_id,
+        BadgeOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
+    db.delete(order)
+    db.commit()
 
 
 # ─── Stores Issuances ─────────────────────────────────────────────────────────
