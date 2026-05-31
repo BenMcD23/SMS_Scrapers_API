@@ -3107,7 +3107,7 @@ def stores_get_issuances(
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     cadet = db.query(Cadet).filter(Cadet.cin == cadet_cin).first()
     if not cadet:
         raise HTTPException(status_code=404, detail="Cadet not found")
@@ -3133,16 +3133,22 @@ def stores_mark_as_given(
 
     items = body.get("items", [])
     given_by = body.get("givenBy") or "Unknown"
-    now = datetime.utcnow()
     updated = []
 
     for item in items:
         raw_type = item.get("itemType", "")
         size = item.get("sizeGiven") or item.get("size") or None
         order_item_id = item.get("orderItemId")
-        category = ISSUANCE_ITEM_TYPE_MAP.get(raw_type)
+        # Accept either a direct itemCategory or map from itemType
+        category = item.get("itemCategory") or ISSUANCE_ITEM_TYPE_MAP.get(raw_type)
         if not category:
             continue
+        # Use provided date or fall back to now
+        raw_date = item.get("lastGiven")
+        try:
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+        except (ValueError, TypeError):
+            given_at = datetime.utcnow()
 
         # Upsert issuance record
         existing = (
@@ -3154,14 +3160,14 @@ def stores_mark_as_given(
             .first()
         )
         if existing:
-            existing.last_given = now
+            existing.last_given = given_at
             existing.size_given = size
             updated.append(existing)
         else:
             new_issuance = StoresItemIssuance(
                 cadet_id=cadet_cin,
                 item_category=category,
-                last_given=now,
+                last_given=given_at,
                 size_given=size,
             )
             db.add(new_issuance)
@@ -3178,6 +3184,20 @@ def stores_mark_as_given(
     for i in updated:
         db.refresh(i)
     return [_issuance_to_dict(i) for i in updated]
+
+
+@app.delete("/stores/issuances/{issuance_id}", status_code=204)
+def stores_delete_issuance(
+    issuance_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    issuance = db.query(StoresItemIssuance).filter(StoresItemIssuance.id == issuance_id).first()
+    if not issuance:
+        raise HTTPException(status_code=404, detail="Issuance record not found")
+    db.delete(issuance)
+    db.commit()
 
 
 # ─── User (Staff) Issuances (admin) ───────────────────────────────────────────
@@ -3213,7 +3233,6 @@ def stores_mark_user_as_given(
         raise HTTPException(status_code=404, detail="User not found")
 
     items = body.get("items", [])
-    now = datetime.utcnow()
     updated = []
 
     for item in items:
@@ -3221,6 +3240,11 @@ def stores_mark_user_as_given(
         size = item.get("sizeGiven") or None
         if not category:
             continue
+        raw_date = item.get("lastGiven")
+        try:
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+        except (ValueError, TypeError):
+            given_at = datetime.utcnow()
 
         existing = (
             db.query(StoresItemIssuance)
@@ -3231,7 +3255,7 @@ def stores_mark_user_as_given(
             .first()
         )
         if existing:
-            existing.last_given = now
+            existing.last_given = given_at
             existing.size_given = size
             updated.append(existing)
         else:
@@ -3239,7 +3263,7 @@ def stores_mark_user_as_given(
                 user_id=user_id,
                 cadet_id=None,
                 item_category=category,
-                last_given=now,
+                last_given=given_at,
                 size_given=size,
             )
             db.add(new_issuance)
