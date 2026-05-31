@@ -161,6 +161,8 @@ class User(Base):
     assessment_sheets  = relationship("AssessmentSheet", back_populates="assessor")
     profile            = relationship("UserProfile", back_populates="user",
                                        uselist=False, cascade="all, delete-orphan")
+    stores_orders      = relationship("StoresOrder",        back_populates="user")
+    item_issuances     = relationship("StoresItemIssuance", back_populates="user", cascade="all, delete-orphan")
 
 
 class BaderCredentials(Base):
@@ -305,11 +307,13 @@ class StoresOrder(Base):
     __tablename__ = "Stores_Orders"
 
     id         = Column(Integer,  primary_key=True, autoincrement=True)
-    cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin"), nullable=True)
+    user_id    = Column(Integer,  ForeignKey("Users.id"),     nullable=True)
     created_at = Column(DateTime, nullable=False)
     completed  = Column(Boolean,  nullable=False, default=False, server_default="0")
 
     cadet       = relationship("Cadet",           back_populates="stores_orders")
+    user        = relationship("User",            back_populates="stores_orders")
     order_items = relationship("StoresOrderItem", back_populates="order", cascade="all, delete-orphan")
 
 
@@ -361,12 +365,14 @@ class StoresItemIssuance(Base):
     __tablename__ = "Stores_Item_Issuances"
 
     id            = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=True)
+    user_id       = Column(Integer,    ForeignKey("Users.id",   ondelete="CASCADE"), nullable=True)
     item_category = Column(Text,       nullable=False)
     last_given    = Column(DateTime,   nullable=False)
     size_given    = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="item_issuances")
+    user  = relationship("User",  back_populates="item_issuances")
 
 
 # ─── Badge Orders ─────────────────────────────────────────────────────────────
