@@ -3177,7 +3177,7 @@ def stores_mark_as_given(
         if order_item_id:
             order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
             if order_item:
-                order_item.given_at = now
+                order_item.given_at = given_at
                 order_item.given_by = given_by
 
     db.commit()
@@ -3233,11 +3233,14 @@ def stores_mark_user_as_given(
         raise HTTPException(status_code=404, detail="User not found")
 
     items = body.get("items", [])
+    given_by = body.get("givenBy") or "Unknown"
     updated = []
 
     for item in items:
-        category = item.get("itemCategory", "")
+        raw_category = item.get("itemCategory", "")
+        category = ISSUANCE_ITEM_TYPE_MAP.get(raw_category, raw_category)
         size = item.get("sizeGiven") or None
+        order_item_id = item.get("orderItemId")
         if not category:
             continue
         raw_date = item.get("lastGiven")
@@ -3268,6 +3271,12 @@ def stores_mark_user_as_given(
             )
             db.add(new_issuance)
             updated.append(new_issuance)
+
+        if order_item_id:
+            order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
+            if order_item:
+                order_item.given_at = given_at
+                order_item.given_by = given_by
 
     db.commit()
     for i in updated:
