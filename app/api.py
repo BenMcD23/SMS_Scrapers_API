@@ -2112,12 +2112,23 @@ def _full_structure(db: Session) -> dict:
 
 
 def _order_to_dict(order: StoresOrder) -> dict:
+    if order.cadet_id is not None and order.cadet:
+        subject_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        subject_type = "cadet"
+    elif order.user_id is not None and order.user:
+        subject_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email
+        subject_type = "user"
+    else:
+        subject_name = "Unknown"
+        subject_type = "unknown"
     return {
-        "id":         str(order.id),
-        "cadetName":  f"{order.cadet.first_name} {order.cadet.last_name}",
-        "cadetCin":   order.cadet.cin,
-        "timestamp":  order.created_at.isoformat(),
-        "completed":  bool(getattr(order, "completed", False)),
+        "id":          str(order.id),
+        "cadetName":   subject_name,
+        "cadetCin":    order.cadet_id,
+        "userId":      order.user_id,
+        "subjectType": subject_type,
+        "timestamp":   order.created_at.isoformat(),
+        "completed":   bool(getattr(order, "completed", False)),
         "items": [
             {
                 "id":            str(oi.id),
@@ -2674,6 +2685,15 @@ def _get_cadet_from_token(authorization: str, db: Session) -> Cadet:
     return cadet
 
 
+def _get_user_from_token(authorization: str, db: Session) -> User:
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(
+        db, idinfo["sub"], idinfo["email"],
+        idinfo.get("given_name"), idinfo.get("family_name"),
+    )
+    return user
+
+
 @app.get("/cadets/me")
 def cadet_get_me(
     db: Session = Depends(get_db),
@@ -2801,6 +2821,149 @@ def cadet_delete_order(
         raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
     db.delete(order)
     db.commit()
+
+
+# ─── User (Staff) Orders ──────────────────────────────────────────────────────
+
+@app.get("/users/me/orders")
+def user_get_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    orders = (
+        db.query(StoresOrder)
+        .filter(StoresOrder.user_id == user.id)
+        .order_by(StoresOrder.created_at.desc())
+        .all()
+    )
+    return [_order_to_dict(o) for o in orders]
+
+
+@app.post("/users/me/orders", status_code=201)
+def user_create_order(
+    body: CadetOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+
+    order = StoresOrder(user_id=user.id, cadet_id=None, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.itemType:
+            continue
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.patch("/users/me/orders/{order_id}")
+def user_patch_order(
+    order_id: int,
+    body: CadetOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.user_id == user.id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    for item in body.items:
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.delete("/users/me/orders/{order_id}", status_code=204)
+def user_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.user_id == user.id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
+    db.delete(order)
+    db.commit()
+
+
+@app.get("/users/me/issuances")
+def user_get_my_issuances(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.user_id == user.id)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
+@app.get("/users")
+def list_users(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    users = db.query(User).all()
+    result = []
+    for u in users:
+        role = get_user_role(u.email)
+        result.append({
+            "id":        u.id,
+            "email":     u.email,
+            "firstName": u.first_name,
+            "lastName":  u.last_name,
+            "role":      role,
+        })
+    return result
 
 
 # ─── Cadet Badge Orders ───────────────────────────────────────────────────────
@@ -3010,6 +3173,77 @@ def stores_mark_as_given(
             if order_item:
                 order_item.given_at = now
                 order_item.given_by = given_by
+
+    db.commit()
+    for i in updated:
+        db.refresh(i)
+    return [_issuance_to_dict(i) for i in updated]
+
+
+# ─── User (Staff) Issuances (admin) ───────────────────────────────────────────
+
+@app.get("/stores/issuances/user/{user_id}")
+def stores_get_user_issuances(
+    user_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.user_id == user_id)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
+@app.post("/stores/issuances/user/{user_id}", status_code=200)
+def stores_mark_user_as_given(
+    user_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    items = body.get("items", [])
+    now = datetime.utcnow()
+    updated = []
+
+    for item in items:
+        category = item.get("itemCategory", "")
+        size = item.get("sizeGiven") or None
+        if not category:
+            continue
+
+        existing = (
+            db.query(StoresItemIssuance)
+            .filter(
+                StoresItemIssuance.user_id == user_id,
+                StoresItemIssuance.item_category == category,
+            )
+            .first()
+        )
+        if existing:
+            existing.last_given = now
+            existing.size_given = size
+            updated.append(existing)
+        else:
+            new_issuance = StoresItemIssuance(
+                user_id=user_id,
+                cadet_id=None,
+                item_category=category,
+                last_given=now,
+                size_given=size,
+            )
+            db.add(new_issuance)
+            updated.append(new_issuance)
 
     db.commit()
     for i in updated:
