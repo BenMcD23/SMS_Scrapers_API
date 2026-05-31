@@ -2924,6 +2924,20 @@ def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
     }
 
 
+@app.get("/cadets/me/issuances")
+def cadet_get_my_issuances(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.cadet_id == cadet.cin)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
 @app.get("/stores/issuances/{cadet_cin}")
 def stores_get_issuances(
     cadet_cin: int,
