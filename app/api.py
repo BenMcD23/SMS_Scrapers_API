@@ -29,6 +29,7 @@ from database.models import (
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, ITEM_GENDER_MAP,
     StoresItemIssuance, ISSUANCE_ITEM_TYPE_MAP, ISSUANCE_CATEGORIES,
     BadgeGridConfig, BadgeGridCell, BadgeItem,
+    BadgeOrder, BadgeOrderItem,
 )
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
@@ -2111,12 +2112,23 @@ def _full_structure(db: Session) -> dict:
 
 
 def _order_to_dict(order: StoresOrder) -> dict:
+    if order.cadet_id is not None and order.cadet:
+        subject_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        subject_type = "cadet"
+    elif order.user_id is not None and order.user:
+        subject_name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip() or order.user.email
+        subject_type = "user"
+    else:
+        subject_name = "Unknown"
+        subject_type = "unknown"
     return {
-        "id":         str(order.id),
-        "cadetName":  f"{order.cadet.first_name} {order.cadet.last_name}",
-        "cadetCin":   order.cadet.cin,
-        "timestamp":  order.created_at.isoformat(),
-        "completed":  bool(getattr(order, "completed", False)),
+        "id":          str(order.id),
+        "cadetName":   subject_name,
+        "cadetCin":    order.cadet_id,
+        "userId":      order.user_id,
+        "subjectType": subject_type,
+        "timestamp":   order.created_at.isoformat(),
+        "completed":   bool(getattr(order, "completed", False)),
         "items": [
             {
                 "id":            str(oi.id),
@@ -2673,6 +2685,15 @@ def _get_cadet_from_token(authorization: str, db: Session) -> Cadet:
     return cadet
 
 
+def _get_user_from_token(authorization: str, db: Session) -> User:
+    idinfo = verify_token(authorization)
+    user = get_or_create_user(
+        db, idinfo["sub"], idinfo["email"],
+        idinfo.get("given_name"), idinfo.get("family_name"),
+    )
+    return user
+
+
 @app.get("/cadets/me")
 def cadet_get_me(
     db: Session = Depends(get_db),
@@ -2802,6 +2823,259 @@ def cadet_delete_order(
     db.commit()
 
 
+# ─── User (Staff) Orders ──────────────────────────────────────────────────────
+
+@app.get("/users/me/orders")
+def user_get_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    orders = (
+        db.query(StoresOrder)
+        .filter(StoresOrder.user_id == user.id)
+        .order_by(StoresOrder.created_at.desc())
+        .all()
+    )
+    return [_order_to_dict(o) for o in orders]
+
+
+@app.post("/users/me/orders", status_code=201)
+def user_create_order(
+    body: CadetOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one item is required")
+
+    order = StoresOrder(user_id=user.id, cadet_id=None, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.itemType:
+            continue
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.patch("/users/me/orders/{order_id}")
+def user_patch_order(
+    order_id: int,
+    body: CadetOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.user_id == user.id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    for item in body.items:
+        db.add(StoresOrderItem(
+            order_id       = order.id,
+            item_type      = item.itemType,
+            size           = item.size,
+            need_sizing    = item.needSizing,
+            sizing_details = item.sizingDetails,
+            qm_notes       = "[]",
+        ))
+
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _order_to_dict(order)
+
+
+@app.delete("/users/me/orders/{order_id}", status_code=204)
+def user_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    order = db.query(StoresOrder).filter(
+        StoresOrder.id == order_id,
+        StoresOrder.user_id == user.id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
+    db.delete(order)
+    db.commit()
+
+
+@app.get("/users/me/issuances")
+def user_get_my_issuances(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    user = _get_user_from_token(authorization, db)
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.user_id == user.id)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
+@app.get("/users")
+def list_users(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    users = db.query(User).all()
+    result = []
+    for u in users:
+        role = get_user_role(u.email)
+        result.append({
+            "id":        u.id,
+            "email":     u.email,
+            "firstName": u.first_name,
+            "lastName":  u.last_name,
+            "role":      role,
+        })
+    return result
+
+
+# ─── Cadet Badge Orders ───────────────────────────────────────────────────────
+
+class CadetBadgeOrderItemIn(BaseModel):
+    badgeName: str
+
+class CadetBadgeOrderCreate(BaseModel):
+    items: list[CadetBadgeOrderItemIn]
+
+class CadetBadgeOrderPatch(BaseModel):
+    items: list[CadetBadgeOrderItemIn]
+
+
+@app.get("/cadets/me/badge-orders")
+def cadet_get_badge_orders(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    orders = (
+        db.query(BadgeOrder)
+        .filter(BadgeOrder.cadet_id == cadet.cin)
+        .order_by(BadgeOrder.created_at.desc())
+        .all()
+    )
+    return [_badge_order_to_dict(o) for o in orders]
+
+
+@app.post("/cadets/me/badge-orders", status_code=201)
+def cadet_create_badge_order(
+    body: CadetBadgeOrderCreate,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+
+    if not body.items:
+        raise HTTPException(status_code=400, detail="At least one badge is required")
+
+    order = BadgeOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for item in body.items:
+        if not item.badgeName:
+            continue
+        db.add(BadgeOrderItem(
+            order_id   = order.id,
+            badge_name = item.badgeName,
+            qm_notes   = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
+@app.patch("/cadets/me/badge-orders/{order_id}")
+def cadet_patch_badge_order(
+    order_id: int,
+    body: CadetBadgeOrderPatch,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(BadgeOrder).filter(
+        BadgeOrder.id == order_id,
+        BadgeOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot edit a completed order")
+
+    given_items = {str(oi.id): oi for oi in order.order_items if oi.given_at is not None}
+    existing    = {str(oi.id): oi for oi in order.order_items}
+
+    for item in body.items:
+        if item.badgeName:
+            db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, qm_notes="[]"))
+
+    for raw_id, oi in existing.items():
+        if raw_id not in given_items:
+            db.delete(oi)
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
+@app.delete("/cadets/me/badge-orders/{order_id}", status_code=204)
+def cadet_delete_badge_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    order = db.query(BadgeOrder).filter(
+        BadgeOrder.id == order_id,
+        BadgeOrder.cadet_id == cadet.cin,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.completed:
+        raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
+    if any(oi.given_at is not None for oi in order.order_items):
+        raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
+    db.delete(order)
+    db.commit()
+
+
 # ─── Stores Issuances ─────────────────────────────────────────────────────────
 
 def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
@@ -2813,13 +3087,27 @@ def _issuance_to_dict(issuance: StoresItemIssuance) -> dict:
     }
 
 
+@app.get("/cadets/me/issuances")
+def cadet_get_my_issuances(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    cadet = _get_cadet_from_token(authorization, db)
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.cadet_id == cadet.cin)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
 @app.get("/stores/issuances/{cadet_cin}")
 def stores_get_issuances(
     cadet_cin: int,
     db: Session = Depends(get_db),
     authorization: str = Header(None),
 ):
-    verify_token(authorization)
+    verify_token_staff_only(authorization)
     cadet = db.query(Cadet).filter(Cadet.cin == cadet_cin).first()
     if not cadet:
         raise HTTPException(status_code=404, detail="Cadet not found")
@@ -2845,16 +3133,22 @@ def stores_mark_as_given(
 
     items = body.get("items", [])
     given_by = body.get("givenBy") or "Unknown"
-    now = datetime.utcnow()
     updated = []
 
     for item in items:
         raw_type = item.get("itemType", "")
         size = item.get("sizeGiven") or item.get("size") or None
         order_item_id = item.get("orderItemId")
-        category = ISSUANCE_ITEM_TYPE_MAP.get(raw_type)
+        # Accept either a direct itemCategory or map from itemType
+        category = item.get("itemCategory") or ISSUANCE_ITEM_TYPE_MAP.get(raw_type)
         if not category:
             continue
+        # Use provided date or fall back to now
+        raw_date = item.get("lastGiven")
+        try:
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+        except (ValueError, TypeError):
+            given_at = datetime.utcnow()
 
         # Upsert issuance record
         existing = (
@@ -2866,14 +3160,14 @@ def stores_mark_as_given(
             .first()
         )
         if existing:
-            existing.last_given = now
+            existing.last_given = given_at
             existing.size_given = size
             updated.append(existing)
         else:
             new_issuance = StoresItemIssuance(
                 cadet_id=cadet_cin,
                 item_category=category,
-                last_given=now,
+                last_given=given_at,
                 size_given=size,
             )
             db.add(new_issuance)
@@ -2883,7 +3177,105 @@ def stores_mark_as_given(
         if order_item_id:
             order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
             if order_item:
-                order_item.given_at = now
+                order_item.given_at = given_at
+                order_item.given_by = given_by
+
+    db.commit()
+    for i in updated:
+        db.refresh(i)
+    return [_issuance_to_dict(i) for i in updated]
+
+
+@app.delete("/stores/issuances/{issuance_id}", status_code=204)
+def stores_delete_issuance(
+    issuance_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    issuance = db.query(StoresItemIssuance).filter(StoresItemIssuance.id == issuance_id).first()
+    if not issuance:
+        raise HTTPException(status_code=404, detail="Issuance record not found")
+    db.delete(issuance)
+    db.commit()
+
+
+# ─── User (Staff) Issuances (admin) ───────────────────────────────────────────
+
+@app.get("/stores/issuances/user/{user_id}")
+def stores_get_user_issuances(
+    user_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    issuances = (
+        db.query(StoresItemIssuance)
+        .filter(StoresItemIssuance.user_id == user_id)
+        .all()
+    )
+    return [_issuance_to_dict(i) for i in issuances]
+
+
+@app.post("/stores/issuances/user/{user_id}", status_code=200)
+def stores_mark_user_as_given(
+    user_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    items = body.get("items", [])
+    given_by = body.get("givenBy") or "Unknown"
+    updated = []
+
+    for item in items:
+        raw_category = item.get("itemCategory", "")
+        category = ISSUANCE_ITEM_TYPE_MAP.get(raw_category, raw_category)
+        size = item.get("sizeGiven") or None
+        order_item_id = item.get("orderItemId")
+        if not category:
+            continue
+        raw_date = item.get("lastGiven")
+        try:
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+        except (ValueError, TypeError):
+            given_at = datetime.utcnow()
+
+        existing = (
+            db.query(StoresItemIssuance)
+            .filter(
+                StoresItemIssuance.user_id == user_id,
+                StoresItemIssuance.item_category == category,
+            )
+            .first()
+        )
+        if existing:
+            existing.last_given = given_at
+            existing.size_given = size
+            updated.append(existing)
+        else:
+            new_issuance = StoresItemIssuance(
+                user_id=user_id,
+                cadet_id=None,
+                item_category=category,
+                last_given=given_at,
+                size_given=size,
+            )
+            db.add(new_issuance)
+            updated.append(new_issuance)
+
+        if order_item_id:
+            order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
+            if order_item:
+                order_item.given_at = given_at
                 order_item.given_by = given_by
 
     db.commit()
@@ -3129,3 +3521,127 @@ def badge_delete_col(
     cfg.num_cols -= 1
     db.commit()
     return _badge_full_response(db)
+
+
+# ─── Badge Orders ─────────────────────────────────────────────────────────────
+
+def _badge_order_to_dict(order: BadgeOrder) -> dict:
+    return {
+        "id":        str(order.id),
+        "cadetName": f"{order.cadet.first_name} {order.cadet.last_name}",
+        "cadetCin":  order.cadet.cin,
+        "timestamp": order.created_at.isoformat(),
+        "completed": bool(order.completed),
+        "items": [
+            {
+                "id":        str(oi.id),
+                "badgeName": oi.badge_name,
+                "qmNotes":   (lambda v: json.loads(v) if v and v.strip().startswith("[") else [])(oi.qm_notes),
+                "givenAt":   oi.given_at.isoformat() if oi.given_at else None,
+                "givenBy":   oi.given_by,
+            }
+            for oi in sorted(order.order_items, key=lambda x: x.id)
+        ],
+    }
+
+
+@app.get("/stores/badges/orders")
+def badge_orders_list(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    orders = db.query(BadgeOrder).order_by(BadgeOrder.created_at.desc()).all()
+    return [_badge_order_to_dict(o) for o in orders]
+
+
+@app.post("/stores/badges/orders", status_code=201)
+def badge_orders_create(
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token(authorization)
+    cadet_cin = body.get("cadetCin")
+    items     = body.get("items", [])
+
+    if not cadet_cin or not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="cadetCin and items required")
+
+    cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+
+    order = BadgeOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    db.add(order)
+    db.flush()
+
+    for raw in items:
+        if not raw.get("badgeName"):
+            continue
+        db.add(BadgeOrderItem(
+            order_id   = order.id,
+            badge_name = raw["badgeName"],
+            qm_notes   = "[]",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
+@app.patch("/stores/badges/orders/{order_id}")
+def badge_orders_update(
+    order_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if "completed" in body:
+        order.completed = bool(body["completed"])
+
+    if "items" in body:
+        existing = {str(oi.id): oi for oi in order.order_items}
+        for raw in body["items"]:
+            raw_id = str(raw.get("id", "")) if raw.get("id") else ""
+            if raw_id and raw_id in existing:
+                oi = existing.pop(raw_id)
+                if "badgeName" in raw:
+                    oi.badge_name = raw["badgeName"]
+                if "qmNotes" in raw:
+                    oi.qm_notes = json.dumps(raw["qmNotes"])
+                if "givenAt" in raw:
+                    oi.given_at = datetime.fromisoformat(raw["givenAt"]) if raw["givenAt"] else None
+                if "givenBy" in raw:
+                    oi.given_by = raw["givenBy"]
+            else:
+                db.add(BadgeOrderItem(
+                    order_id   = order.id,
+                    badge_name = raw.get("badgeName", ""),
+                    qm_notes   = "[]",
+                ))
+        for removed in existing.values():
+            db.delete(removed)
+
+    db.commit()
+    db.refresh(order)
+    return _badge_order_to_dict(order)
+
+
+@app.delete("/stores/badges/orders/{order_id}", status_code=204)
+def badge_orders_delete(
+    order_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    db.delete(order)
+    db.commit()
