@@ -1211,7 +1211,7 @@ async def update_programme(
 
 
 NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
-NEWSLETTER_BRANCH = "development"
+NEWSLETTER_BRANCH = "main"
 NEWSLETTER_JSON_PATH = "317_newsletter/lib/newsletters.json"
 
 
