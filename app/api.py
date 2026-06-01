@@ -1211,7 +1211,46 @@ async def update_programme(
 
 
 NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
-NEWSLETTER_BRANCH = "main"
+NEWSLETTER_BRANCH = "development"
+NEWSLETTER_JSON_PATH = "317_newsletter/lib/newsletters.json"
+
+
+def _newsletter_pdf_path(issue: int) -> str:
+    """Repo path of a newsletter's PDF for a given issue number."""
+    return f"317_newsletter/public/newsletters/issue-{issue}.pdf"
+
+
+async def fetch_newsletters_json(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch and parse newsletters.json from the newsletter repo."""
+    url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{NEWSLETTER_JSON_PATH}"
+    resp = await client.get(url, headers=_github_headers(), params={"ref": NEWSLETTER_BRANCH})
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Could not fetch {NEWSLETTER_JSON_PATH} from {NEWSLETTER_REPO}@{NEWSLETTER_BRANCH} "
+                f"(GitHub returned {resp.status_code}). Make sure the file is pushed to that branch."
+            ),
+        )
+    return json.loads(base64.b64decode(resp.json()["content"]).decode("utf-8"))
+
+
+def newsletters_json_bytes(newsletters: list[dict]) -> bytes:
+    """Serialise newsletters sorted by issue (descending) to JSON bytes.
+
+    The first entry is the homepage 'current' issue, so the highest issue
+    number is always written first.
+    """
+    ordered = sorted(newsletters, key=lambda n: n.get("issue", 0), reverse=True)
+    return (json.dumps(ordered, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+@app.get("/newsletters")
+async def list_newsletters(authorization: str = Header(None)):
+    verify_token(authorization)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+    return sorted(newsletters, key=lambda n: n.get("issue", 0), reverse=True)
 
 
 @app.post("/upload-newsletter")
@@ -1224,72 +1263,117 @@ async def upload_newsletter(
     cover_color: str = Form("#1F2E4A"),
     authorization: str = Header(None),
 ):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        token = authorization.split(" ")[1]
-        id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid Token")
+    verify_token_staff_only(authorization)
 
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a PDF")
 
     pdf_bytes = await file.read()
     newsletter_id = f"issue-{issue}"
-    filename = f"{newsletter_id}.pdf"
-    repo_pdf_path = f"317_newsletter/public/newsletters/{filename}"
+    filename = f"issue-{issue}.pdf"
 
-    ts_path = "317_newsletter/lib/newsletters.ts"
+    entry = {
+        "id": newsletter_id,
+        "title": title,
+        "date": date,
+        "issue": issue,
+        "description": description,
+        "pdfPath": f"/newsletters/{filename}",
+        "coverColor": cover_color,
+    }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        # Fetch current newsletters.ts from GitHub
-        ts_url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{ts_path}"
-        ts_get = await client.get(ts_url, headers=_github_headers(), params={"ref": NEWSLETTER_BRANCH})
-        if ts_get.status_code != 200:
-            raise HTTPException(status_code=500, detail="Could not fetch newsletters.ts from GitHub")
+        newsletters = await fetch_newsletters_json(client)
+        # Reject duplicate issue numbers — editing an existing issue goes via PUT
+        if any(n.get("issue") == issue for n in newsletters):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Issue {issue} already exists. Edit that newsletter or choose a different issue number.",
+            )
+        newsletters.append(entry)
 
-        ts_content = base64.b64decode(ts_get.json()["content"]).decode("utf-8")
-
-        # Build the new entry and prepend it into the newsletters array
-        new_entry = (
-            f'  {{\n'
-            f'    id: "{newsletter_id}",\n'
-            f'    title: "{title}",\n'
-            f'    date: "{date}",\n'
-            f'    issue: {issue},\n'
-            f'    description: "{description}",\n'
-            f'    pdfPath: "/newsletters/{filename}",\n'
-            f'    coverColor: "{cover_color}",\n'
-            f'  }}'
-        )
-
-        # Insert after the opening `[` of the newsletters array
-        ts_updated = re.sub(
-            r'(export const newsletters: Newsletter\[\] = \[)',
-            f'\\1\n{new_entry},',
-            ts_content,
-        )
-        if ts_updated == ts_content:
-            raise HTTPException(status_code=500, detail="Could not locate newsletters array in newsletters.ts")
-
-        # newsletters.ts update and the PDF in a single commit
         await commit_files_to_github(
             client,
             NEWSLETTER_REPO,
             NEWSLETTER_BRANCH,
             f"Add newsletter {newsletter_id}: {title}",
             files=[
-                {"path": ts_path, "content": ts_updated.encode("utf-8")},
-                {"path": repo_pdf_path, "content": pdf_bytes},
+                {"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)},
+                {"path": _newsletter_pdf_path(issue), "content": pdf_bytes},
             ],
         )
 
-    return {
-        "status": "success",
-        "id": newsletter_id,
-        "filename": filename,
-    }
+    return {"status": "success", "id": newsletter_id, "filename": filename}
+
+
+@app.put("/newsletters/{issue}")
+async def update_newsletter(
+    issue: int,
+    title: str = Form(None),
+    date: str = Form(None),
+    description: str = Form(None),
+    cover_color: str = Form(None),
+    file: UploadFile = File(None),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+        entry = next((n for n in newsletters if n.get("issue") == issue), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Newsletter issue {issue} not found")
+
+        # Apply only the metadata fields that were provided
+        if title is not None:
+            entry["title"] = title
+        if date is not None:
+            entry["date"] = date
+        if description is not None:
+            entry["description"] = description
+        if cover_color is not None:
+            entry["coverColor"] = cover_color
+
+        files = [{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)}]
+
+        # Optionally replace the PDF (overwrites issue-{issue}.pdf)
+        if file is not None and file.filename:
+            if file.content_type != "application/pdf":
+                raise HTTPException(status_code=400, detail="File must be a PDF")
+            files.append({"path": _newsletter_pdf_path(issue), "content": await file.read()})
+
+        await commit_files_to_github(
+            client,
+            NEWSLETTER_REPO,
+            NEWSLETTER_BRANCH,
+            f"Update newsletter issue-{issue}",
+            files=files,
+        )
+
+    return {"status": "success", "id": f"issue-{issue}"}
+
+
+@app.delete("/newsletters/{issue}")
+async def delete_newsletter(issue: int, authorization: str = Header(None)):
+    verify_token_staff_only(authorization)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+        if not any(n.get("issue") == issue for n in newsletters):
+            raise HTTPException(status_code=404, detail=f"Newsletter issue {issue} not found")
+
+        remaining = [n for n in newsletters if n.get("issue") != issue]
+
+        await commit_files_to_github(
+            client,
+            NEWSLETTER_REPO,
+            NEWSLETTER_BRANCH,
+            f"Delete newsletter issue-{issue}",
+            files=[{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(remaining)}],
+            delete_paths=[_newsletter_pdf_path(issue)],
+        )
+
+    return {"status": "success", "id": f"issue-{issue}"}
 
 
 # ===============================
