@@ -1018,58 +1018,97 @@ async def generate_doc_endpoint(event_id: int, action: str, db: Session = Depend
 # PROGRAMME ENDPOINTS
 # ===============================
 
-import io
+import re
 from pdf2image import convert_from_bytes
-async def push_to_github(client: httpx.AsyncClient, repo_path: str, file_bytes: bytes, commit_message: str):
-    github_headers = {
+
+
+def _github_headers() -> dict:
+    return {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{repo_path}"
-    encoded = base64.b64encode(file_bytes).decode("utf-8")
-
-    get_resp = await client.get(api_url, headers=github_headers, params={"ref": GITHUB_BRANCH})
-    sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
-
-    payload = {"message": commit_message, "content": encoded, "branch": GITHUB_BRANCH}
-    if sha:
-        payload["sha"] = sha
-
-    put_resp = await client.put(api_url, headers=github_headers, json=payload, timeout=120.0)
-    if put_resp.status_code not in (200, 201):
-        raise HTTPException(status_code=500, detail=f"GitHub push failed for {repo_path}: {put_resp.text}")
 
 
-async def delete_old_programme_pdfs(client: httpx.AsyncClient, exclude_filename: str):
-    github_headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "Content-Type": "application/json",
-    }
-    folder_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/public/programme"
-    resp = await client.get(folder_url, headers=github_headers, params={"ref": GITHUB_BRANCH})
-    if resp.status_code != 200:
-        return
+async def commit_files_to_github(
+    client: httpx.AsyncClient,
+    repo: str,
+    branch: str,
+    message: str,
+    files: list[dict],
+    delete_paths: list[str] = None,
+):
+    """Add/update `files` and remove `delete_paths` in a single commit via the Git Data API.
 
-    files = resp.json()
-    if not isinstance(files, list):
-        return
+    `files` is a list of {"path": str, "content": bytes}. Using blobs + a tree + one
+    commit avoids the Contents API's one-commit-per-file behaviour.
+    """
+    headers = _github_headers()
+    base = f"https://api.github.com/repos/{repo}"
 
+    # Current branch head and its tree
+    ref_resp = await client.get(f"{base}/git/ref/heads/{branch}", headers=headers)
+    if ref_resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Could not read {branch} ref: {ref_resp.text}")
+    latest_commit_sha = ref_resp.json()["object"]["sha"]
+
+    commit_resp = await client.get(f"{base}/git/commits/{latest_commit_sha}", headers=headers)
+    if commit_resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Could not read base commit: {commit_resp.text}")
+    base_tree_sha = commit_resp.json()["tree"]["sha"]
+
+    # Upload each file as a blob and collect tree entries
+    tree_entries = []
     for f in files:
-        name = f.get("name", "")
-        if name.endswith("_programme.pdf") and name != exclude_filename:
-            delete_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/public/programme/{name}"
-            await client.request(
-                "DELETE",
-                delete_url,
-                headers=github_headers,
-                content=json.dumps({
-                    "message": f"Remove old programme PDF {name}",
-                    "sha": f["sha"],
-                    "branch": GITHUB_BRANCH,
-                }),
-                timeout=60.0,
-            )
+        blob_resp = await client.post(
+            f"{base}/git/blobs",
+            headers=headers,
+            json={"content": base64.b64encode(f["content"]).decode("utf-8"), "encoding": "base64"},
+        )
+        if blob_resp.status_code not in (200, 201):
+            raise HTTPException(status_code=500, detail=f"Blob upload failed for {f['path']}: {blob_resp.text}")
+        tree_entries.append({"path": f["path"], "mode": "100644", "type": "blob", "sha": blob_resp.json()["sha"]})
+
+    # Deletions: a null sha removes the path from the new tree
+    for path in (delete_paths or []):
+        tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+
+    tree_resp = await client.post(
+        f"{base}/git/trees",
+        headers=headers,
+        json={"base_tree": base_tree_sha, "tree": tree_entries},
+    )
+    if tree_resp.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"Tree creation failed: {tree_resp.text}")
+
+    new_commit = await client.post(
+        f"{base}/git/commits",
+        headers=headers,
+        json={"message": message, "tree": tree_resp.json()["sha"], "parents": [latest_commit_sha]},
+    )
+    if new_commit.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"Commit creation failed: {new_commit.text}")
+
+    update_ref = await client.patch(
+        f"{base}/git/refs/heads/{branch}",
+        headers=headers,
+        json={"sha": new_commit.json()["sha"]},
+    )
+    if update_ref.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail=f"Ref update failed: {update_ref.text}")
+
+
+async def list_old_programme_pdfs(client: httpx.AsyncClient, exclude_filename: str) -> list[str]:
+    """Return repo paths of existing programme PDFs other than `exclude_filename`."""
+    folder_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/public/programme"
+    resp = await client.get(folder_url, headers=_github_headers(), params={"ref": GITHUB_BRANCH})
+    if resp.status_code != 200 or not isinstance(resp.json(), list):
+        return []
+
+    return [
+        f"public/programme/{f['name']}"
+        for f in resp.json()
+        if f.get("name", "").endswith("_programme.pdf") and f["name"] != exclude_filename
+    ]
 
 
 @app.post("/update-programme")
@@ -1131,46 +1170,37 @@ async def update_programme(
     page1_bytes = page_to_bytes(pages[0])
     page2_bytes = page_to_bytes(pages[1]) if len(pages) > 1 else page1_bytes
 
-    # Update Programme.jsx to point at new PDF filename
-    import re
     jsx_path = "src/pages/programme.jsx"
-    github_headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-    }
     async with httpx.AsyncClient(timeout=120.0) as client:
+        # Update Programme.jsx to point at the new PDF filename
         jsx_api_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{jsx_path}"
-        jsx_get = await client.get(jsx_api_url, headers=github_headers, params={"ref": GITHUB_BRANCH})
+        jsx_get = await client.get(jsx_api_url, headers=_github_headers(), params={"ref": GITHUB_BRANCH})
         if jsx_get.status_code != 200:
             raise HTTPException(status_code=500, detail="Could not fetch Programme.jsx from GitHub")
 
-        jsx_data = jsx_get.json()
-        jsx_content = base64.b64decode(jsx_data["content"]).decode("utf-8")
-        jsx_sha = jsx_data["sha"]
-
+        jsx_content = base64.b64decode(jsx_get.json()["content"]).decode("utf-8")
         updated_jsx = re.sub(
             r'/programme/\d{2}_\d{2}_programme\.pdf',
             f'/programme/{pdf_filename}',
-            jsx_content
+            jsx_content,
         )
 
-        jsx_encoded = base64.b64encode(updated_jsx.encode("utf-8")).decode("utf-8")
-        jsx_put = await client.put(jsx_api_url, headers=github_headers, json={
-            "message": f"Update programme PDF link to {pdf_filename}",
-            "content": jsx_encoded,
-            "branch": GITHUB_BRANCH,
-            "sha": jsx_sha,
-        })
-        if jsx_put.status_code not in (200, 201):
-            raise HTTPException(status_code=500, detail=f"Failed to update Programme.jsx: {jsx_put.text}")
+        old_pdf_paths = await list_old_programme_pdfs(client, exclude_filename=pdf_filename)
 
-        # Delete old programme PDFs before pushing new one
-        await delete_old_programme_pdfs(client, exclude_filename=pdf_filename)
-
-        # Push all 3 files
-        await push_to_github(client, "src/assets/programme/programme.webp", page1_bytes, f"Update programme page 1 ({pdf_filename})")
-        await push_to_github(client, "src/assets/programme/rooms.webp",     page2_bytes, f"Update programme page 2 ({pdf_filename})")
-        await push_to_github(client, f"public/programme/{pdf_filename}",    pdf_bytes,   f"Add programme PDF {pdf_filename}")
+        # JSX update, both webp pages, and the new PDF in a single commit
+        await commit_files_to_github(
+            client,
+            GITHUB_REPO,
+            GITHUB_BRANCH,
+            f"Update programme to {pdf_filename}",
+            files=[
+                {"path": jsx_path, "content": updated_jsx.encode("utf-8")},
+                {"path": "src/assets/programme/programme.webp", "content": page1_bytes},
+                {"path": "src/assets/programme/rooms.webp", "content": page2_bytes},
+                {"path": f"public/programme/{pdf_filename}", "content": pdf_bytes},
+            ],
+            delete_paths=old_pdf_paths,
+        )
 
     return {
         "status": "success",
@@ -1181,26 +1211,46 @@ async def update_programme(
 
 
 NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
-NEWSLETTER_BRANCH = "main"
+NEWSLETTER_BRANCH = "development"
+NEWSLETTER_JSON_PATH = "317_newsletter/lib/newsletters.json"
 
-async def push_to_newsletter_github(client: httpx.AsyncClient, repo_path: str, file_bytes: bytes, commit_message: str):
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-    }
-    api_url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{repo_path}"
-    encoded = base64.b64encode(file_bytes).decode("utf-8")
 
-    get_resp = await client.get(api_url, headers=headers, params={"ref": NEWSLETTER_BRANCH})
-    sha = get_resp.json().get("sha") if get_resp.status_code == 200 else None
+def _newsletter_pdf_path(issue: int) -> str:
+    """Repo path of a newsletter's PDF for a given issue number."""
+    return f"317_newsletter/public/newsletters/issue-{issue}.pdf"
 
-    payload = {"message": commit_message, "content": encoded, "branch": NEWSLETTER_BRANCH}
-    if sha:
-        payload["sha"] = sha
 
-    put_resp = await client.put(api_url, headers=headers, json=payload, timeout=120.0)
-    if put_resp.status_code not in (200, 201):
-        raise HTTPException(status_code=500, detail=f"GitHub push failed for {repo_path}: {put_resp.text}")
+async def fetch_newsletters_json(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch and parse newsletters.json from the newsletter repo."""
+    url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{NEWSLETTER_JSON_PATH}"
+    resp = await client.get(url, headers=_github_headers(), params={"ref": NEWSLETTER_BRANCH})
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Could not fetch {NEWSLETTER_JSON_PATH} from {NEWSLETTER_REPO}@{NEWSLETTER_BRANCH} "
+                f"(GitHub returned {resp.status_code}). Make sure the file is pushed to that branch."
+            ),
+        )
+    return json.loads(base64.b64decode(resp.json()["content"]).decode("utf-8"))
+
+
+def newsletters_json_bytes(newsletters: list[dict]) -> bytes:
+    """Serialise newsletters sorted by issue (descending) to JSON bytes.
+
+    The first entry is the homepage 'current' issue, so the highest issue
+    number is always written first.
+    """
+    ordered = sorted(newsletters, key=lambda n: n.get("issue", 0), reverse=True)
+    return (json.dumps(ordered, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+@app.get("/newsletters")
+async def list_newsletters(authorization: str = Header(None)):
+    verify_token(authorization)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+    return sorted(newsletters, key=lambda n: n.get("issue", 0), reverse=True)
 
 
 @app.post("/upload-newsletter")
@@ -1213,81 +1263,117 @@ async def upload_newsletter(
     cover_color: str = Form("#1F2E4A"),
     authorization: str = Header(None),
 ):
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        token = authorization.split(" ")[1]
-        id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid Token")
+    verify_token_staff_only(authorization)
 
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a PDF")
 
     pdf_bytes = await file.read()
     newsletter_id = f"issue-{issue}"
-    filename = f"{newsletter_id}.pdf"
-    repo_pdf_path = f"317_newsletter/public/newsletters/{filename}"
+    filename = f"issue-{issue}.pdf"
 
-    # Fetch current newsletters.ts from GitHub
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
+    entry = {
+        "id": newsletter_id,
+        "title": title,
+        "date": date,
+        "issue": issue,
+        "description": description,
+        "pdfPath": f"/newsletters/{filename}",
+        "coverColor": cover_color,
     }
-    ts_path = "317_newsletter/lib/newsletters.ts"
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        ts_url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{ts_path}"
-        ts_get = await client.get(ts_url, headers=headers, params={"ref": NEWSLETTER_BRANCH})
-        if ts_get.status_code != 200:
-            raise HTTPException(status_code=500, detail="Could not fetch newsletters.ts from GitHub")
+        newsletters = await fetch_newsletters_json(client)
+        # Reject duplicate issue numbers — editing an existing issue goes via PUT
+        if any(n.get("issue") == issue for n in newsletters):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Issue {issue} already exists. Edit that newsletter or choose a different issue number.",
+            )
+        newsletters.append(entry)
 
-        ts_data = ts_get.json()
-        ts_content = base64.b64decode(ts_data["content"]).decode("utf-8")
-        ts_sha = ts_data["sha"]
-
-        # Build the new entry and prepend it into the newsletters array
-        new_entry = (
-            f'  {{\n'
-            f'    id: "{newsletter_id}",\n'
-            f'    title: "{title}",\n'
-            f'    date: "{date}",\n'
-            f'    issue: {issue},\n'
-            f'    description: "{description}",\n'
-            f'    pdfPath: "/newsletters/{filename}",\n'
-            f'    coverColor: "{cover_color}",\n'
-            f'  }}'
+        await commit_files_to_github(
+            client,
+            NEWSLETTER_REPO,
+            NEWSLETTER_BRANCH,
+            f"Add newsletter {newsletter_id}: {title}",
+            files=[
+                {"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)},
+                {"path": _newsletter_pdf_path(issue), "content": pdf_bytes},
+            ],
         )
 
-        # Insert after the opening `[` of the newsletters array
-        import re
-        ts_updated = re.sub(
-            r'(export const newsletters: Newsletter\[\] = \[)',
-            f'\\1\n{new_entry},',
-            ts_content,
+    return {"status": "success", "id": newsletter_id, "filename": filename}
+
+
+@app.put("/newsletters/{issue}")
+async def update_newsletter(
+    issue: int,
+    title: str = Form(None),
+    date: str = Form(None),
+    description: str = Form(None),
+    cover_color: str = Form(None),
+    file: UploadFile = File(None),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+        entry = next((n for n in newsletters if n.get("issue") == issue), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Newsletter issue {issue} not found")
+
+        # Apply only the metadata fields that were provided
+        if title is not None:
+            entry["title"] = title
+        if date is not None:
+            entry["date"] = date
+        if description is not None:
+            entry["description"] = description
+        if cover_color is not None:
+            entry["coverColor"] = cover_color
+
+        files = [{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)}]
+
+        # Optionally replace the PDF (overwrites issue-{issue}.pdf)
+        if file is not None and file.filename:
+            if file.content_type != "application/pdf":
+                raise HTTPException(status_code=400, detail="File must be a PDF")
+            files.append({"path": _newsletter_pdf_path(issue), "content": await file.read()})
+
+        await commit_files_to_github(
+            client,
+            NEWSLETTER_REPO,
+            NEWSLETTER_BRANCH,
+            f"Update newsletter issue-{issue}",
+            files=files,
         )
 
-        if ts_updated == ts_content:
-            raise HTTPException(status_code=500, detail="Could not locate newsletters array in newsletters.ts")
+    return {"status": "success", "id": f"issue-{issue}"}
 
-        ts_encoded = base64.b64encode(ts_updated.encode("utf-8")).decode("utf-8")
-        ts_put = await client.put(ts_url, headers=headers, json={
-            "message": f"Add newsletter {newsletter_id}: {title}",
-            "content": ts_encoded,
-            "branch": NEWSLETTER_BRANCH,
-            "sha": ts_sha,
-        })
-        if ts_put.status_code not in (200, 201):
-            raise HTTPException(status_code=500, detail=f"Failed to update newsletters.ts: {ts_put.text}")
 
-        # Push the PDF
-        await push_to_newsletter_github(client, repo_pdf_path, pdf_bytes, f"Add newsletter PDF {filename}")
+@app.delete("/newsletters/{issue}")
+async def delete_newsletter(issue: int, authorization: str = Header(None)):
+    verify_token_staff_only(authorization)
 
-    return {
-        "status": "success",
-        "id": newsletter_id,
-        "filename": filename,
-    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        newsletters = await fetch_newsletters_json(client)
+        if not any(n.get("issue") == issue for n in newsletters):
+            raise HTTPException(status_code=404, detail=f"Newsletter issue {issue} not found")
+
+        remaining = [n for n in newsletters if n.get("issue") != issue]
+
+        await commit_files_to_github(
+            client,
+            NEWSLETTER_REPO,
+            NEWSLETTER_BRANCH,
+            f"Delete newsletter issue-{issue}",
+            files=[{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(remaining)}],
+            delete_paths=[_newsletter_pdf_path(issue)],
+        )
+
+    return {"status": "success", "id": f"issue-{issue}"}
 
 
 # ===============================
