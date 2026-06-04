@@ -95,10 +95,34 @@ def _cleanup_old_completed_orders():
         db.close()
 
 
+def _cleanup_old_completed_assessments():
+    """Delete assessment sheets that were uploaded/completed more than 6 months ago."""
+    cutoff = datetime.utcnow() - timedelta(days=182)
+    db = SessionLocal()
+    try:
+        sheets = (
+            db.query(AssessmentSheet)
+            .filter(
+                AssessmentSheet.uploaded == True,
+                AssessmentSheet.uploaded_at.isnot(None),
+                AssessmentSheet.uploaded_at < cutoff,
+            )
+            .all()
+        )
+        for sheet in sheets:
+            db.delete(sheet)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler()
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
+    scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.start()
     yield
     scheduler.shutdown()
@@ -1688,6 +1712,8 @@ async def assessments_overview(
 
             # Check if qualification already uploaded
             uploaded = any(s.uploaded for s in type_sheets)
+            uploaded_dates = [s.uploaded_at for s in type_sheets if s.uploaded_at]
+            uploaded_at = max(uploaded_dates).isoformat() if uploaded_dates else None
 
 
             groups.append({
@@ -1697,6 +1723,7 @@ async def assessments_overview(
                 "required_to_upload": required,
                 "can_upload":         can_upload,
                 "uploaded":           uploaded,
+                "uploaded_at":        uploaded_at,
             })
 
         result.append({
@@ -1744,14 +1771,62 @@ async def upload_qualification(
             detail=f"Cadet needs {required} passed {assessment_type} assessment(s) to upload qualification (has {passed_count}).",
         )
 
+    now = datetime.utcnow()
     for sheet in sheets:
         sheet.uploaded = True
+        sheet.uploaded_at = now
 
     db.commit()
 
     return {
         "status":  "success",
         "message": f"{assessment_type.title()} qualification marked as uploaded for cadet {cin}.",
+    }
+
+
+@app.post("/assessments/{cin}/{assessment_type}/mark-complete")
+async def mark_assessment_complete(
+    cin: int,
+    assessment_type: str,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    """
+    Manually mark a set of assessments (e.g. a cadet's Radio or Leadership
+    assessments) as completed without running the Bader upload scraper.
+
+    Body: {"completed": true|false}. Defaults to true. Setting completed=false
+    reverts the group back to active (e.g. to undo an accidental mark).
+    """
+    verify_token_staff_only(authorization)
+
+    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet {cin} not found.")
+
+    sheets = [
+        s for s in cadet.assessment_sheets
+        if s.assessment_type == assessment_type
+    ]
+    if not sheets:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No {assessment_type} assessments found for cadet {cin}.",
+        )
+
+    completed = True if body is None else bool(body.get("completed", True))
+    now = datetime.utcnow()
+    for sheet in sheets:
+        sheet.uploaded = completed
+        sheet.uploaded_at = now if completed else None
+
+    db.commit()
+
+    verb = "completed" if completed else "reopened"
+    return {
+        "status":  "success",
+        "message": f"{assessment_type.title()} marked as {verb} for cadet {cin}.",
     }
 
 @app.get("/assessments/{assessment_id}/pdf")
