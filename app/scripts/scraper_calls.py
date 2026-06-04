@@ -5,6 +5,7 @@ from scripts.alergies import *
 from scripts.add_quali import add_qualification_with_attachment
 
 import json
+from datetime import datetime
 
 from database.models import Cadet, CadetQualification, AllEvent, CadetEvent
 from google_admin_api.get_all_users import get_workspace_users
@@ -597,8 +598,10 @@ def upload_qualifications_scraper(
                             os.remove(renamed)
                             
             # ── Mark all sheets in this group as uploaded ─────────────────────
+            _uploaded_now = datetime.utcnow()
             for s in group_sheets:
                 s.uploaded = True
+                s.uploaded_at = _uploaded_now
             db_session.commit()
 
             log(
