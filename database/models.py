@@ -328,8 +328,9 @@ class StoresOrderItem(Base):
     need_sizing     = Column(Boolean, nullable=False, default=False)
     sizing_details  = Column(Text,    nullable=False, default="")
     qm_notes        = Column(Text,    nullable=False, default="")  # JSON array of {id, content, timestamp, addedBy}
-    given_at        = Column(DateTime, nullable=True)
-    given_by        = Column(Text,     nullable=True)
+    given_at         = Column(DateTime, nullable=True)
+    given_by         = Column(Text,     nullable=True)
+    ready_to_collect = Column(DateTime, nullable=True)
 
     order = relationship("StoresOrder", back_populates="order_items")
 
@@ -397,8 +398,9 @@ class BadgeOrderItem(Base):
     order_id   = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
     badge_name = Column(Text,    nullable=False)
     qm_notes   = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
-    given_at   = Column(DateTime, nullable=True)
-    given_by   = Column(Text,     nullable=True)
+    given_at         = Column(DateTime, nullable=True)
+    given_by         = Column(Text,     nullable=True)
+    ready_to_collect = Column(DateTime, nullable=True)
 
     order = relationship("BadgeOrder", back_populates="order_items")
 

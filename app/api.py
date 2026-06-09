@@ -4,6 +4,8 @@ import asyncio
 import json
 import time
 import base64
+import email.mime.multipart
+import email.mime.text
 import httpx
 import io
 import tempfile
@@ -225,9 +227,71 @@ NCO_GROUP = "NCOs@317atc.co.uk"
 _SA_EMAIL = os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 _SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\n", "\n").strip('"')
 _IMPERSONATE_EMAIL = os.getenv("GOOGLE_IMPERSONATE_EMAIL", "ci.mcdonald@317atc.co.uk")
+_NOREPLY_EMAIL = os.getenv("NOREPLY_EMAIL")
 
 _role_cache: dict = {}
 _role_cache_lock = threading.Lock()
+
+def _send_email(to: str, subject: str, html_body: str) -> None:
+    if not _SA_EMAIL or not _SA_PRIVATE_KEY or not _NOREPLY_EMAIL:
+        print("[_send_email] skipped: service account or noreply email not configured")
+        return
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            {
+                "type": "service_account",
+                "client_email": _SA_EMAIL,
+                "private_key": _SA_PRIVATE_KEY,
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "private_key_id": "",
+                "client_id": "",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            },
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
+        ).with_subject(_NOREPLY_EMAIL)
+        gmail = google_build("gmail", "v1", credentials=creds, cache_discovery=False)
+        msg = email.mime.multipart.MIMEMultipart("alternative")
+        msg["From"] = f"317 ATC <{_NOREPLY_EMAIL}>"
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.attach(email.mime.text.MIMEText(html_body, "html"))
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
+        print(f"[_send_email] sent to {to}: {subject}")
+    except Exception as e:
+        print(f"[_send_email] error sending to {to}: {e}")
+
+def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, date: str, assessment_id: int, assessor_name: str) -> str:
+    result_colour = "#2e7d32" if passed else "#c62828"
+    result_text = "PASSED" if passed else "NOT PASSED"
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">317 ATC – Assessment Submitted</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Cadet</td><td style="padding:6px 0;font-weight:bold">{cadet_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Assessment</td><td style="padding:6px 0">{assessment_type}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Date</td><td style="padding:6px 0">{date}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Assessor</td><td style="padding:6px 0">{assessor_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Result</td><td style="padding:6px 0;font-weight:bold;color:{result_colour}">{result_text}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Reference</td><td style="padding:6px 0;color:#777">#{assessment_id}</td></tr>
+      </table>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 ATC SMS.</p>
+    </div>
+    """
+
+def _ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str) -> str:
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">317 ATC – Item Ready to Collect</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>Hi {cadet_name},</p>
+      <p>Your {item_kind} item is now ready to collect from the QM stores:</p>
+      <p style="font-size:18px;font-weight:bold;margin:16px 0">{item_name}</p>
+      <p>Please bring your RAF ID card when collecting. If you have any questions, speak to a member of staff.</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 ATC SMS.</p>
+    </div>
+    """
 
 def _fetch_user_role(email: str) -> str | None:
     if not _SA_EMAIL or not _SA_PRIVATE_KEY:
@@ -1495,6 +1559,19 @@ async def generate_leadership_assessment(
     db.commit()
     db.refresh(sheet)
 
+    _send_email(
+        to=user.email,
+        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (Blue Leadership)",
+        html_body=_assessment_email_html(
+            cadet_name=f"{cadet.first_name} {cadet.last_name}",
+            assessment_type="Blue Leadership",
+            passed=processed["passed"],
+            date=processed["date"],
+            assessment_id=sheet.id,
+            assessor_name=assessor_name,
+        ),
+    )
+
     return {"status": "success", "assessment_id": sheet.id}
 
 
@@ -1570,6 +1647,19 @@ async def generate_radio_assessment(
     db.commit()
     db.refresh(sheet)
 
+    _send_email(
+        to=user.email,
+        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (Blue Radio)",
+        html_body=_assessment_email_html(
+            cadet_name=f"{cadet.first_name} {cadet.last_name}",
+            assessment_type="Blue Radio",
+            passed=processed["passed"],
+            date=processed["date"],
+            assessment_id=sheet.id,
+            assessor_name=assessor_name,
+        ),
+    )
+
     return {"status": "success", "assessment_id": sheet.id}
 
 
@@ -1639,6 +1729,19 @@ async def generate_moi_assessment(
     db.add(sheet)
     db.commit()
     db.refresh(sheet)
+
+    _send_email(
+        to=user.email,
+        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (MOI)",
+        html_body=_assessment_email_html(
+            cadet_name=f"{cadet.first_name} {cadet.last_name}",
+            assessment_type="MOI",
+            passed=processed["passed"],
+            date=processed["date"],
+            assessment_id=sheet.id,
+            assessor_name=assessor_name,
+        ),
+    )
 
     return {"status": "success", "assessment_id": sheet.id}
 
@@ -2298,8 +2401,9 @@ def _order_to_dict(order: StoresOrder) -> dict:
                 "needSizing":    oi.need_sizing,
                 "sizingDetails": getattr(oi, "sizing_details", ""),
                 "qmNotes":       (lambda v: json.loads(v) if v and v.strip().startswith("[") else [])(getattr(oi, "qm_notes", None)),
-                "givenAt":       oi.given_at.isoformat() if oi.given_at else None,
-                "givenBy":       oi.given_by,
+                "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
+                "givenBy":        oi.given_by,
+                "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -2818,6 +2922,38 @@ def stores_delete_order(
         raise HTTPException(status_code=404, detail="Order not found")
     db.delete(order)
     db.commit()
+
+
+@app.post("/stores/orders/{order_id}/items/{item_id}/mark-ready", status_code=200)
+def stores_mark_item_ready(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(StoresOrderItem).filter(
+        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    item.ready_to_collect = datetime.utcnow()
+    db.commit()
+
+    if order.cadet and order.cadet.email:
+        cadet_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        _send_email(
+            to=order.cadet.email,
+            subject=f"Your uniform item is ready to collect – 317 ATC",
+            html_body=_ready_to_collect_email_html(cadet_name=cadet_name, item_name=item.item_type, item_kind="uniform"),
+        )
+
+    db.refresh(order)
+    return _order_to_dict(order)
 
 
 # ─── Cadet-scoped order endpoints ────────────────────────────────────────────
@@ -3698,8 +3834,9 @@ def _badge_order_to_dict(order: BadgeOrder) -> dict:
                 "id":        str(oi.id),
                 "badgeName": oi.badge_name,
                 "qmNotes":   (lambda v: json.loads(v) if v and v.strip().startswith("[") else [])(oi.qm_notes),
-                "givenAt":   oi.given_at.isoformat() if oi.given_at else None,
-                "givenBy":   oi.given_by,
+                "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
+                "givenBy":        oi.given_by,
+                "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -3806,3 +3943,35 @@ def badge_orders_delete(
         raise HTTPException(status_code=404, detail="Order not found")
     db.delete(order)
     db.commit()
+
+
+@app.post("/stores/badges/orders/{order_id}/items/{item_id}/mark-ready", status_code=200)
+def badge_orders_mark_item_ready(
+    order_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    authorization: str = Header(None),
+):
+    verify_token_staff_only(authorization)
+    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(BadgeOrderItem).filter(
+        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    item.ready_to_collect = datetime.utcnow()
+    db.commit()
+
+    if order.cadet and order.cadet.email:
+        cadet_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        _send_email(
+            to=order.cadet.email,
+            subject=f"Your badge is ready to collect – 317 ATC",
+            html_body=_ready_to_collect_email_html(cadet_name=cadet_name, item_name=item.badge_name, item_kind="badge"),
+        )
+
+    db.refresh(order)
+    return _badge_order_to_dict(order)
