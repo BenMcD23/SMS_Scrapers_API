@@ -6,6 +6,8 @@ import time
 import base64
 import email.mime.multipart
 import email.mime.text
+import email.mime.base
+import email.encoders
 import httpx
 import io
 import tempfile
@@ -208,7 +210,7 @@ _NOREPLY_EMAIL = os.getenv("NOREPLY_EMAIL")
 _role_cache: dict = {}
 _role_cache_lock = threading.Lock()
 
-def _send_email(to: str, subject: str, html_body: str) -> None:
+def _send_email(to: str, subject: str, html_body: str, attachment: bytes | None = None, attachment_filename: str = "attachment.pdf") -> None:
     if not _SA_EMAIL or not _SA_PRIVATE_KEY or not _NOREPLY_EMAIL:
         print("[_send_email] skipped: service account or noreply email not configured")
         return
@@ -226,23 +228,29 @@ def _send_email(to: str, subject: str, html_body: str) -> None:
             scopes=["https://www.googleapis.com/auth/gmail.send"],
         ).with_subject(_NOREPLY_EMAIL)
         gmail = google_build("gmail", "v1", credentials=creds, cache_discovery=False)
-        msg = email.mime.multipart.MIMEMultipart("alternative")
+        msg = email.mime.multipart.MIMEMultipart("mixed")
         msg["From"] = f"317 ATC <{_NOREPLY_EMAIL}>"
         msg["To"] = to
         msg["Subject"] = subject
         msg.attach(email.mime.text.MIMEText(html_body, "html"))
+        if attachment:
+            att = email.mime.base.MIMEBase("application", "pdf")
+            att.set_payload(attachment)
+            email.encoders.encode_base64(att)
+            att.add_header("Content-Disposition", "attachment", filename=attachment_filename)
+            msg.attach(att)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
         print(f"[_send_email] sent to {to}: {subject}")
     except Exception as e:
         print(f"[_send_email] error sending to {to}: {e}")
 
-def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, date: str, assessment_id: int, assessor_name: str) -> str:
+def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, date: str, assessor_name: str) -> str:
     result_colour = "#2e7d32" if passed else "#c62828"
     result_text = "PASSED" if passed else "NOT PASSED"
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
-      <h2 style="margin:0 0 4px">Assessment Submitted</h2>
+      <h2 style="margin:0 0 4px">Assessment Completed</h2>
       <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
       <table style="width:100%;border-collapse:collapse">
         <tr><td style="padding:6px 0;color:#555;width:140px">Cadet</td><td style="padding:6px 0;font-weight:bold">{cadet_name}</td></tr>
@@ -250,9 +258,8 @@ def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, 
         <tr><td style="padding:6px 0;color:#555">Date</td><td style="padding:6px 0">{date}</td></tr>
         <tr><td style="padding:6px 0;color:#555">Assessor</td><td style="padding:6px 0">{assessor_name}</td></tr>
         <tr><td style="padding:6px 0;color:#555">Result</td><td style="padding:6px 0;font-weight:bold;color:{result_colour}">{result_text}</td></tr>
-        <tr><td style="padding:6px 0;color:#555">Reference</td><td style="padding:6px 0;color:#777">#{assessment_id}</td></tr>
       </table>
-      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 ATC SMS.</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 SMS, do not reply, this mailbox isn't monitored</p>
     </div>
     """
 
@@ -1539,15 +1546,16 @@ async def generate_leadership_assessment(
 
     _send_email(
         to=user.email,
-        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (Blue Leadership)",
+        subject=f"Assessment Completed (Blue Leadership)",
         html_body=_assessment_email_html(
             cadet_name=f"{cadet.first_name} {cadet.last_name}",
             assessment_type="Blue Leadership",
             passed=processed["passed"],
             date=processed["date"],
-            assessment_id=sheet.id,
             assessor_name=assessor_name,
         ),
+        attachment=pdf_bytes,
+        attachment_filename=f"Blue_Leadership_{cadet.last_name}_{cadet.first_name}.pdf",
     )
 
     return {"status": "success", "assessment_id": sheet.id}
@@ -1627,15 +1635,16 @@ async def generate_radio_assessment(
 
     _send_email(
         to=user.email,
-        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (Blue Radio)",
+        subject=f"Assessment Completed (Blue Radio)",
         html_body=_assessment_email_html(
             cadet_name=f"{cadet.first_name} {cadet.last_name}",
             assessment_type="Blue Radio",
             passed=processed["passed"],
             date=processed["date"],
-            assessment_id=sheet.id,
             assessor_name=assessor_name,
         ),
+        attachment=pdf_bytes,
+        attachment_filename=f"Blue_Radio_{cadet.last_name}_{cadet.first_name}.pdf",
     )
 
     return {"status": "success", "assessment_id": sheet.id}
@@ -1710,15 +1719,16 @@ async def generate_moi_assessment(
 
     _send_email(
         to=user.email,
-        subject=f"Assessment Submitted – {cadet.first_name} {cadet.last_name} (MOI)",
+        subject=f"Assessment Completed (MOI)",
         html_body=_assessment_email_html(
             cadet_name=f"{cadet.first_name} {cadet.last_name}",
             assessment_type="MOI",
             passed=processed["passed"],
             date=processed["date"],
-            assessment_id=sheet.id,
             assessor_name=assessor_name,
         ),
+        attachment=pdf_bytes,
+        attachment_filename=f"MOI_{cadet.last_name}_{cadet.first_name}.pdf",
     )
 
     return {"status": "success", "assessment_id": sheet.id}
