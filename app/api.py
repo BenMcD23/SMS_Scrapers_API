@@ -242,7 +242,7 @@ def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, 
     result_text = "PASSED" if passed else "NOT PASSED"
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
-      <h2 style="margin:0 0 4px">317 ATC – Assessment Submitted</h2>
+      <h2 style="margin:0 0 4px">Assessment Submitted</h2>
       <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
       <table style="width:100%;border-collapse:collapse">
         <tr><td style="padding:6px 0;color:#555;width:140px">Cadet</td><td style="padding:6px 0;font-weight:bold">{cadet_name}</td></tr>
@@ -256,16 +256,18 @@ def _assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, 
     </div>
     """
 
-def _ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str) -> str:
+def _ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str, size: str = "") -> str:
+    size_line = f'<p style="font-size:14px;color:#555;margin:0 0 16px">Size: {size}</p>' if size else ""
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
-      <h2 style="margin:0 0 4px">317 ATC – Item Ready to Collect</h2>
+      <h2 style="margin:0 0 4px">Item Ready to Collect</h2>
       <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
       <p>Hi {cadet_name},</p>
-      <p>Your {item_kind} item is now ready to collect from the QM stores:</p>
-      <p style="font-size:18px;font-weight:bold;margin:16px 0">{item_name}</p>
-      <p>Please bring your RAF ID card when collecting. If you have any questions, speak to a member of staff.</p>
-      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 ATC SMS.</p>
+      <p>Your {item_kind} item is now ready to collect from the stores:</p>
+      <p style="font-size:18px;font-weight:bold;margin:16px 0 4px">{item_name}</p>
+      {size_line}
+      <p>If you have any questions, speak to a member of staff.</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">This is an automated notification from 317 SMS, do not reply, this mailbox isn't monitored</p>
     </div>
     """
 
@@ -2870,11 +2872,11 @@ def stores_mark_item_ready(
     db.commit()
 
     if order.cadet and order.cadet.email:
-        cadet_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        greeting_name = f"{order.cadet.rank} {order.cadet.last_name}" if order.cadet.rank else order.cadet.last_name
         _send_email(
             to=order.cadet.email,
-            subject=f"Your uniform item is ready to collect – 317 ATC",
-            html_body=_ready_to_collect_email_html(cadet_name=cadet_name, item_name=item.item_type, item_kind="uniform"),
+            subject=f"Your uniform item is ready to collect",
+            html_body=_ready_to_collect_email_html(cadet_name=greeting_name, item_name=item.item_type, item_kind="uniform", size=item.size or ""),
         )
 
     db.refresh(order)
@@ -3891,11 +3893,11 @@ def badge_orders_mark_item_ready(
     db.commit()
 
     if order.cadet and order.cadet.email:
-        cadet_name = f"{order.cadet.first_name} {order.cadet.last_name}"
+        greeting_name = f"{order.cadet.rank} {order.cadet.last_name}" if order.cadet.rank else order.cadet.last_name
         _send_email(
             to=order.cadet.email,
-            subject=f"Your badge is ready to collect – 317 ATC",
-            html_body=_ready_to_collect_email_html(cadet_name=cadet_name, item_name=item.badge_name, item_kind="badge"),
+            subject=f"Your badge is ready to collect",
+            html_body=_ready_to_collect_email_html(cadet_name=greeting_name, item_name=item.badge_name, item_kind="badge"),
         )
 
     db.refresh(order)
