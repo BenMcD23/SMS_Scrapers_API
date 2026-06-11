@@ -1,7 +1,7 @@
 """add ready_to_collect to order items
 
 Revision ID: g1h2i3j4k5l6
-Revises: a3f1c9d2b4e5
+Revises: f9a8b7c6d5e4
 Create Date: 2026-06-09 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'g1h2i3j4k5l6'
-down_revision: Union[str, Sequence[str], None] = 'a3f1c9d2b4e5'
+down_revision: Union[str, Sequence[str], None] = 'f9a8b7c6d5e4'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

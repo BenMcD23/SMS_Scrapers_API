@@ -23,12 +23,11 @@ def upgrade() -> None:
         "SELECT column_name FROM information_schema.columns WHERE table_name='Assessment_Sheets'"
     ))}
     if 'uploaded_at' not in cols:
-        op.add_column('Assessment_Sheets', sa.Column('uploaded_at', sa.DateTime(), nullable=True))
-        # Backfill already-uploaded rows so they show a completion date and are
-        # covered by the 6-month cleanup. created_at is the best available proxy.
+        op.add_column('Assessment_Sheets',
+            sa.Column('uploaded_at', sa.DateTime(), nullable=True))
         conn.execute(sa.text(
-            "UPDATE \"Assessment_Sheets\" SET uploaded_at = created_at "
-            "WHERE uploaded = true AND uploaded_at IS NULL"
+            'UPDATE "Assessment_Sheets" SET uploaded_at = created_at'
+            ' WHERE uploaded = true AND uploaded_at IS NULL'
         ))
 
 
