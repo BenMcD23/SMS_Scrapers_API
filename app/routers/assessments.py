@@ -30,6 +30,10 @@ class UploadQualificationsRequest(BaseModel):
     assessment_ids: list[int]
 
 
+class MarkCompleteRequest(BaseModel):
+    completed: bool = True
+
+
 # How many passed assessments are needed per type before upload is unlocked
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
@@ -274,6 +278,10 @@ async def assessments_overview(
             passed_count = sum(1 for a in assessments if a["passed"] is True)
             required = required_passes(atype)
 
+            uploaded_at = next(
+                (s.uploaded_at for s in type_sheets if s.uploaded_at),
+                None,
+            )
             groups.append({
                 "assessment_type":    atype,
                 "assessments":        assessments,
@@ -281,6 +289,7 @@ async def assessments_overview(
                 "required_to_upload": required,
                 "can_upload":         passed_count >= required,
                 "uploaded":           any(s.uploaded for s in type_sheets),
+                "uploaded_at":        uploaded_at.isoformat() if uploaded_at else None,
             })
 
         result.append({
@@ -299,8 +308,9 @@ async def assessments_overview(
 async def mark_assessment_complete(
     cin: int,
     assessment_type: str,
+    body: MarkCompleteRequest,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_nco),
+    idinfo: dict = Depends(require_staff),  # staff override — NCOs cannot force-complete
 ):
     cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
     if not cadet:
@@ -310,21 +320,16 @@ async def mark_assessment_complete(
     if not sheets:
         raise HTTPException(status_code=404, detail=f"No {assessment_type} assessments found for cadet {cin}.")
 
-    passed_count = sum(1 for s in sheets if s.fields and s.fields.get("passed") is True)
-    required = required_passes(assessment_type)
-    if passed_count < required:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cadet needs {required} passed {assessment_type} assessment(s) to upload qualification (has {passed_count}).",
-        )
-
+    now = datetime.utcnow()
     for sheet in sheets:
-        sheet.uploaded = True
+        sheet.uploaded = body.completed
+        sheet.uploaded_at = now if body.completed else None
     db.commit()
 
+    verb = "marked complete" if body.completed else "reopened"
     return {
         "status":  "success",
-        "message": f"{assessment_type.title()} qualification marked as uploaded for cadet {cin}.",
+        "message": f"{assessment_type.title()} qualification {verb} for cadet {cin}.",
     }
 
 
