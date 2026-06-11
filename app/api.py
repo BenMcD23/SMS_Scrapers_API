@@ -39,11 +39,13 @@ def _cleanup_old_completed_orders():
         db.close()
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     scheduler = BackgroundScheduler()
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
+    # scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.start()
     yield
     scheduler.shutdown()

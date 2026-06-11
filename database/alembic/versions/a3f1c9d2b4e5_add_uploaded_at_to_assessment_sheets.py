@@ -19,7 +19,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-
     cols = {row[0] for row in conn.execute(sa.text(
         "SELECT column_name FROM information_schema.columns WHERE table_name='Assessment_Sheets'"
     ))}
