@@ -135,7 +135,7 @@ class AssessmentSheet(Base):
     pdf_mime_type   = Column(Text, nullable=True, default="application/pdf")
     created_at      = Column(DateTime, nullable=False)
     uploaded        = Column(Boolean, nullable=False, default=False, server_default="0")
-    uploaded_at     = Column(DateTime, nullable=True)   # when marked uploaded/completed; used for 6-month cleanup
+    uploaded_at     = Column(DateTime, nullable=True)
 
     cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
     assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False)  # the user who did it
