@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,9 +16,10 @@ from database.database import SessionLocal
 from database.models import StoresOrder
 
 from core.security import require_user
+from texts.sender import scheduled_send_job
 from routers import (
     assessments, badges, cadets, events, form_generators,
-    newsletters, portal, programme, scrapers, settings, stats, stores,
+    newsletters, portal, programme, scrapers, settings, stats, stores, texts,
 )
 
 
@@ -46,6 +48,11 @@ async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler()
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     # scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
+    # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
+    scheduler.add_job(
+        scheduled_send_job,
+        CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone="Europe/London"),
+    )
     scheduler.start()
     yield
     scheduler.shutdown()
@@ -83,3 +90,4 @@ app.include_router(assessments.router)
 app.include_router(stats.router)
 app.include_router(stores.router)
 app.include_router(badges.router)
+app.include_router(texts.router)
