@@ -1,13 +1,21 @@
 """Pulls the monthly programme Google Doc and extracts one entry per parade night.
 
-Port of the Apps Script "Programme to Text" parser. The programme doc lives in
-a year-named subfolder of PROGRAMME_DRIVE_FOLDER_ID and is named "MM_YY". Its
-first table has (from row index 2):
+The programme doc lives in a year-named subfolder of PROGRAMME_DRIVE_FOLDER_ID
+and is named "MM_YY". Its first table looks like (12 columns in June 2026):
 
-    col 0: date    col 1-3: C/A/B flight first half    col 5-7: C/A/B second half
-    col 8: uniform    col 9: DNCO
+    Date | Probationary | A Flight | B Flight | Break | Probationary | A Flight.. | B Flight.. | Uniform | Duty NCO
+         |  (1st period C Flight)  ...        |       |  (2nd period)             ...          |         |
 
-Rows with a blank date merge their uniform/DNCO into the previous night.
+Column positions are derived from the two header rows rather than hardcoded,
+since the A/B flight columns can be subdivided (a flight doing two parallel
+activities occupies two sub-columns). Merged cells matter semantically:
+
+  - a cell spanning a flight's sub-columns        -> one activity for that flight
+  - a cell spanning both A and B                  -> both flights together
+  - a cell spanning C through B                   -> whole squadron
+  - several cells within one flight's sub-columns -> cadets split between them
+  - a row with a blank date (rowSpan continuation) merges its uniform/DNCO
+    into the night above (e.g. "No.2a SD" + "Civvies")
 """
 
 import re
@@ -42,22 +50,31 @@ def _docs_clients():
     return drive, docs
 
 
+def _list_children(drive, parent_id: str, name: str, mime_type: str) -> list[dict]:
+    # Shared-drive flags are required or items on shared drives are silently omitted
+    return drive.files().list(
+        q=(f"'{parent_id}' in parents and name = '{name}' "
+           f"and mimeType = '{mime_type}' and trashed = false"),
+        fields="files(id)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute().get("files", [])
+
+
 def _find_programme_doc_id(drive, month: int, year: int) -> str:
     """Locate the "MM_YY" doc inside the year folder, e.g. 2026/01_26."""
-    folders = drive.files().list(
-        q=(f"'{PROGRAMME_DRIVE_FOLDER_ID}' in parents and name = '{year}' "
-           "and mimeType = 'application/vnd.google-apps.folder' and trashed = false"),
-        fields="files(id)",
-    ).execute().get("files", [])
+    folders = _list_children(
+        drive, PROGRAMME_DRIVE_FOLDER_ID, str(year),
+        "application/vnd.google-apps.folder",
+    )
     if not folders:
         raise FileNotFoundError(f"No '{year}' folder in the programme Drive folder")
 
     doc_name = f"{month:02d}_{str(year)[-2:]}"
-    docs_found = drive.files().list(
-        q=(f"'{folders[0]['id']}' in parents and name = '{doc_name}' "
-           "and mimeType = 'application/vnd.google-apps.document' and trashed = false"),
-        fields="files(id)",
-    ).execute().get("files", [])
+    docs_found = _list_children(
+        drive, folders[0]["id"], doc_name,
+        "application/vnd.google-apps.document",
+    )
     if not docs_found:
         raise FileNotFoundError(f"No '{doc_name}' programme doc in the {year} folder")
     return docs_found[0]["id"]
@@ -68,7 +85,12 @@ def _cell_text(cell: dict) -> str:
     for content in cell.get("content", []):
         for el in content.get("paragraph", {}).get("elements", []):
             parts.append(el.get("textRun", {}).get("content", ""))
-    return "".join(parts).strip()
+    # Docs uses \x0b for soft line breaks (shift+enter) — treat them as newlines
+    return "".join(parts).replace("\x0b", "\n").strip()
+
+
+def _cell_span(cell: dict) -> int:
+    return cell.get("tableCellStyle", {}).get("columnSpan", 1) or 1
 
 
 def _first_table(document: dict) -> dict | None:
@@ -76,6 +98,97 @@ def _first_table(document: dict) -> dict | None:
         if "table" in el:
             return el["table"]
     return None
+
+
+def _normalise_headers(row: dict, num_cols: int) -> list[str]:
+    """Column -> header text. Covered cells exist in the JSON, so fill them
+    with the preceding head cell's text when that head spans them."""
+    labels = [""] * num_cols
+    cells = row.get("tableCells", [])
+    for idx, cell in enumerate(cells[:num_cols]):
+        text = _cell_text(cell)
+        if not text:
+            continue
+        for col in range(idx, min(idx + _cell_span(cell), num_cols)):
+            labels[col] = text
+    return labels
+
+
+class _Columns:
+    """Column indices derived from the two header rows."""
+
+    def __init__(self, table: dict):
+        rows = table.get("tableRows", [])
+        if len(rows) < 3:
+            raise ValueError("Programme table is too short")
+        num_cols = table.get("columns", 0)
+
+        top = _normalise_headers(rows[0], num_cols)
+        sub = _normalise_headers(rows[1], num_cols)
+
+        def find(predicate) -> list[int]:
+            return [i for i in range(num_cols) if predicate(top[i].lower(), sub[i].lower())]
+
+        date_cols = find(lambda t, s: "date" in t)
+        prob_cols = find(lambda t, s: "probationary" in t)
+        uniform_cols = find(lambda t, s: "uniform" in t)
+        dnco_cols = find(lambda t, s: "nco" in t)
+        p1_a = find(lambda t, s: "1st" in t and "a flight" in s)
+        p1_b = find(lambda t, s: "1st" in t and "b flight" in s)
+        p2_a = find(lambda t, s: "2nd" in t and "a flight" in s)
+        p2_b = find(lambda t, s: "2nd" in t and "b flight" in s)
+
+        if not (date_cols and len(prob_cols) >= 2 and uniform_cols and dnco_cols
+                and p1_a and p1_b and p2_a and p2_b):
+            raise ValueError(
+                "Could not identify the programme table columns — has the layout changed?"
+            )
+
+        self.date = date_cols[0]
+        self.c1, self.c2 = prob_cols[0], prob_cols[-1]
+        self.uniform = uniform_cols[0]
+        self.dnco = dnco_cols[0]
+        self.periods = [(self.c1, p1_a, p1_b), (self.c2, p2_a, p2_b)]
+
+
+def _collect_flight(cells: list[dict], flight_cols: list[int]) -> str:
+    """Activities within one flight's sub-columns; parallel ones joined with ' / '."""
+    texts = []
+    for col in flight_cols:
+        if col < len(cells):
+            text = _cell_text(cells[col])
+            if text:
+                texts.append(text)
+    if len(texts) <= 1:
+        return texts[0] if texts else ""
+    # Several sub-activities the flight is split between — match the doc's own
+    # "/" convention, collapsing each activity's lines so the pairing stays clear
+    return " / ".join(", ".join(t.splitlines()) for t in texts)
+
+
+def _parse_period(cells: list[dict], c_col: int, a_cols: list[int], b_cols: list[int]):
+    """Returns (c_text, main_section) for one period of a night's row."""
+    c_text = _cell_text(cells[c_col]) if c_col < len(cells) else ""
+    c_span = _cell_span(cells[c_col]) if c_col < len(cells) else 1
+
+    # Whole squadron: the probationary cell spans through the A/B columns
+    if c_text and c_span > 1 and c_col + c_span > max(b_cols):
+        return c_text, f"Whole Squadron:\n{c_text}"
+
+    a_head = cells[a_cols[0]] if a_cols[0] < len(cells) else {}
+    a_text = _cell_text(a_head)
+    # Both flights together: the A-flight cell spans into the B-flight columns
+    if a_text and a_cols[0] + _cell_span(a_head) > max(b_cols):
+        return c_text, f"Both Flights:\n{a_text}"
+
+    a = _collect_flight(cells, a_cols)
+    b = _collect_flight(cells, b_cols)
+    parts = []
+    if a:
+        parts.append(f"A Flight:\n{a}")
+    if b:
+        parts.append(f"B Flight:\n{b}")
+    return c_text, "\n\n".join(parts)
 
 
 def _parse_date(raw: str, month: int, year: int) -> datetime | None:
@@ -119,59 +232,47 @@ def parse_programme(month: int, year: int) -> list[dict]:
     if table is None:
         raise ValueError("Programme doc has no table")
 
+    columns = _Columns(table)
+
     nights: list[dict] = []
     last: dict | None = None
 
     for table_row in table.get("tableRows", [])[2:]:
-        cells = [_cell_text(c) for c in table_row.get("tableCells", [])]
-        cells += [""] * (10 - len(cells))  # pad short rows
-        cells[0] = WEEKDAY_RE.sub("", cells[0]).strip()
+        cells = table_row.get("tableCells", [])
 
-        c1, a1, b1 = cells[1], cells[2], cells[3]
-        c2, a2, b2 = cells[5], cells[6], cells[7]
+        def at(col: int) -> str:
+            return _cell_text(cells[col]) if col < len(cells) else ""
 
-        combined_c = (c1 or "") + (f"\n{c2}" if c2 else "")
+        date_raw = WEEKDAY_RE.sub("", at(columns.date)).strip()
+        uniform = at(columns.uniform)
+        dnco = at(columns.dnco)
 
-        a_content: list[str] = []
-        b_content: list[str] = []
-        for c, a, b in ((c1, a1, b1), (c2, a2, b2)):
-            if c and not a and not b:
-                a_content.append(c)       # whole squadron doing the same thing
-            elif c and a and not b:
-                a_content.append(a)       # C and A split, B joins A
-            else:
-                if a:
-                    a_content.append(a)
-                if b:
-                    b_content.append(b)
-
-        if a_content and not b_content:
-            combined_m = "\n".join(a_content)
-        else:
-            combined_m = ""
-            if a_content:
-                combined_m += "A Flight:\n" + "\n".join(a_content)
-            if b_content:
-                combined_m += ("\n\n" if combined_m else "") + "B Flight:\n" + "\n".join(b_content)
-
-        row = {
-            "date_raw": cells[0],
-            "uniform": cells[8],
-            "dnco": cells[9],
-            "c_flight": combined_c,
-            "main_body": combined_m,
-        }
-
-        # Blank-date rows merge uniform/DNCO into the previous night
-        if row["date_raw"] == "" and last is not None:
-            if row["uniform"]:
-                last["uniform"] += ", " + row["uniform"]
-            if row["dnco"]:
-                last["dnco"] += ", " + row["dnco"]
-        else:
+        # Blank-date rows are rowSpan continuations — extra uniform/DNCO values
+        if not date_raw:
             if last is not None:
-                nights.append(last)
-            last = row
+                if uniform:
+                    last["uniform"] += (", " if last["uniform"] else "") + uniform
+                if dnco:
+                    last["dnco"] += (", " if last["dnco"] else "") + dnco
+            continue
+
+        c_parts, main_parts = [], []
+        for label, (c_col, a_cols, b_cols) in zip(["1st Period", "2nd Period"], columns.periods):
+            c_text, main_section = _parse_period(cells, c_col, a_cols, b_cols)
+            if c_text:
+                c_parts.append(f"{label}:\n{c_text}")
+            if main_section:
+                main_parts.append(f"{label}\n{main_section}")
+
+        if last is not None:
+            nights.append(last)
+        last = {
+            "date_raw": date_raw,
+            "uniform": uniform,
+            "dnco": dnco,
+            "c_flight": "\n\n".join(c_parts),
+            "main_body": "\n\n".join(main_parts),
+        }
 
     if last is not None:
         nights.append(last)

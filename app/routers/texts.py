@@ -25,6 +25,7 @@ def _message_json(m: ParadeNightMessage) -> dict:
         "id": m.id,
         "parade_date": m.parade_date.isoformat(),
         "uniform": m.uniform,
+        "uniform_raw": m.uniform_raw,
         "dnco": m.dnco,
         "c_flight_raw": m.c_flight_raw,
         "main_body_raw": m.main_body_raw,
@@ -76,7 +77,9 @@ async def generate_messages(
             continue
 
         try:
-            main_message, c_message = generate_message(night["main_body"], night["c_flight"])
+            main_message, c_message, uniform_message = generate_message(
+                night["main_body"], night["c_flight"], night["uniform"]
+            )
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
 
@@ -84,7 +87,8 @@ async def generate_messages(
             existing = ParadeNightMessage(parade_date=night["date"])
             db.add(existing)
 
-        existing.uniform = night["uniform"]
+        existing.uniform = uniform_message
+        existing.uniform_raw = night["uniform"]
         existing.dnco = night["dnco"]
         existing.c_flight_raw = night["c_flight"]
         existing.main_body_raw = night["main_body"]
@@ -163,12 +167,15 @@ async def regenerate_message(
         raise HTTPException(status_code=400, detail="Message has already been sent")
 
     try:
-        main_message, c_message = generate_message(message.main_body_raw, message.c_flight_raw)
+        main_message, c_message, uniform_message = generate_message(
+            message.main_body_raw, message.c_flight_raw, message.uniform_raw
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
 
     message.main_message = main_message
     message.c_flight_message = c_message
+    message.uniform = uniform_message
     message.status = "draft"
     message.generated_at = datetime.now()
     db.commit()
