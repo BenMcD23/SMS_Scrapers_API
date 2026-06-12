@@ -405,6 +405,42 @@ class BadgeOrderItem(Base):
     order = relationship("BadgeOrder", back_populates="order_items")
 
 
+# ─── Parade Night Texts ───────────────────────────────────────────────────────
+
+class SmsRecipient(Base):
+    """Someone who receives the parade-night SMS (staff/parents list)."""
+    __tablename__ = "Sms_Recipients"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    rank         = Column(Text, nullable=False, default="")
+    surname      = Column(Text, nullable=False, default="")
+    phone_number = Column(Text, nullable=False)
+
+
+class ParadeNightMessage(Base):
+    """
+    One row per parade night (Wed/Fri), generated from the programme doc.
+
+    `*_raw` columns hold the text extracted from the programme table;
+    `main_message` / `c_flight_message` are the AI-formatted (and staff-edited)
+    versions that actually get sent.
+    """
+    __tablename__ = "Parade_Night_Messages"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    parade_date      = Column(DateTime, nullable=False, unique=True)
+    uniform          = Column(Text, nullable=False, default="")
+    dnco             = Column(Text, nullable=False, default="")
+    c_flight_raw     = Column(Text, nullable=False, default="")
+    main_body_raw    = Column(Text, nullable=False, default="")
+    main_message     = Column(Text, nullable=False, default="")
+    c_flight_message = Column(Text, nullable=False, default="")
+    status           = Column(Text, nullable=False, default="draft")  # "draft" | "ready" | "sent"
+    generated_at     = Column(DateTime, nullable=False)
+    sent_at          = Column(DateTime, nullable=True)
+    send_results     = Column(JSON, nullable=True)  # [{phone, status_code, error?}]
+
+
 # ─── Badge Grid ───────────────────────────────────────────────────────────────
 
 class BadgeGridConfig(Base):
