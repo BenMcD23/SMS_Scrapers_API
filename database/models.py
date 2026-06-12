@@ -429,7 +429,8 @@ class ParadeNightMessage(Base):
 
     id               = Column(Integer, primary_key=True, autoincrement=True)
     parade_date      = Column(DateTime, nullable=False, unique=True)
-    uniform          = Column(Text, nullable=False, default="")
+    uniform          = Column(Text, nullable=False, default="")  # AI-formatted/edited, gets sent
+    uniform_raw      = Column(Text, nullable=False, default="", server_default="")
     dnco             = Column(Text, nullable=False, default="")
     c_flight_raw     = Column(Text, nullable=False, default="")
     main_body_raw    = Column(Text, nullable=False, default="")
