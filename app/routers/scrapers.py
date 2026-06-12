@@ -12,18 +12,21 @@ import threading
 import time
 from datetime import datetime
 
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database.database import engine
-from database.models import ScraperRun, StatsSnapshot
+from database.database import SessionLocal, engine
+from database.models import ScraperRun, ScraperSchedule, StatsSnapshot
 
 from scripts.scraper_calls import (
     info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
 )
 
 from core.db import get_db, get_or_create_user
+from core.scheduler import scheduler
 from core.security import require_staff
 from routers.stats import compute_stats
 
@@ -60,6 +63,8 @@ named_scraper_states: dict = {
         "running": False,
         "started_by": None,
         "stop_event": threading.Event(),
+        "stop_reason": None,   # None | "manual" | "timeout" — why stop_event was set
+        "run_id": 0,           # incremented per run so stale timeout monitors can't kill a newer run
         "driver": None,   # live Selenium WebDriver reference while scraper runs
     }
     for name in NAMED_SCRAPERS
@@ -126,6 +131,9 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
     db = Session(engine)
     stop_event = state["stop_event"]
     stop_event.clear()  # reset from any previous run
+    state["stop_reason"] = None
+    state["run_id"] += 1
+    run_id = state["run_id"]
     state["driver"] = None
     success = False
 
@@ -134,41 +142,56 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
 
     def monitor_timeout():
         time.sleep(SCRAPER_TIMEOUT_SECONDS)
-        if state["running"]:
+        # Only time out the run this monitor was started for
+        if state["running"] and state["run_id"] == run_id:
+            state["stop_reason"] = state["stop_reason"] or "timeout"
             stop_event.set()
             _quit_driver(state)
 
     threading.Thread(target=monitor_timeout, daemon=True).start()
+
+    def append_stop_outcome():
+        """Terminal stream message when the run was interrupted."""
+        if state["stop_reason"] == "manual":
+            state["messages"].append(json.dumps({"type": "status", "value": "stopped"}))
+        else:
+            state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
 
     try:
         scraper_func(state["messages"], state["lock"], user_id, db, stop_event, on_driver_ready=on_driver_ready)
 
         with state["lock"]:
             if stop_event.is_set():
-                state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
+                append_stop_outcome()
             else:
                 if name == "cadet-quali":
                     _save_stats_snapshot(db)
                 state["messages"].append(json.dumps({"type": "status", "value": "done"}))
                 success = True
     except Exception as e:
-        if not stop_event.is_set():
-            with state["lock"]:
+        with state["lock"]:
+            if stop_event.is_set():
+                # Killing the browser makes blocking Selenium calls throw — that's
+                # the expected stop path, not a crash
+                append_stop_outcome()
+            else:
                 state["messages"].append(json.dumps({"type": "error", "value": f"Crash: {str(e)}"}))
     finally:
         state["driver"] = None
-        try:
-            run_db = Session(engine)
-            run_db.add(ScraperRun(
-                scraper_id=name,
-                ran_at=datetime.now(),
-                success=success,
-                ran_by=user_email,
-            ))
-            run_db.commit()
-            run_db.close()
-        except Exception as rec_err:
-            print(f"[scraper run record] failed: {rec_err}")
+        # Manual stops aren't recorded — "last run" keeps showing the last real run
+        if state["stop_reason"] != "manual":
+            try:
+                run_db = Session(engine)
+                run_db.add(ScraperRun(
+                    scraper_id=name,
+                    ran_at=datetime.now(),
+                    success=success,
+                    ran_by=user_email,
+                ))
+                run_db.commit()
+                run_db.close()
+            except Exception as rec_err:
+                print(f"[scraper run record] failed: {rec_err}")
         db.close()
         state["running"] = False
         state["started_by"] = None
@@ -247,6 +270,7 @@ async def stop_scraper(name: str, idinfo: dict = Depends(require_staff)):
     if not state["running"]:
         raise HTTPException(status_code=400, detail="Scraper is not running")
     # Signal the loop to stop, and kill the browser so blocking Selenium calls throw now
+    state["stop_reason"] = "manual"
     state["stop_event"].set()
     _quit_driver(state)
     with state["lock"]:
@@ -396,3 +420,144 @@ async def scrapers_running(idinfo: dict = Depends(require_staff)):
         }
         for name, state in named_scraper_states.items()
     }
+
+
+# ── Schedules ─────────────────────────────────────────────────────────────────
+
+VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _run_scheduled_scraper(name: str):
+    """APScheduler job body — start a scraper run with the schedule saver's credentials."""
+    db = SessionLocal()
+    claimed = False
+    try:
+        sched = db.query(ScraperSchedule).filter(ScraperSchedule.scraper_id == name).first()
+        if not sched or not sched.enabled or not sched.user:
+            return
+        if not sched.user.bader_credentials:
+            print(f"[scheduled scraper] {name}: {sched.user.email} has no Bader credentials saved, skipping")
+            return
+
+        user_id, email = sched.user.id, sched.user.email
+        state = named_scraper_states[name]
+        with state["lock"]:
+            if state["running"]:
+                print(f"[scheduled scraper] {name}: already running, skipping")
+                return
+            state["running"] = True
+            state["started_by"] = f"schedule ({email})"
+            state["messages"].clear()
+            state["messages"].append(json.dumps({
+                "type": "status",
+                "value": "running",
+                "started_by": state["started_by"],
+                "scraper_name": name,
+            }))
+            claimed = True
+    finally:
+        db.close()
+
+    if claimed:
+        run_named_scraper_task(name, SCRAPER_FUNCS[name], user_id, email)
+
+
+def register_schedule_jobs():
+    """Sync APScheduler jobs with the DB schedules — at startup and after every save."""
+    db = SessionLocal()
+    try:
+        schedules = {s.scraper_id: s for s in db.query(ScraperSchedule).all()}
+
+        for name in NAMED_SCRAPERS:
+            job_id = f"scraper-sched-{name}"
+            sched = schedules.get(name)
+            if sched and sched.enabled and sched.days_of_week:
+                scheduler.add_job(
+                    _run_scheduled_scraper,
+                    CronTrigger(
+                        day_of_week=sched.days_of_week,
+                        hour=sched.hour,
+                        minute=sched.minute,
+                        timezone="Europe/London",
+                    ),
+                    args=[name],
+                    id=job_id,
+                    replace_existing=True,
+                )
+            else:
+                try:
+                    scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+    finally:
+        db.close()
+
+
+def _schedule_json(name: str, sched: ScraperSchedule | None) -> dict:
+    return {
+        "enabled": sched.enabled if sched else False,
+        "days": sched.days_of_week.split(",") if sched and sched.days_of_week else [],
+        "hour": sched.hour if sched else 22,
+        "minute": sched.minute if sched else 0,
+        "runs_as": sched.user.email if sched and sched.user else None,
+        "updated_by": sched.updated_by if sched else None,
+        "updated_at": sched.updated_at.isoformat() if sched and sched.updated_at else None,
+    }
+
+
+@router.get("/scraper-schedules")
+async def get_scraper_schedules(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    schedules = {s.scraper_id: s for s in db.query(ScraperSchedule).all()}
+    return {name: _schedule_json(name, schedules.get(name)) for name in NAMED_SCRAPERS}
+
+
+class SchedulePut(BaseModel):
+    enabled: bool
+    days: list[str]
+    hour: int
+    minute: int
+
+
+@router.put("/scraper-schedules/{name}")
+async def put_scraper_schedule(
+    name: str,
+    body: SchedulePut,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    if name not in NAMED_SCRAPERS:
+        raise HTTPException(status_code=404, detail="Unknown scraper")
+
+    days = [d for d in body.days if d in VALID_DAYS]
+    if body.enabled and not days:
+        raise HTTPException(status_code=400, detail="Pick at least one day of the week")
+    if not (0 <= body.hour <= 23 and 0 <= body.minute <= 59):
+        raise HTTPException(status_code=400, detail="Invalid time")
+
+    user = get_or_create_user(db, idinfo)
+    if body.enabled and not user.bader_credentials:
+        raise HTTPException(
+            status_code=400,
+            detail="Scheduled runs use your Bader credentials — save them in Settings first.",
+        )
+
+    sched = db.query(ScraperSchedule).filter(ScraperSchedule.scraper_id == name).first()
+    if not sched:
+        sched = ScraperSchedule(scraper_id=name)
+        db.add(sched)
+
+    sched.enabled = body.enabled
+    sched.days_of_week = ",".join(d for d in VALID_DAYS if d in days)  # keep weekday order
+    sched.hour = body.hour
+    sched.minute = body.minute
+    sched.user_id = user.id
+    sched.updated_by = user.email
+    sched.updated_at = datetime.now()
+    db.commit()
+    db.refresh(sched)
+
+    register_schedule_jobs()
+    return _schedule_json(name, sched)
