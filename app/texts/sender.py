@@ -22,15 +22,24 @@ def _notify_client() -> NotificationsAPIClient:
     return NotificationsAPIClient(NOTIFY_API_KEY)
 
 
+def build_message_body(message: ParadeNightMessage) -> str:
+    """Assemble the full SMS body — the Notify template is just the greeting
+    plus ((body)), so this is exactly what lands on phones (and what the UI
+    preview shows). Sections are skipped entirely when empty."""
+    sections = [
+        f"Uniform: {message.uniform}" if message.uniform else "",
+        message.main_message,
+        f"C Flight\n{message.c_flight_message}" if message.c_flight_message else "",
+        f"DNCO: {message.dnco}" if message.dnco else "",
+    ]
+    return "\n\n".join(s for s in sections if s)
+
+
 def build_personalisation(message: ParadeNightMessage, rank: str, surname: str) -> dict:
-    """Template sections are only populated when there's data, so the SMS has no empty labels."""
     return {
         "rank": rank,
         "surname": surname,
-        "uniform_section": f"Uniform: {message.uniform}" if message.uniform else "",
-        "main_body": message.main_message,
-        "c_flight_section": f"C Flight\n{message.c_flight_message}" if message.c_flight_message else "",
-        "dnco_section": f"DNCO: {message.dnco}" if message.dnco else "",
+        "body": build_message_body(message),
     }
 
 

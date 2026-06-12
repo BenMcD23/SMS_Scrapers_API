@@ -13,7 +13,7 @@ from database.models import ParadeNightMessage, SmsRecipient
 
 from core.db import get_db
 from core.security import require_staff
-from texts.ai import generate_message
+from texts.ai import PRIMARY_MODEL, format_uniform, generate_message, model_label
 from texts.programme_parser import parse_programme
 from texts.sender import send_parade_message, send_test_sms
 
@@ -32,6 +32,9 @@ def _message_json(m: ParadeNightMessage) -> dict:
         "main_message": m.main_message,
         "c_flight_message": m.c_flight_message,
         "status": m.status,
+        "generated_by": m.generated_by,
+        "generated_by_label": model_label(m.generated_by) if m.generated_by else None,
+        "generated_with_fallback": bool(m.generated_by) and m.generated_by != PRIMARY_MODEL,
         "generated_at": m.generated_at.isoformat() if m.generated_at else None,
         "sent_at": m.sent_at.isoformat() if m.sent_at else None,
         "send_results": m.send_results,
@@ -48,7 +51,7 @@ def _get_message(db: Session, message_id: int) -> ParadeNightMessage:
 # ─── Messages ─────────────────────────────────────────────────────────────────
 
 @router.post("/generate")
-async def generate_messages(
+def generate_messages(  # sync on purpose — slow AI calls run in the threadpool
     month: int = None,
     year: int = None,
     db: Session = Depends(get_db),
@@ -66,6 +69,7 @@ async def generate_messages(
         raise HTTPException(status_code=502, detail=f"Failed to read programme doc: {e}")
 
     generated, skipped = 0, 0
+    model_counts: dict[str, int] = {}
     for night in nights:
         existing = (
             db.query(ParadeNightMessage)
@@ -77,9 +81,7 @@ async def generate_messages(
             continue
 
         try:
-            main_message, c_message, uniform_message = generate_message(
-                night["main_body"], night["c_flight"], night["uniform"]
-            )
+            main_message, c_message, model_id = generate_message(night["main_body"], night["c_flight"])
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
 
@@ -87,7 +89,7 @@ async def generate_messages(
             existing = ParadeNightMessage(parade_date=night["date"])
             db.add(existing)
 
-        existing.uniform = uniform_message
+        existing.uniform = format_uniform(night["uniform"])
         existing.uniform_raw = night["uniform"]
         existing.dnco = night["dnco"]
         existing.c_flight_raw = night["c_flight"]
@@ -95,11 +97,22 @@ async def generate_messages(
         existing.main_message = main_message
         existing.c_flight_message = c_message
         existing.status = "draft"
+        existing.generated_by = model_id
         existing.generated_at = datetime.now()
         generated += 1
+        model_counts[model_id] = model_counts.get(model_id, 0) + 1
 
     db.commit()
-    return {"status": "success", "generated": generated, "skipped_sent": skipped}
+    return {
+        "status": "success",
+        "generated": generated,
+        "skipped_sent": skipped,
+        "models_used": [
+            {"model": mid, "label": model_label(mid), "count": count,
+             "fallback": mid != PRIMARY_MODEL}
+            for mid, count in model_counts.items()
+        ],
+    }
 
 
 @router.get("/messages")
@@ -157,7 +170,7 @@ async def update_message(
 
 
 @router.post("/messages/{message_id}/regenerate")
-async def regenerate_message(
+def regenerate_message(  # sync on purpose — slow AI call runs in the threadpool
     message_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -167,16 +180,15 @@ async def regenerate_message(
         raise HTTPException(status_code=400, detail="Message has already been sent")
 
     try:
-        main_message, c_message, uniform_message = generate_message(
-            message.main_body_raw, message.c_flight_raw, message.uniform_raw
-        )
+        main_message, c_message, model_id = generate_message(message.main_body_raw, message.c_flight_raw)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
 
     message.main_message = main_message
     message.c_flight_message = c_message
-    message.uniform = uniform_message
+    message.uniform = format_uniform(message.uniform_raw)
     message.status = "draft"
+    message.generated_by = model_id
     message.generated_at = datetime.now()
     db.commit()
     return _message_json(message)

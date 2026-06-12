@@ -437,6 +437,7 @@ class ParadeNightMessage(Base):
     main_message     = Column(Text, nullable=False, default="")
     c_flight_message = Column(Text, nullable=False, default="")
     status           = Column(Text, nullable=False, default="draft")  # "draft" | "ready" | "sent"
+    generated_by     = Column(Text, nullable=True)  # model id that produced the text, e.g. "gemini-3.5-flash"
     generated_at     = Column(DateTime, nullable=False)
     sent_at          = Column(DateTime, nullable=True)
     send_results     = Column(JSON, nullable=True)  # [{phone, status_code, error?}]
