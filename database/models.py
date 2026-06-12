@@ -228,6 +228,27 @@ class ScraperRun(Base):
     ran_by     = Column(Text, nullable=True)    # email of triggering user
 
 
+class ScraperSchedule(Base):
+    """Squadron-wide automatic run schedule for one named scraper.
+
+    Scheduled runs use the Bader credentials of `user_id` — whoever last
+    saved the schedule.
+    """
+    __tablename__ = "Scraper_Schedules"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    scraper_id   = Column(Text, nullable=False, unique=True)  # one of the named scrapers
+    enabled      = Column(Boolean, nullable=False, default=False, server_default="0")
+    days_of_week = Column(Text, nullable=False, default="", server_default="")  # csv: "mon,wed,fri"
+    hour         = Column(Integer, nullable=False, default=22, server_default="22")
+    minute       = Column(Integer, nullable=False, default=0, server_default="0")
+    user_id      = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True)
+    updated_by   = Column(Text, nullable=True)
+    updated_at   = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────
 
 class StatsSnapshot(Base):
@@ -394,10 +415,11 @@ class BadgeOrder(Base):
 class BadgeOrderItem(Base):
     __tablename__ = "Badge_Order_Items"
 
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    order_id   = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
-    badge_name = Column(Text,    nullable=False)
-    qm_notes   = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    order_id    = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
+    badge_name  = Column(Text,    nullable=False)
+    replacement = Column(Boolean, nullable=False, default=False, server_default="0")  # replacements carry a £2 fee
+    qm_notes    = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
     given_at         = Column(DateTime, nullable=True)
     given_by         = Column(Text,     nullable=True)
     ready_to_collect = Column(DateTime, nullable=True)

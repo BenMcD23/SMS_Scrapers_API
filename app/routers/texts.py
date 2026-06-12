@@ -1,10 +1,14 @@
 """Parade-night text management — generation from the programme doc,
 message editing/approval, recipients, and sending via GOV.UK Notify."""
 
+import csv
+import io
+import re
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+import openpyxl
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
@@ -302,6 +306,98 @@ async def update_recipient(
 
     db.commit()
     return _recipient_json(recipient)
+
+
+def _normalise_phone(value) -> str:
+    """Strip spaces; restore the leading 0 Excel eats off numeric UK mobiles."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    phone = re.sub(r"\s+", "", str(value or ""))
+    if re.fullmatch(r"7\d{9}", phone):
+        phone = "0" + phone
+    return phone
+
+
+def _parse_recipient_file(filename: str, content: bytes) -> list[list]:
+    """Return raw rows (including header) from a .csv / tab-separated / .xlsx file."""
+    if filename.lower().endswith((".xlsx", ".xlsm")):
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+        wb.close()
+        return rows
+
+    text = content.decode("utf-8-sig", errors="replace")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    delimiter = "\t" if "\t" in first_line else ","
+    return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
+
+
+@router.post("/recipients/import")
+async def import_recipients(
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    if mode not in ("replace", "merge"):
+        raise HTTPException(status_code=400, detail="Mode must be 'replace' or 'merge'")
+
+    content = await file.read()
+    try:
+        rows = _parse_recipient_file(file.filename or "", content)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the file — use a .csv or .xlsx export")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="The file is empty")
+
+    header = [str(h or "").strip().lower() for h in rows[0]]
+    if "phone number" not in header:
+        raise HTTPException(status_code=400, detail="The file needs a 'phone number' column")
+    phone_i = header.index("phone number")
+    rank_i = header.index("rank") if "rank" in header else None
+    surname_i = header.index("surname") if "surname" in header else None
+
+    def cell(row: list, i: int | None) -> str:
+        if i is None or i >= len(row):
+            return ""
+        return str(row[i] or "").strip()
+
+    parsed: dict[str, dict] = {}  # keyed by normalised phone, last row wins
+    skipped = 0
+    for row in rows[1:]:
+        phone = _normalise_phone(row[phone_i] if phone_i < len(row) else "")
+        if not phone:
+            if any(str(c or "").strip() for c in row):
+                skipped += 1
+            continue
+        parsed[phone] = {"rank": cell(row, rank_i), "surname": cell(row, surname_i)}
+
+    if not parsed:
+        raise HTTPException(status_code=400, detail="No rows with a phone number found")
+
+    if mode == "replace":
+        db.query(SmsRecipient).delete()
+        existing = {}
+    else:
+        existing = {
+            _normalise_phone(r.phone_number): r
+            for r in db.query(SmsRecipient).all()
+        }
+
+    imported = 0
+    for phone, fields in parsed.items():
+        recipient = existing.get(phone)
+        if recipient:
+            recipient.rank = fields["rank"]
+            recipient.surname = fields["surname"]
+        else:
+            db.add(SmsRecipient(phone_number=phone, rank=fields["rank"], surname=fields["surname"]))
+        imported += 1
+
+    db.commit()
+    total = db.query(SmsRecipient).count()
+    return {"status": "success", "imported": imported, "skipped": skipped, "total": total}
 
 
 @router.delete("/recipients/{recipient_id}")
