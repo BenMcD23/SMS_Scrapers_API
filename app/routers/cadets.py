@@ -9,10 +9,21 @@ from sqlalchemy.orm import Session
 
 from database.models import Cadet
 
+from core import cache
 from core.db import get_db
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
+
+CADETS_CACHE_KEY = "cadets:list"
+CADETS_CACHE_TTL = 60
+
+
+def invalidate_cadet_caches():
+    """Drop caches derived from the cadet roster. Call from any write that
+    changes cadet data (staff edits, scraper imports)."""
+    cache.invalidate(CADETS_CACHE_KEY)
+    cache.invalidate("stats:current")
 
 
 class CadetPatch(BaseModel):
@@ -56,8 +67,13 @@ async def list_cadets(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    cached = cache.get(CADETS_CACHE_KEY)
+    if cached is not None:
+        return cached
     cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
-    return [_cadet_summary(c) for c in cadets]
+    result = [_cadet_summary(c) for c in cadets]
+    cache.set(CADETS_CACHE_KEY, result, CADETS_CACHE_TTL)
+    return result
 
 
 @router.get("/cadets/{cin}")
@@ -133,5 +149,6 @@ async def patch_cadet(
 
     db.commit()
     db.refresh(cadet)
+    invalidate_cadet_caches()
 
     return {"status": "success", "message": f"Cadet {cin} updated.", "updated_fields": list(update_data.keys())}
