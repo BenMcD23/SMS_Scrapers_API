@@ -59,6 +59,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
             {
                 "id":             str(oi.id),
                 "badgeName":      oi.badge_name,
+                "replacement":    bool(oi.replacement),
                 "qmNotes":        json.loads(oi.qm_notes) if oi.qm_notes and oi.qm_notes.strip().startswith("[") else [],
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
@@ -302,9 +303,10 @@ def badge_orders_create(
         if not raw.get("badgeName"):
             continue
         db.add(BadgeOrderItem(
-            order_id   = order.id,
-            badge_name = raw["badgeName"],
-            qm_notes   = "[]",
+            order_id    = order.id,
+            badge_name  = raw["badgeName"],
+            replacement = bool(raw.get("replacement", False)),
+            qm_notes    = "[]",
         ))
 
     db.commit()

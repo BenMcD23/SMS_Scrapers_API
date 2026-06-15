@@ -228,6 +228,27 @@ class ScraperRun(Base):
     ran_by     = Column(Text, nullable=True)    # email of triggering user
 
 
+class ScraperSchedule(Base):
+    """Squadron-wide automatic run schedule for one named scraper.
+
+    Scheduled runs use the Bader credentials of `user_id` — whoever last
+    saved the schedule.
+    """
+    __tablename__ = "Scraper_Schedules"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    scraper_id   = Column(Text, nullable=False, unique=True)  # one of the named scrapers
+    enabled      = Column(Boolean, nullable=False, default=False, server_default="0")
+    days_of_week = Column(Text, nullable=False, default="", server_default="")  # csv: "mon,wed,fri"
+    hour         = Column(Integer, nullable=False, default=22, server_default="22")
+    minute       = Column(Integer, nullable=False, default=0, server_default="0")
+    user_id      = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True)
+    updated_by   = Column(Text, nullable=True)
+    updated_at   = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────
 
 class StatsSnapshot(Base):
@@ -394,15 +415,54 @@ class BadgeOrder(Base):
 class BadgeOrderItem(Base):
     __tablename__ = "Badge_Order_Items"
 
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    order_id   = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
-    badge_name = Column(Text,    nullable=False)
-    qm_notes   = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    order_id    = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
+    badge_name  = Column(Text,    nullable=False)
+    replacement = Column(Boolean, nullable=False, default=False, server_default="0")  # replacements carry a £2 fee
+    qm_notes    = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
     given_at         = Column(DateTime, nullable=True)
     given_by         = Column(Text,     nullable=True)
     ready_to_collect = Column(DateTime, nullable=True)
 
     order = relationship("BadgeOrder", back_populates="order_items")
+
+
+# ─── Parade Night Texts ───────────────────────────────────────────────────────
+
+class SmsRecipient(Base):
+    """Someone who receives the parade-night SMS (staff/parents list)."""
+    __tablename__ = "Sms_Recipients"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    rank         = Column(Text, nullable=False, default="")
+    surname      = Column(Text, nullable=False, default="")
+    phone_number = Column(Text, nullable=False)
+
+
+class ParadeNightMessage(Base):
+    """
+    One row per parade night (Wed/Fri), generated from the programme doc.
+
+    `*_raw` columns hold the text extracted from the programme table;
+    `main_message` / `c_flight_message` are the AI-formatted (and staff-edited)
+    versions that actually get sent.
+    """
+    __tablename__ = "Parade_Night_Messages"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    parade_date      = Column(DateTime, nullable=False, unique=True)
+    uniform          = Column(Text, nullable=False, default="")  # AI-formatted/edited, gets sent
+    uniform_raw      = Column(Text, nullable=False, default="", server_default="")
+    dnco             = Column(Text, nullable=False, default="")
+    c_flight_raw     = Column(Text, nullable=False, default="")
+    main_body_raw    = Column(Text, nullable=False, default="")
+    main_message     = Column(Text, nullable=False, default="")
+    c_flight_message = Column(Text, nullable=False, default="")
+    status           = Column(Text, nullable=False, default="draft")  # "draft" | "ready" | "sent"
+    generated_by     = Column(Text, nullable=True)  # model id that produced the text, e.g. "gemini-3.5-flash"
+    generated_at     = Column(DateTime, nullable=False)
+    sent_at          = Column(DateTime, nullable=True)
+    send_results     = Column(JSON, nullable=True)  # [{phone, status_code, error?}]
 
 
 # ─── Badge Grid ───────────────────────────────────────────────────────────────
