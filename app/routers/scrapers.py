@@ -28,6 +28,7 @@ from scripts.scraper_calls import (
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
 from core.security import require_staff
+from routers.cadets import invalidate_cadet_caches
 from routers.stats import compute_stats
 
 router = APIRouter()
@@ -166,6 +167,8 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
             else:
                 if name == "cadet-quali":
                     _save_stats_snapshot(db)
+                # Scraper imports change cadet-derived data — drop stale caches
+                invalidate_cadet_caches()
                 state["messages"].append(json.dumps({"type": "status", "value": "done"}))
                 success = True
     except Exception as e:
