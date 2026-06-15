@@ -34,6 +34,7 @@ class OrderBody(BaseModel):
 
 class BadgeOrderItemIn(BaseModel):
     badgeName: str
+    replacement: bool = False  # replacement badges carry a £2 fee
 
 
 class BadgeOrderBody(BaseModel):
@@ -199,7 +200,7 @@ def cadet_create_badge_order(
 
     for item in body.items:
         if item.badgeName:
-            db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, qm_notes="[]"))
+            db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, replacement=item.replacement, qm_notes="[]"))
 
     db.commit()
     db.refresh(order)
@@ -223,7 +224,7 @@ def cadet_patch_badge_order(
     def add_items():
         for item in body.items:
             if item.badgeName:
-                db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, qm_notes="[]"))
+                db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, replacement=item.replacement, qm_notes="[]"))
 
     _replace_pending_items(db, order, add_items)
     return badge_order_to_dict(order)
