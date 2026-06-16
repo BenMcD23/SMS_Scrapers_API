@@ -88,6 +88,7 @@ async def get_bans(
 async def generate_doc_endpoint(
     event_id: int,
     action: str,
+    ai: bool = False,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -97,10 +98,10 @@ async def generate_doc_endpoint(
 
     try:
         if action == "ji":
-            file_buffer = generate_ji(event)
+            file_buffer = generate_ji(event, use_ai=ai)
             filename = f"JI_{event.reference}.docx"
         elif action == "ao":
-            file_buffer = generate_ao(event)
+            file_buffer = generate_ao(event, use_ai=ai)
             filename = f"AO_{event.reference}.docx"
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
@@ -115,4 +116,5 @@ async def generate_doc_endpoint(
         raise
     except Exception as e:
         print(f"Error generating document: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate document")
+        detail = "AI generation failed — try again or generate without AI" if ai else "Failed to generate document"
+        raise HTTPException(status_code=502 if ai else 500, detail=detail)
