@@ -7,10 +7,15 @@ from sqlalchemy.orm import Session
 
 from database.models import Cadet, CadetQualification, StatsSnapshot
 
+from core import cache
 from core.db import get_db
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
+
+# Cache keys shared with writers that invalidate cadet-derived data.
+STATS_CACHE_KEY = "stats:current"
+STATS_CACHE_TTL = 120
 
 BADGE_TYPES = [
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -144,7 +149,12 @@ async def get_current_stats(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    return compute_stats(db)
+    cached = cache.get(STATS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    stats = compute_stats(db)
+    cache.set(STATS_CACHE_KEY, stats, STATS_CACHE_TTL)
+    return stats
 
 
 @router.get("/stats/history")

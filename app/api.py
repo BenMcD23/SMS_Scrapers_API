@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func
 
 from database.create_db import init_db
@@ -80,6 +81,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Compress larger JSON payloads (cadet lists, stats, stores) — the home link is
+# the bottleneck, so shrinking the body cuts transfer time noticeably.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Allow the Next.js frontends to talk to us
 app.add_middleware(
