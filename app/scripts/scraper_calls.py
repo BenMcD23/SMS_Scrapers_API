@@ -399,6 +399,26 @@ def check_banned_scraper():
     pass
     # banned_and_bidding = get_event_bans(event_data)
 
+def check_new_cadets_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
+    """
+    TODO: scrape Bader for cadets with no SMS-linked Google account, grabbing
+    each one's secondary email + phone number, then call
+    create_accounts_for_new_cadets() to create their account. The account
+    creation side is already built — this just needs `new_cadets` populated
+    from Bader, e.g.:
+
+    from google_admin_api.create_users import create_accounts_for_new_cadets
+    new_cadets = [...]  # [{"first_name", "last_name", "secondary_email", "phone_number"}, ...]
+    created_emails = create_accounts_for_new_cadets(new_cadets)
+    if created_emails:
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Created Google account(s): {', '.join(created_emails)}",
+            }))
+    """
+    pass
+
 def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
     driver = None
     try:
