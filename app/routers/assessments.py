@@ -34,6 +34,10 @@ class MarkCompleteRequest(BaseModel):
     completed: bool = True
 
 
+# Assessment types that support in-place editing / PDF regeneration
+EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "MOI")
+
+
 # How many passed assessments are needed per type before upload is unlocked
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
@@ -108,6 +112,97 @@ def _save_sheet_and_notify(
     return sheet
 
 
+# ── Build fields + PDF (shared by create and edit) ────────────────────────────
+#
+# Each helper takes the raw request `data` (with assessor identity already
+# injected by the caller) and returns the `fields` dict to persist plus the
+# regenerated PDF bytes. `fields` stores everything needed to faithfully
+# rebuild the PDF later — including the signature(s) and the original ISO
+# dates — so an assessment can be edited and its PDF remade.
+
+def _leadership_fields_and_pdf(data: dict) -> tuple[dict, bytes]:
+    processed = process_assessment_data(data)
+    pdf_bytes = generate_leadership_pdf(processed)
+    fields = {
+        "scores":             processed["scores"],
+        "total_score":        processed["total_score"],
+        "passed":             processed["passed"],
+        "exercise_no":        processed["exercise_no"],
+        "exercise_name":      processed["exercise_name"],
+        "assessor_name":      processed["assessor_name"],
+        "date":               processed["date"],
+        "date_iso":           data.get("date", ""),
+        "debriefing_notes":   processed["debriefing_notes"],
+        "assessor_signature": processed.get("assessor_signature") or "",
+    }
+    return fields, pdf_bytes
+
+
+def _radio_fields_and_pdf(data: dict, cadet: Cadet) -> tuple[dict, bytes]:
+    processed = process_radio_data(data, cadet)
+    pdf_bytes = generate_radio_pdf(processed)
+    fields = {
+        "criteria":           processed["criteria"],
+        "passed":             processed["passed"],
+        "cyber_sec_date":     processed["cyber_sec_date"],
+        "cyber_sec_date_iso": data.get("cyber_sec_date", ""),
+        "comments":           processed["comments"],
+        "assessor_name":      processed["assessor_name"],
+        "assessor_initials":  processed["assessor_initials"],
+        "date":               processed["date"],
+        "date_iso":           data.get("date", ""),
+        "assessor_signature": processed.get("assessor_signature") or "",
+    }
+    return fields, pdf_bytes
+
+
+def _moi_fields_and_pdf(data: dict) -> tuple[dict, bytes]:
+    processed = process_moi_data(data)
+    pdf_bytes = generate_moi_pdf(processed)
+    fields = {
+        "scores":              processed["scores"],
+        "total_score":         processed["total_score"],
+        "passed":              processed["passed"],
+        "cadet_surname":       processed["cadet_surname"],
+        "cadet_forename":      processed["cadet_forename"],
+        "sqn_df":              processed["sqn_df"],
+        "wing_ccf":            processed["wing_ccf"],
+        "bader_reference":     processed["bader_reference"],
+        "place_of_assessment": processed["place_of_assessment"],
+        "section_comments":    processed["section_comments"],
+        "strengths":           processed["strengths"],
+        "improvements":        processed["improvements"],
+        "general_comments":    processed["general_comments"],
+        "assessor_name":       processed["assessor_name"],
+        "assessor_role":       processed["assessor_role"],
+        "date":                processed["date"],
+        "date_iso":            data.get("date", ""),
+        "assessor_signature":  processed.get("assessor_signature") or "",
+        "cadet_signature":     processed.get("cadet_signature") or "",
+    }
+    return fields, pdf_bytes
+
+
+def _validate_radio(data: dict, *, require_signature: bool) -> None:
+    if not data.get("cyber_sec_date", "").strip():
+        raise HTTPException(status_code=400, detail="Cyber Security video date is required.")
+    if require_signature and not data.get("assessor_signature", ""):
+        raise HTTPException(status_code=400, detail="Assessor signature is required.")
+    if len(data.get("comments", "")) > 140:
+        raise HTTPException(status_code=400, detail="Comments must be 140 characters or fewer.")
+
+
+def _validate_moi(data: dict) -> None:
+    for field in ("strengths_summary", "improvements_summary", "general_comments"):
+        if len(data.get(field, "")) > 1150:
+            raise HTTPException(status_code=400, detail=f"{field} must be 1150 characters or fewer.")
+    section_comment_limits = {"identifying": 670, "delivery": 500}
+    for key, val in data.get("section_comments", {}).items():
+        limit = section_comment_limits.get(key, 900)
+        if len(val) > limit:
+            raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
+
+
 # ── Creating assessments ──────────────────────────────────────────────────────
 
 @router.post("/assessments/leadership/add-assessment")
@@ -119,23 +214,11 @@ async def generate_leadership_assessment(
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data)
 
-    processed = process_assessment_data(data)
     assessor_name = _assessor_name(user)
     if assessor_name:
-        processed["assessor_name"] = assessor_name
+        data["assessor_name"] = assessor_name
 
-    pdf_bytes = generate_leadership_pdf(processed)
-
-    fields = {
-        "scores":           processed["scores"],
-        "total_score":      processed["total_score"],
-        "passed":           processed["passed"],
-        "exercise_no":      processed["exercise_no"],
-        "exercise_name":    processed["exercise_name"],
-        "assessor_name":    processed["assessor_name"],
-        "date":             processed["date"],
-        "debriefing_notes": processed["debriefing_notes"],
-    }
+    fields, pdf_bytes = _leadership_fields_and_pdf(data)
     sheet = _save_sheet_and_notify(db, user, cadet, "Blue Leadership", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
@@ -156,28 +239,13 @@ async def generate_radio_assessment(
         (user.first_name or "")[:1].upper() + (user.last_name or "")[:1].upper()
     )
 
-    if not data.get("cyber_sec_date", "").strip():
-        raise HTTPException(status_code=400, detail="Cyber Security video date is required.")
-    if not data.get("assessor_signature", ""):
-        raise HTTPException(status_code=400, detail="Assessor signature is required.")
-    if len(data.get("comments", "")) > 140:
-        raise HTTPException(status_code=400, detail="Comments must be 140 characters or fewer.")
+    _validate_radio(data, require_signature=True)
 
     # Pass is determined solely by whether all criteria are ticked
     criteria = data.get("criteria", {})
     data["passed"] = all(criteria.get(c) for c in criteria)
 
-    processed = process_radio_data(data, cadet)
-    pdf_bytes = generate_radio_pdf(processed)
-
-    fields = {
-        "criteria":       processed["criteria"],
-        "passed":         processed["passed"],
-        "cyber_sec_date": processed["cyber_sec_date"],
-        "comments":       processed["comments"],
-        "assessor_name":  processed["assessor_name"],
-        "date":           processed["date"],
-    }
+    fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
     sheet = _save_sheet_and_notify(db, user, cadet, "Blue Radio", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
@@ -191,40 +259,13 @@ async def generate_moi_assessment(
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data, allow_name_fallback=False)
 
-    for field in ("strengths_summary", "improvements_summary", "general_comments"):
-        if len(data.get(field, "")) > 1150:
-            raise HTTPException(status_code=400, detail=f"{field} must be 1150 characters or fewer.")
-    section_comment_limits = {"identifying": 670, "delivery": 500}
-    for key, val in data.get("section_comments", {}).items():
-        limit = section_comment_limits.get(key, 900)
-        if len(val) > limit:
-            raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
+    _validate_moi(data)
 
-    processed = process_moi_data(data)
     assessor_name = _assessor_name(user)
     if assessor_name:
-        processed["assessor_name"] = assessor_name
+        data["assessor_name"] = assessor_name
 
-    pdf_bytes = generate_moi_pdf(processed)
-
-    fields = {
-        "scores":              processed["scores"],
-        "total_score":         processed["total_score"],
-        "passed":              processed["passed"],
-        "cadet_surname":       processed["cadet_surname"],
-        "cadet_forename":      processed["cadet_forename"],
-        "sqn_df":              processed["sqn_df"],
-        "wing_ccf":            processed["wing_ccf"],
-        "bader_reference":     processed["bader_reference"],
-        "place_of_assessment": processed["place_of_assessment"],
-        "section_comments":    processed["section_comments"],
-        "strengths":           processed["strengths"],
-        "improvements":        processed["improvements"],
-        "general_comments":    processed["general_comments"],
-        "assessor_name":       processed["assessor_name"],
-        "assessor_role":       processed["assessor_role"],
-        "date":                processed["date"],
-    }
+    fields, pdf_bytes = _moi_fields_and_pdf(data)
     sheet = _save_sheet_and_notify(db, user, cadet, "MOI", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
@@ -302,6 +343,105 @@ async def assessments_overview(
         })
 
     return result
+
+
+@router.get("/assessments/{assessment_id}/detail")
+async def get_assessment_detail(
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Full editable data for one assessment (used to pre-fill the edit form).
+
+    Signature blobs are stripped from the response — they are large and the
+    editor does not change them; they are preserved server-side on edit.
+    """
+    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
+    if not sheet:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    fields = dict(sheet.fields or {})
+    fields.pop("assessor_signature", None)
+    fields.pop("cadet_signature", None)
+
+    cadet = sheet.cadet
+    return {
+        "id":              sheet.id,
+        "assessment_type": sheet.assessment_type,
+        "uploaded":        sheet.uploaded,
+        "editable":        sheet.assessment_type in EDITABLE_TYPES and not sheet.uploaded,
+        "cadet": {
+            "cin":        cadet.cin,
+            "first_name": cadet.first_name,
+            "last_name":  cadet.last_name,
+            "rank":       cadet.rank,
+        },
+        "fields": fields,
+    }
+
+
+@router.put("/assessments/{assessment_id}")
+async def edit_assessment(
+    assessment_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Edit an assessment's data and regenerate its PDF.
+
+    Completed (uploaded) assessments are locked — they must be reopened first.
+    The original assessor name and signature(s) are preserved; only the
+    assessment content (scores, criteria, comments, dates, etc.) is editable.
+    """
+    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
+    if not sheet:
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+
+    if sheet.uploaded:
+        raise HTTPException(
+            status_code=409,
+            detail="This assessment is marked complete and cannot be edited. Reopen it first.",
+        )
+
+    atype = sheet.assessment_type
+    if atype not in EDITABLE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Editing is not supported for '{atype}' assessments.")
+
+    existing = dict(sheet.fields or {})
+    cadet = sheet.cadet
+
+    # Preserve the original assessor identity and signature — these are not
+    # editable from the assessments page.
+    data["assessor_name"] = existing.get("assessor_name", "")
+    if not data.get("assessor_signature"):
+        data["assessor_signature"] = existing.get("assessor_signature", "")
+
+    if atype == "Blue Leadership":
+        fields, pdf_bytes = _leadership_fields_and_pdf(data)
+    elif atype == "Blue Radio":
+        data["assessor_initials"] = existing.get("assessor_initials", "")
+        _validate_radio(data, require_signature=False)
+        criteria = data.get("criteria", {})
+        data["passed"] = all(criteria.get(c) for c in criteria) if criteria else False
+        fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
+    else:  # MOI
+        if not data.get("cadet_signature"):
+            data["cadet_signature"] = existing.get("cadet_signature", "")
+        _validate_moi(data)
+        fields, pdf_bytes = _moi_fields_and_pdf(data)
+
+    sheet.fields = fields
+    sheet.pdf_data = pdf_bytes
+    sheet.pdf_mime_type = "application/pdf"
+    db.commit()
+    db.refresh(sheet)
+
+    return {
+        "status":        "success",
+        "assessment_id": sheet.id,
+        "passed":        fields.get("passed"),
+        "total_score":   fields.get("total_score"),
+    }
 
 
 @router.post("/assessments/{cin}/{assessment_type}/mark-complete")
