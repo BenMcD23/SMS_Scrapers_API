@@ -154,7 +154,7 @@ async def audit_medical(
 
 
 class AuditCheckBody(BaseModel):
-    cadet_cins: list[int]
+    cadet_cins: list[int] = []
     qualifications: list[str] = []
     include_medical: bool = False
     include_dietary: bool = False
@@ -166,12 +166,16 @@ async def audit_check_cadets(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    cadets = (
-        db.query(Cadet)
-        .filter(Cadet.cin.in_(body.cadet_cins))
-        .order_by(Cadet.last_name, Cadet.first_name)
-        .all()
-    )
+    if body.cadet_cins:
+        cadets = (
+            db.query(Cadet)
+            .filter(Cadet.cin.in_(body.cadet_cins))
+            .order_by(Cadet.last_name, Cadet.first_name)
+            .all()
+        )
+    else:
+        # Empty list means check all cadets
+        cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
     return _build_audit_result(cadets, body.qualifications, body.include_medical, body.include_dietary)
 
 

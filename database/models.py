@@ -383,7 +383,7 @@ class StoresOrderItem(Base):
     order = relationship("StoresOrder", back_populates="order_items")
 
 
-ISAUNCE_ITEM_TYPE_MAP: dict[str, str] = {
+ISSUANCE_ITEM_TYPE_MAP: dict[str, str] = {
     "Wedgewood Male":     "Wedgewood Shirt",
     "Wedgewood Female":   "Wedgewood Shirt",
     "Working Blue Male":  "Working Blue Shirt",
@@ -398,7 +398,7 @@ ISAUNCE_ITEM_TYPE_MAP: dict[str, str] = {
     "Belt":               "Belt",
 }
 
-ISAUNCE_CATEGORIES = [
+ISSUANCE_CATEGORIES = [
     "Beret",
     "Wedgewood Shirt",
     "Working Blue Shirt",
@@ -410,39 +410,6 @@ ISAUNCE_CATEGORIES = [
     "Belt",
 ]
 
-# Keep original names for backwards compat
-ISAUNCE_ITEM_TYPE_MAP = ISAUCE_ITEM_TYPE_MAP  # noqa: F811
-ISAUNCE_CATEGORIES = ISAUCE_CATEGORIES  # noqa: F811
-
-ISAUANCE_ITEM_TYPE_MAP = ISAUCE_ITEM_TYPE_MAP
-ISAUANCE_CATEGORIES = ISAUCE_CATEGORIES
-
-ISAUANCE_ITEM_TYPE_MAP = {
-    "Wedgewood Male":     "Wedgewood Shirt",
-    "Wedgewood Female":   "Wedgewood Shirt",
-    "Working Blue Male":  "Working Blue Shirt",
-    "Working Blue Female": "Working Blue Shirt",
-    "Trousers":           "Slacks/Trousers",
-    "Slacks":             "Slacks/Trousers",
-    "Skirts":             "Skirt",
-    "Beret":              "Beret",
-    "Jumper":             "Jumper",
-    "Tie":                "Tie",
-    "Brassard":           "Brassard",
-    "Belt":               "Belt",
-}
-
-ISAUANCE_CATEGORIES = [
-    "Beret",
-    "Wedgewood Shirt",
-    "Working Blue Shirt",
-    "Jumper",
-    "Slacks/Trousers",
-    "Skirt",
-    "Tie",
-    "Brassard",
-    "Belt",
-]
 
 class StoresItemIssuance(Base):
     __tablename__ = "Stores_Item_Issuances"
