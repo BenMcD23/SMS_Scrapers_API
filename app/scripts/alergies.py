@@ -2,6 +2,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+import json
 import time
 
 
@@ -47,10 +48,8 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
 
         cadet_name = cadetNames[i]
 
-        # Thread-safe status update
         with scraper_lock:
-            scraper_messages.append(f"Scraping cadet {i + 1}/{numberOfCadets}: {cadet_name}")
-            print(f"[Scraper] {scraper_messages[-1]}")
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Scraping cadet {i + 1}/{numberOfCadets}: {cadet_name}"}))
 
         # Load cadet list page
         driver.get("https://sms.bader.mod.uk/cadets/default.aspx")
@@ -62,26 +61,25 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
         )).select_by_value("-1")
         wait_for_loader(driver)
 
-        # Split cadet name
-        first, last = cadet_name.split()
-
-        # Find cadet row
-        row_xpath = f"""
-        //tr[
-            td/a[text()='{first}'] and
-            td/a[text()='{last}']
-        ]
-        """
-
-        row = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, row_xpath))
+        # Navigate by index (same pattern as quali scraper)
+        link = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable(
+                (By.ID, f'ctl00_ctl00_cphBaseBody_cphBody_lvCadets_ctrl{i}_lbFamilyName')
+            )
         )
+        driver.execute_script("arguments[0].click();", link)
         wait_for_loader(driver)
 
-        # Click Family Name link
-        family_link = row.find_element(By.XPATH, ".//a[contains(@id, 'lbFamilyName')]")
-        driver.execute_script("arguments[0].click();", family_link)
-        wait_for_loader(driver)
+        # Extract CIN
+        cin = None
+        try:
+            cin_label = driver.find_element(
+                By.ID, "ctl00_ctl00_cphBaseBody_cphBody_overview_fvProfile_lblPersonnelNumber"
+            )
+            cin_text = cin_label.find_element(By.XPATH, "following-sibling::h6[1]").text.strip()
+            cin = int(cin_text) if cin_text else None
+        except Exception:
+            pass
 
         # Click Medical tab
         smart_click(driver, (By.XPATH, "//a[contains(text(), 'Medical')]"))
@@ -112,7 +110,8 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
                     "severity": severity,
                     "details": details
                 })
-        # -------------------   -----------------------------
+
+        # ------------------------------------------------
         # EXTRACT DIETARY RESTRICTIONS
         # ------------------------------------------------
         dietary_rows = driver.find_elements(
@@ -125,13 +124,15 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) >= 2:
                 dietary_restrictions.append({
-                    "name": cols[0].text.strip(),      # e.g., "Other", "Vegetarian"
-                    "details": cols[1].text.strip()    # e.g., "Gluten Free"
+                    "name": cols[0].text.strip(),
+                    "details": cols[1].text.strip()
                 })
+
         # ------------------------------------------------
         # STORE RESULT
         # ------------------------------------------------
         cadet_data.append({
+            "cin": cin,
             "cadet_name": cadet_name,
             "allergies": allergies,
             "dietary_restrictions": dietary_restrictions

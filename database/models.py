@@ -26,6 +26,8 @@ class Cadet(Base):
     stores_orders     = relationship("StoresOrder",        back_populates="cadet")
     item_issuances    = relationship("StoresItemIssuance", back_populates="cadet", cascade="all, delete-orphan")
     badge_orders      = relationship("BadgeOrder",         back_populates="cadet")
+    medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
+    dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
 
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -45,6 +47,31 @@ class CadetQualification(Base):
     date_expires  = Column(DateTime, nullable=True) 
 
     cadet = relationship("Cadet", back_populates="qualifications")
+
+
+class CadetMedical(Base):
+    __tablename__ = "Cadet_Medical"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    allergy_name  = Column(Text,       nullable=False)
+    auto_injector = Column(Text,       nullable=False, default="No", server_default="No")
+    severity      = Column(Text,       nullable=True)
+    details       = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="medical")
+
+
+class CadetDietary(Base):
+    __tablename__ = "Cadet_Dietary"
+
+    id       = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    name     = Column(Text,       nullable=False)
+    details  = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="dietary")
+
 
 class Event317(Base):
     __tablename__ = "317_Events"
@@ -356,7 +383,7 @@ class StoresOrderItem(Base):
     order = relationship("StoresOrder", back_populates="order_items")
 
 
-ISSUANCE_ITEM_TYPE_MAP: dict[str, str] = {
+ISAUNCE_ITEM_TYPE_MAP: dict[str, str] = {
     "Wedgewood Male":     "Wedgewood Shirt",
     "Wedgewood Female":   "Wedgewood Shirt",
     "Working Blue Male":  "Working Blue Shirt",
@@ -371,7 +398,7 @@ ISSUANCE_ITEM_TYPE_MAP: dict[str, str] = {
     "Belt":               "Belt",
 }
 
-ISSUANCE_CATEGORIES = [
+ISAUNCE_CATEGORIES = [
     "Beret",
     "Wedgewood Shirt",
     "Working Blue Shirt",
@@ -383,6 +410,39 @@ ISSUANCE_CATEGORIES = [
     "Belt",
 ]
 
+# Keep original names for backwards compat
+ISAUNCE_ITEM_TYPE_MAP = ISAUCE_ITEM_TYPE_MAP  # noqa: F811
+ISAUNCE_CATEGORIES = ISAUCE_CATEGORIES  # noqa: F811
+
+ISAUANCE_ITEM_TYPE_MAP = ISAUCE_ITEM_TYPE_MAP
+ISAUANCE_CATEGORIES = ISAUCE_CATEGORIES
+
+ISAUANCE_ITEM_TYPE_MAP = {
+    "Wedgewood Male":     "Wedgewood Shirt",
+    "Wedgewood Female":   "Wedgewood Shirt",
+    "Working Blue Male":  "Working Blue Shirt",
+    "Working Blue Female": "Working Blue Shirt",
+    "Trousers":           "Slacks/Trousers",
+    "Slacks":             "Slacks/Trousers",
+    "Skirts":             "Skirt",
+    "Beret":              "Beret",
+    "Jumper":             "Jumper",
+    "Tie":                "Tie",
+    "Brassard":           "Brassard",
+    "Belt":               "Belt",
+}
+
+ISAUANCE_CATEGORIES = [
+    "Beret",
+    "Wedgewood Shirt",
+    "Working Blue Shirt",
+    "Jumper",
+    "Slacks/Trousers",
+    "Skirt",
+    "Tie",
+    "Brassard",
+    "Belt",
+]
 
 class StoresItemIssuance(Base):
     __tablename__ = "Stores_Item_Issuances"
