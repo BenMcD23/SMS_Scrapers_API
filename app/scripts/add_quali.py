@@ -1,7 +1,9 @@
 import time
 import os
+import json
 
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
@@ -14,6 +16,7 @@ def add_qualification_with_attachment(
     cadet_cin: int | str,
     qualification_name: str,
     pdf_paths: list[str],
+    award_date: str | None = None,
     scraper_messages=None,
     scraper_lock=None,
 ):
@@ -32,15 +35,14 @@ def add_qualification_with_attachment(
     scraper_lock      : Optional threading lock for scraper_messages
     """
 
-    def log(msg):
+    def log(msg, level="info"):
+        print(f"[add_quali] {level}: {msg}", flush=True)
+        payload = json.dumps({"type": level, "value": msg})
         if scraper_messages is not None and scraper_lock is not None:
             with scraper_lock:
-                scraper_messages.append(msg)
-        else:
-            print(msg)
+                scraper_messages.append(payload)
 
     cin_str = str(cadet_cin).strip()
-    print("here")
     # ── 1. Open cadets list and find the cadet by CIN ────────────────────────
     log(f"Navigating to cadet list to find CIN {cin_str}...")
     driver.get("https://sms.bader.mod.uk/cadets/default.aspx")
@@ -140,6 +142,50 @@ def add_qualification_with_attachment(
     qual_select.select_by_value(matched_value)
     time.sleep(0.3)
 
+    # ── 4b. Set the Date Awarded in the modal (if provided) ──────────────────
+    if award_date:
+        log(f"Setting date awarded to {award_date}...")
+        date_input = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable(
+                (By.ID,
+                 "ctl00_ctl00_cphBaseBody_cphBody_bulkUpdateQualifications_"
+                 "fvBulkAddQualifications_txtDateAwarded")
+            )
+        )
+        # This is a Tempus Dominus / Bootstrap datetimepicker. A raw value= set
+        # is ignored (the widget keeps its own date model and overwrites the
+        # input on submit), so we type into it like a user, then TAB to commit
+        # and close the popup. Note: ESC reverts/clears the field, so never use
+        # it here.
+        date_input.click()
+        date_input.send_keys(Keys.CONTROL, "a")
+        date_input.send_keys(Keys.DELETE)
+        date_input.send_keys(award_date)
+        time.sleep(0.2)
+        date_input.send_keys(Keys.TAB)
+        time.sleep(0.2)
+
+        # Belt-and-braces: also push the value through the jQuery datetimepicker
+        # API if it's present, so the widget's internal model matches.
+        driver.execute_script(
+            """
+            const el = arguments[0], val = arguments[1];
+            if (window.jQuery) {
+                try { jQuery(el).datetimepicker('date', val); } catch (e) {}
+            }
+            if (el.value !== val) { el.value = val; }
+            if (window.jQuery) { jQuery(el).trigger('change'); }
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            """,
+            date_input,
+            award_date,
+        )
+        time.sleep(0.2)
+
+        actual = date_input.get_attribute("value")
+        if actual != award_date:
+            log(f"[WARN] Date field shows '{actual}' after setting '{award_date}'.", "warning")
+
     # ── 5. Submit the modal (find and click the Save/Add button inside it) ────
     log("Submitting the Add Qualification modal...")
     # The modal save button — look for a button/link with "Save" or "Add" inside the modal
@@ -176,54 +222,50 @@ def add_qualification_with_attachment(
         time.sleep(0.5)
 
     # ── 7. Find the ctrl index for our qualification ──────────────────────────
-    # Each qual row is a <tr> whose first <td> text matches the qual name.
-    # The sibling row's inputs encode the ctrl index, e.g. lvQualifications_ctrl0_...
+    # The qual's edit link id encodes its real ASP.NET ctrl number, e.g.
+    # lvQualifications_ctrl12_lbEdit. We must use that number — not the row's
+    # position in the table — because the attachments (sibling) row is matched
+    # by the same _ctrl{N}_ token, and the two collections are not aligned.
     log(f"Finding ctrl index for '{qualification_name}'...")
 
     target = qualification_name.strip().lower()
 
-    qual_table_rows = WebDriverWait(driver, 20).until(
+    edit_links = WebDriverWait(driver, 20).until(
         EC.presence_of_all_elements_located(
-            (By.XPATH, "//table[contains(@id,'Qualification') or @class[contains(.,'tablelist')]]//tr[not(contains(@class,'sibling')) and td]")
+            (By.XPATH, "//a[contains(@id,'lvQualifications_ctrl') and contains(@id,'_lbEdit')]")
         )
     )
 
     ctrl_index = None
-    for i, row in enumerate(qual_table_rows):
-        cells = row.find_elements(By.TAG_NAME, "td")
-        if cells and target in cells[0].text.strip().lower():
-            ctrl_index = i
+    for link in edit_links:
+        parent_tr = link.find_element(By.XPATH, "./ancestor::tr[1]")
+        if target in parent_tr.text.strip().lower():
+            ctrl_index = int(link.get_attribute("id").split("_ctrl")[1].split("_")[0])
             break
-
-    if ctrl_index is None:
-        # Fallback: scan edit link IDs to find the right ctrl number
-        edit_links = driver.find_elements(
-            By.XPATH, "//a[contains(@id,'lvQualifications_ctrl') and contains(@id,'_lbEdit')]"
-        )
-        for link in edit_links:
-            link_id = link.get_attribute("id")
-            # Walk up to the parent <tr> and check its text
-            parent_tr = link.find_element(By.XPATH, "./ancestor::tr[1]")
-            if target in parent_tr.text.strip().lower():
-                ctrl_index = int(link_id.split("_ctrl")[1].split("_")[0])
-                break
 
     if ctrl_index is None:
         raise ValueError(f"Could not find qualification row for '{qualification_name}' after refresh.")
 
     log(f"Found qualification at ctrl index {ctrl_index}.")
 
-    # ── 8. Show the sibling row via JS (toggleSibling has no ID to click) ────
-    log("Revealing attachments panel via JavaScript...")
-    sibling_rows = driver.find_elements(By.XPATH, "//tr[contains(@class,'sibling')]")
-
-    if ctrl_index >= len(sibling_rows):
-        raise ValueError(
-            f"Sibling row index {ctrl_index} out of range (only {len(sibling_rows)} sibling rows found)."
+    # ── 8. Show the sibling (attachments) row via JS ─────────────────────────
+    # The sibling row carries the same lvQualifications_ctrl{N}_ token in its
+    # descendants' ids, so match on that rather than positional indexing.
+    def reveal_sibling_row():
+        matches = driver.find_elements(
+            By.XPATH,
+            f"//tr[contains(@class,'sibling')]"
+            f"[.//*[contains(@id,'lvQualifications_ctrl{ctrl_index}_')]]",
         )
+        if not matches:
+            raise ValueError(
+                f"Could not find attachments (sibling) row for ctrl index {ctrl_index}."
+            )
+        driver.execute_script("arguments[0].style.display = 'table-row';", matches[0])
+        return matches[0]
 
-    sibling_row = sibling_rows[ctrl_index]
-    driver.execute_script("arguments[0].style.display = 'table-row';", sibling_row)
+    log("Revealing attachments panel via JavaScript...")
+    reveal_sibling_row()
     time.sleep(0.5)
 
 # ── 9. Upload each PDF one at a time ─────────────────────────────────────
@@ -240,9 +282,7 @@ def add_qualification_with_attachment(
         log(f"Uploading PDF {i+1}/{len(pdf_paths)} as '{new_filename}'...")
 
         # Re-show sibling row
-        sibling_rows = driver.find_elements(By.XPATH, "//tr[contains(@class,'sibling')]")
-        sibling_row = sibling_rows[ctrl_index]
-        driver.execute_script("arguments[0].style.display = 'table-row';", sibling_row)
+        reveal_sibling_row()
         time.sleep(0.5)
 
         ctrl_prefix = (

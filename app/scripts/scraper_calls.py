@@ -467,8 +467,8 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 # Map assessment_type → exact qualification name as it appears in the Bader dropdown
 ASSESSMENT_TYPE_TO_QUAL_NAME: dict[str, str] = {
     "Blue Leadership": "Blue Leadership",
-    "first_aid":       "First Aid",
-    "radio":           "Radio Operator",
+    "Blue Radio":      "Radio - Basic Operator (Blue)",
+    # "MOI": "<exact Bader dropdown name>",  # add once the target qual is confirmed
 }
 
 
@@ -483,12 +483,11 @@ def upload_qualifications_scraper(
     driver = None
 
     def log(msg: str, level: str = "info"):
+        print(f"[upload-to-bader] {level}: {msg}", flush=True)
         payload = json.dumps({"type": level, "value": msg})
         if scraper_messages is not None and scraper_lock is not None:
             with scraper_lock:
                 scraper_messages.append(payload)
-        else:
-            print(msg)
 
     try:
         driver, credentials = init_scraper(user_id, db_session)
@@ -566,12 +565,29 @@ def upload_qualifications_scraper(
                         f.write(s.pdf_data)
                     tmp_paths.append(tmp_path)
 
+                # ── Resolve the award date from the assessment ────────────────
+                # The stored date format varies (ISO from <input type=date>, or
+                # UK dd/mm/yy from edited sheets); Bader's datetimepicker wants
+                # 4-digit UK DD/MM/YYYY.
+                award_date = None
+                raw_date = (sheets_with_pdf[0].fields or {}).get("date")
+                if raw_date:
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y"):
+                        try:
+                            award_date = datetime.strptime(raw_date, fmt).strftime("%d/%m/%Y")
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                    if award_date is None:
+                        award_date = raw_date  # unknown format — pass through as-is
+
                 # ── Call the Bader scraper ────────────────────────────────────
                 add_qualification_with_attachment(
                     driver=driver,
                     cadet_cin=cadet.cin,
                     qualification_name=qual_name,
                     pdf_paths=tmp_paths,
+                    award_date=award_date,
                     scraper_messages=scraper_messages,
                     scraper_lock=scraper_lock,
                 )
