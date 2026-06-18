@@ -27,4 +27,4 @@ EXPOSE 8000
 
 ENV PYTHONPATH=/app/app:/app
 
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic -c database/alembic.ini upgrade head && uvicorn api:app --host 0.0.0.0 --port 8000"]
