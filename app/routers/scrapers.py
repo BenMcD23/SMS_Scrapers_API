@@ -11,7 +11,7 @@ import json
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
@@ -28,13 +28,16 @@ from scripts.scraper_calls import (
 
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
-from core.security import require_staff
+from core.security import require_staff, require_owner
 from routers.cadets import invalidate_cadet_caches
 from routers.stats import compute_stats
 
 router = APIRouter()
 
 SCRAPER_TIMEOUT_SECONDS = 900
+
+# Run logs are kept for this long, then purged by a daily cleanup job.
+RUN_LOG_RETENTION_DAYS = 7
 
 # ── Global scraper state (upload-to-bader) ────────────────────────────────────
 
@@ -499,6 +502,56 @@ async def scraper_run_detail(
         "ran_by": run.ran_by,
         "logs": run.logs or "",
     }
+
+
+@router.get("/api-logs")
+async def api_logs(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_owner),
+):
+    """Owner-only: every persisted run + its full logs from the last week."""
+    cutoff = datetime.now() - timedelta(days=RUN_LOG_RETENTION_DAYS)
+    runs = (
+        db.query(ScraperRun)
+        .filter(ScraperRun.ran_at >= cutoff)
+        .order_by(ScraperRun.ran_at.desc())
+        .all()
+    )
+    return {
+        "retention_days": RUN_LOG_RETENTION_DAYS,
+        "runs": [
+            {
+                "id": r.id,
+                "scraper_id": r.scraper_id,
+                "ran_at": r.ran_at.isoformat(),
+                "success": r.success,
+                "ran_by": r.ran_by,
+                "logs": r.logs or "",
+            }
+            for r in runs
+        ],
+    }
+
+
+def cleanup_old_run_logs():
+    """Delete run records older than the retention window. Run daily by the scheduler."""
+    cutoff = datetime.now() - timedelta(days=RUN_LOG_RETENTION_DAYS)
+    db = Session(engine)
+    try:
+        deleted = (
+            db.query(ScraperRun)
+            .filter(ScraperRun.ran_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted:
+            print(f"[cleanup_old_run_logs] purged {deleted} run record(s) older than "
+                  f"{RUN_LOG_RETENTION_DAYS} days", flush=True)
+    except Exception as e:
+        db.rollback()
+        print(f"[cleanup_old_run_logs] failed: {e}", flush=True)
+    finally:
+        db.close()
 
 
 @router.get("/scrapers-running")
