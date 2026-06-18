@@ -20,7 +20,7 @@ from googleapiclient.discovery import build as google_build
 
 from core.config import (
     GOOGLE_CLIENT_ID, STAFF_GROUP, NCO_GROUP,
-    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL,
+    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL,
 )
 
 _role_cache: dict = {}
@@ -129,4 +129,12 @@ def require_staff_or_nco(authorization: str = Header(None)) -> dict:
     idinfo = verify_token(authorization)
     if get_user_role(idinfo["email"]) not in ("staff", "nco"):
         raise HTTPException(status_code=403, detail="Staff or NCO access required")
+    return idinfo
+
+
+def require_owner(authorization: str = Header(None)) -> dict:
+    """Developer-only access — restricted to the single OWNER_EMAIL account."""
+    idinfo = verify_token(authorization)
+    if idinfo.get("email", "").lower() != OWNER_EMAIL.lower():
+        raise HTTPException(status_code=403, detail="Owner access required")
     return idinfo
