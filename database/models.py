@@ -226,6 +226,7 @@ class ScraperRun(Base):
     ran_at     = Column(DateTime, nullable=False)
     success    = Column(Boolean, nullable=False, default=True)
     ran_by     = Column(Text, nullable=True)    # email of triggering user
+    logs       = Column(Text, nullable=True)    # newline-joined run log buffer
 
 
 class ScraperSchedule(Base):

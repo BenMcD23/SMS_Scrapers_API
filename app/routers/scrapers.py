@@ -107,6 +107,9 @@ def run_scraper_task(scraper_func, user_id: int):
 
     threading.Thread(target=monitor_timeout, daemon=True).start()
 
+    success = False
+    run_name = current_scraper_name
+    run_by = current_scraper_user
     try:
         scraper_func(scraper_messages, scraper_lock, user_id, db, stop_event)
 
@@ -117,11 +120,28 @@ def run_scraper_task(scraper_func, user_id: int):
                 if current_scraper_name == "cadet-quali":
                     _save_stats_snapshot(db)
                 scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
+                success = True
     except Exception as e:
         print("[upload-to-bader] CRASH:\n" + traceback.format_exc(), flush=True)
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "error", "value": f"Crash: {type(e).__name__}: {str(e)}"}))
     finally:
+        # Persist the run + its logs so they're viewable in the UI without SSH
+        try:
+            with scraper_lock:
+                run_logs = _format_run_logs(scraper_messages)
+            run_db = Session(engine)
+            run_db.add(ScraperRun(
+                scraper_id=run_name or "upload-qualifications",
+                ran_at=datetime.now(),
+                success=success,
+                ran_by=run_by,
+                logs=run_logs,
+            ))
+            run_db.commit()
+            run_db.close()
+        except Exception as rec_err:
+            print(f"[scraper run record] failed: {rec_err}", flush=True)
         db.close()
         with scraper_state_lock:
             scraper_running = False
@@ -192,6 +212,7 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
                     ran_at=datetime.now(),
                     success=success,
                     ran_by=user_email,
+                    logs=_format_run_logs(state["messages"]),
                 ))
                 run_db.commit()
                 run_db.close()
@@ -288,6 +309,24 @@ def safe_parse(m: str) -> dict | None:
         return json.loads(m) if m else None
     except json.JSONDecodeError:
         return None
+
+
+def _format_run_logs(messages: list[str]) -> str:
+    """Render the live message buffer into a plain-text log for persistence.
+
+    Each message is either a JSON envelope ({"type","value"}) or a legacy raw
+    string. Non-info levels are prefixed so warnings/errors stand out on review.
+    """
+    lines = []
+    for m in messages:
+        parsed = safe_parse(m)
+        if parsed is None:
+            lines.append(str(m))
+            continue
+        value = parsed.get("value", "")
+        level = parsed.get("type", "info")
+        lines.append(f"[{level.upper()}] {value}" if level not in ("info", "log") else str(value))
+    return "\n".join(lines)
 
 
 def _staff_from_header_or_query(authorization: str, token: str):
@@ -410,11 +449,56 @@ async def scraper_last_runs(
             .first()
         )
         result[name] = {
+            "id": run.id if run else None,
             "ran_at": run.ran_at.isoformat() if run else None,
             "success": run.success if run else None,
             "ran_by": run.ran_by if run else None,
         }
     return result
+
+
+@router.get("/scraper-runs")
+async def scraper_runs(
+    limit: int = 30,
+    scraper_id: str | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Recent run history (metadata only) across all scrapers, newest first."""
+    q = db.query(ScraperRun).order_by(ScraperRun.ran_at.desc())
+    if scraper_id:
+        q = q.filter(ScraperRun.scraper_id == scraper_id)
+    runs = q.limit(min(limit, 100)).all()
+    return [
+        {
+            "id": r.id,
+            "scraper_id": r.scraper_id,
+            "ran_at": r.ran_at.isoformat(),
+            "success": r.success,
+            "ran_by": r.ran_by,
+        }
+        for r in runs
+    ]
+
+
+@router.get("/scraper-runs/{run_id}")
+async def scraper_run_detail(
+    run_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Full detail for one run, including the captured log text."""
+    run = db.query(ScraperRun).filter(ScraperRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return {
+        "id": run.id,
+        "scraper_id": run.scraper_id,
+        "ran_at": run.ran_at.isoformat(),
+        "success": run.success,
+        "ran_by": run.ran_by,
+        "logs": run.logs or "",
+    }
 
 
 @router.get("/scrapers-running")
