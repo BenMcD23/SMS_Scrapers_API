@@ -45,7 +45,7 @@ def get_env_path():
 
 def init_driver():
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
+    # options.add_argument("--headless")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-gpu")
@@ -57,10 +57,8 @@ def init_driver():
     return webdriver.Chrome(options=options)
 
 def login(driver, credentials, scraper_messages, scraper_lock):
-    print("login", scraper_lock, scraper_messages)
-
     with scraper_lock:
-        scraper_messages.append("Attempting login")
+        scraper_messages.append(json.dumps({"type": "info", "value": "Attempting login"}))
     driver.get("https://sms.bader.mod.uk/")
 
     wait_for_aspx_load(driver)
@@ -80,7 +78,7 @@ def login(driver, credentials, scraper_messages, scraper_lock):
         raise Exception(f"Login failed, current URL: {driver.current_url}")
     
     with scraper_lock:
-        scraper_messages.append("Logged in")
+        scraper_messages.append(json.dumps({"type": "info", "value": "Logged in"}))
 
 def init_scraper(user_id, db_session):
     user = db_session.query(User).filter(User.id == user_id).first()

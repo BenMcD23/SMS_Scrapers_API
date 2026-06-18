@@ -10,6 +10,7 @@ import asyncio
 import json
 import threading
 import time
+import traceback
 from datetime import datetime
 
 from apscheduler.triggers.cron import CronTrigger
@@ -117,8 +118,9 @@ def run_scraper_task(scraper_func, user_id: int):
                     _save_stats_snapshot(db)
                 scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
     except Exception as e:
+        print("[upload-to-bader] CRASH:\n" + traceback.format_exc(), flush=True)
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "error", "value": f"Crash: {str(e)}"}))
+            scraper_messages.append(json.dumps({"type": "error", "value": f"Crash: {type(e).__name__}: {str(e)}"}))
     finally:
         db.close()
         with scraper_state_lock:
@@ -314,10 +316,11 @@ async def scraper_stream(
                 yield f"data: {catchup}\n\n"
 
             last_idx = len(scraper_messages)
+            # Replay everything appended before this client connected — the
+            # scraper starts as soon as the job is claimed, often before the
+            # EventSource handshake completes, so these would otherwise be lost.
             for msg in scraper_messages:
-                parsed = safe_parse(msg)
-                if parsed and parsed.get("type") == "log":
-                    yield f"data: {msg}\n\n"
+                yield f"data: {msg}\n\n"
 
         # Then keep polling for new messages until the client disconnects
         while True:
@@ -342,9 +345,9 @@ async def scraper_stream(
 async def scraper_status(idinfo: dict = Depends(require_staff)):
     with scraper_lock:
         logs = [
-            json.loads(m).get("value", m)
+            safe_parse(m).get("value", m)
             for m in scraper_messages
-            if safe_parse(m) and safe_parse(m).get("type") == "log"
+            if safe_parse(m) and safe_parse(m).get("type") in ("info", "warning", "error", "status")
         ]
     return {
         "running": scraper_running,
