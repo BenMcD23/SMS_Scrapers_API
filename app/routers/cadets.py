@@ -11,6 +11,7 @@ from database.models import Cadet, CadetMedical, CadetDietary, CadetQualificatio
 
 from core import cache
 from core.db import get_db
+from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
@@ -79,20 +80,23 @@ async def list_cadets(
 # ─── Audit helpers ────────────────────────────────────────────────────────────
 
 def _build_audit_result(cadets, qualifications, include_medical, include_dietary):
+    # `qualifications` is a list of badge-type keys from the catalog. Unknown
+    # keys are ignored so the frontend can't crash the audit.
+    badges = [BADGE_TYPE_BY_KEY[k] for k in qualifications if k in BADGE_TYPE_BY_KEY]
     results = []
     for c in cadets:
         entry = {**_cadet_summary(c)}
-        if qualifications:
-            qual_map = {q.qual_type: q for q in c.qualifications}
+        if badges:
+            qual_names = [q.qual_type for q in c.qualifications]
             entry["qualifications_check"] = [
                 {
-                    "qual_type": qt,
-                    "display_name": qt.replace("_", " ").title(),
-                    "has": qt in qual_map,
-                    "date_achieved": qual_map[qt].date_achieved.isoformat() if qt in qual_map and qual_map[qt].date_achieved else None,
-                    "date_expires": qual_map[qt].date_expires.isoformat() if qt in qual_map and qual_map[qt].date_expires else None,
+                    "qual_type": b.key,
+                    "display_name": b.name,
+                    "kind": b.kind,
+                    "level": (lvl := held_level(b, qual_names)),
+                    "has": lvl is not None,
                 }
-                for qt in qualifications
+                for b in badges
             ]
         if include_medical:
             entry["allergies"] = [
@@ -114,6 +118,21 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
 
 
 # ─── Audit routes (must be before /cadets/{cin}) ──────────────────────────────
+
+@router.get("/cadets/audit/badge-types")
+async def audit_badge_types(idinfo: dict = Depends(require_staff)):
+    """The qualification catalog — badge types, their kind, and ordered levels
+    (highest first) — so the frontend can build the audit UI dynamically."""
+    return [
+        {
+            "key": b.key,
+            "name": b.name,
+            "kind": b.kind,
+            "levels": [lvl.level for lvl in b.levels],
+        }
+        for b in BADGE_TYPES
+    ]
+
 
 @router.get("/cadets/audit/medical")
 async def audit_medical(

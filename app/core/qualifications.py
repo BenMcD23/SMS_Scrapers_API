@@ -3,24 +3,30 @@
 This is the single source of truth that two features consume:
 
 * **Audit** (`routers/cadets.py`) — group a cadet's scraped qualifications by
-  badge type and report the highest level held (blue → bronze → silver → gold).
+  badge type and report the highest level held.
 * **Assessment-sheet uploader** (`scripts/scraper_calls.py`) — turn a
   ``(badge_type, level)`` into the exact Bader dropdown name(s) + option id so
   the scraper can select the right qualification when uploading proof.
 
-Background — how the data lines up
-----------------------------------
+How matching works
+------------------
 The qualifications scraper stores ``CadetQualification.qual_type`` as the **raw
-Bader text** exactly as it appears in a cadet's qualifications table, e.g.
-``"Bronze Duke of Edinburgh Award"``. So matching here is by Bader name. The
-``bader_id`` is the ``<option value>`` from the "Add Qualification" dropdown —
-only the uploader needs it; the audit only needs the names.
+Bader text** exactly as it appears in a cadet's qualifications table. Detection
+here mirrors the squadron's classification spreadsheet: each level lists
+case-insensitive **substring patterns** that are searched against the cadet's
+qualifications, checked **highest level first** (so the first match wins, exactly
+like the spreadsheet's nested IFs). ``held_level`` returns that level's label.
 
-NOTE: this is a *best-guess* mapping built from the Bader dropdown. Items marked
-``# TODO`` could not be confirmed from the captured dropdown HTML (the option id
-was missing/truncated) and should be filled in before wiring the uploader.
-Names are stored trimmed; when matching against stored ``qual_type`` values,
-strip/casefold both sides to be safe.
+Two kinds of badge:
+* ``leveled``  — an ordered ladder (e.g. blue→bronze→silver→gold, or
+  basic→intermediate→advanced for swimming). ``held_level`` returns the label.
+* ``boolean``  — held or not (e.g. MOI). Modelled as a single ``YES`` level.
+
+``Level.bader`` holds the exact "Add Qualification" dropdown name(s) + option id
+for the uploader. It can be empty when a pattern matches qualifications that
+aren't uploadable here (old Space module names, Swimming competences, etc.).
+Items with ``bader_id=None`` need their option id confirmed from the full Bader
+dropdown before the uploader can select them (marked ``# TODO``).
 """
 
 from __future__ import annotations
@@ -28,174 +34,199 @@ from __future__ import annotations
 from typing import NamedTuple, Optional
 
 
-# ─── Level ordering ───────────────────────────────────────────────────────────
-# "single" is for badge types with no progression (e.g. First Aid).
+# ─── Level labels ─────────────────────────────────────────────────────────────
 
 BLUE = "blue"
 BRONZE = "bronze"
 SILVER = "silver"
 GOLD = "gold"
-SINGLE = "single"
+NIJMEGEN = "nijmegen"          # Road Marching — sits above gold
+BASIC = "basic"               # Swimming
+INTERMEDIATE = "intermediate"  # Swimming
+ADVANCED = "advanced"          # Swimming
+YES = "yes"                   # boolean badges
 
-LEVEL_ORDER: dict[str, int] = {SINGLE: 0, BLUE: 1, BRONZE: 2, SILVER: 3, GOLD: 4}
+LEVELED = "leveled"
+BOOLEAN = "boolean"
 
 
 # ─── Data model ───────────────────────────────────────────────────────────────
 
 class BaderQual(NamedTuple):
-    """One concrete qualification as it exists in Bader."""
-    name: str                 # exact dropdown / qualifications-table text (trimmed)
+    """One concrete qualification as it exists in the Bader dropdown."""
+    name: str                 # exact dropdown text (trimmed)
     bader_id: Optional[int]   # <option value> in the Add-Qualification dropdown
 
 
 class Level(NamedTuple):
-    """A single rung of a badge ladder. May map to several Bader quals
-    (e.g. Music collapses the four instrument variants into one level)."""
-    level: str                # BLUE | BRONZE | SILVER | GOLD | SINGLE
-    quals: tuple[BaderQual, ...]
+    """One rung of a badge. ``patterns`` are searched for the audit; ``bader``
+    is the uploadable dropdown option(s) for that rung (may be empty)."""
+    level: str                # one of the level labels above
+    patterns: tuple[str, ...]  # case-insensitive substrings to detect this rung
+    bader: tuple[BaderQual, ...] = ()
 
 
 class BadgeType(NamedTuple):
     key: str                  # stable slug used by the API / frontend
     name: str                 # human-readable label
-    levels: tuple[Level, ...]
+    kind: str                 # LEVELED | BOOLEAN
+    levels: tuple[Level, ...]  # HIGHEST priority first
 
 
 # ─── The catalog ──────────────────────────────────────────────────────────────
+# Levels are listed highest-priority first to mirror the spreadsheet IF cascade.
 
 BADGE_TYPES: tuple[BadgeType, ...] = (
-    BadgeType("duke_of_edinburgh", "Duke of Edinburgh", (
-        Level(BLUE,   (BaderQual("Blue Pre-Duke of Edinburgh Award", 462),)),
-        Level(BRONZE, (BaderQual("Bronze Duke of Edinburgh Award", 463),)),
-        Level(SILVER, (BaderQual("Silver Duke of Edinburgh Award", 464),)),
-        Level(GOLD,   (BaderQual("Gold Duke of Edinburgh Award", 465),)),
+    BadgeType("duke_of_edinburgh", "Duke of Edinburgh", LEVELED, (
+        Level(GOLD,   ("Gold Duke of Edinburgh Award",),   (BaderQual("Gold Duke of Edinburgh Award", 465),)),
+        Level(SILVER, ("Silver Duke of Edinburgh Award",), (BaderQual("Silver Duke of Edinburgh Award", 464),)),
+        Level(BRONZE, ("Bronze Duke of Edinburgh Award",), (BaderQual("Bronze Duke of Edinburgh Award", 463),)),
+        Level(BLUE,   ("Blue Pre-Duke of Edinburgh Award",), (BaderQual("Blue Pre-Duke of Edinburgh Award", 462),)),
     )),
 
-    BadgeType("leadership", "Leadership", (
-        Level(BLUE,   (BaderQual("Blue Leadership", 5003),)),
-        Level(BRONZE, (BaderQual("Bronze Leadership", 5002),)),
-        Level(SILVER, (BaderQual("Silver Leadership", 5004),)),
-        Level(GOLD,   (BaderQual("Gold Leadership", 5005),)),
+    BadgeType("first_aid", "First Aid", LEVELED, (
+        Level(GOLD,   ("Cadet First Aid Instructor Award",), (BaderQual("Cadet First Aid Instructor Award", 470),)),
+        Level(SILVER, ("Activity First Aid",),               (BaderQual("St John Activity First Aid", 124),)),
+        Level(BRONZE, ("Youth First Aid",),                  (BaderQual("St John Youth First Aid", 125),)),
+        Level(BLUE,   ("Essential First Aid",),              (BaderQual("St John Essential First Aid", 2973),)),
     )),
 
-    BadgeType("fieldcraft", "Fieldcraft", (
-        Level(BLUE,   (BaderQual("Blue Fieldcraft Skills", 4980),)),
-        Level(BRONZE, (BaderQual("Bronze Fieldcraft Skills", 4981),)),
-        Level(SILVER, (BaderQual("Silver Fieldcraft Skills", 4982),)),
-        Level(GOLD,   (
-            BaderQual("Gold Fieldcraft Skills", 4983),
-            BaderQual("Gold Fieldcraft Skills (MOD A)", 4984),
-        )),
+    # Spreadsheet keys off "Air Cadet Foundation Leadership"; the dropdown labels
+    # them "<Level> Leadership". Both naming variants are accepted for the audit.
+    BadgeType("leadership", "Leadership", LEVELED, (
+        Level(GOLD,   ("Gold Air Cadet Foundation Leadership", "Gold Leadership"),     (BaderQual("Gold Leadership", 5005),)),
+        Level(SILVER, ("Silver Air Cadet Foundation Leadership", "Silver Leadership"), (BaderQual("Silver Leadership", 5004),)),
+        Level(BRONZE, ("Bronze Air Cadet Foundation Leadership", "Bronze Leadership"), (BaderQual("Bronze Leadership", 5002),)),
+        Level(BLUE,   ("Blue Air Cadet Foundation Leadership", "Blue Leadership"),     (BaderQual("Blue Leadership", 5003),)),
     )),
 
-    BadgeType("road_marching", "Road Marching", (
-        Level(BLUE,   (BaderQual("Blue Road Marching", 1931),)),
-        Level(BRONZE, (BaderQual("Bronze Road Marching", 472),)),
-        Level(SILVER, (BaderQual("Silver Road Marching", 471),)),
-        Level(GOLD,   (BaderQual("Gold Road Marching", 1932),)),
+    BadgeType("cyber", "Cyber", LEVELED, (
+        Level(GOLD,   ("Cyber - Specialist (Gold)",), (BaderQual("Cyber - Specialist (Gold)", 378),)),
+        Level(SILVER, ("Cyber - Silver Award",),      (BaderQual("Cyber - Silver Award", 496),)),
+        Level(BRONZE, ("Cyber - Bronze Award",),      (BaderQual("Cyber - Bronze Award", 497),)),
     )),
 
-    BadgeType("space", "Space", (
-        Level(BLUE,   (BaderQual("Blue Space Studies", 4993),)),
-        Level(BRONZE, (BaderQual("Bronze Space Studies", 4994),)),
-        Level(SILVER, (BaderQual("Silver Space Studies", 4995),)),
-        Level(GOLD,   (BaderQual("Gold Space Studies", 5001),)),
+    BadgeType("radio", "Radio", LEVELED, (
+        Level(GOLD,   ("Radio - Comms Specialist (Gold)",), (BaderQual("Radio - Comms Specialist (Gold)", 377),)),
+        Level(SILVER, ("Radio - Communicator (Silver)",),   (BaderQual("Radio - Communicator (Silver)", 376),)),
+        Level(BRONZE, ("Radio - Operator (Bronze)",),       (BaderQual("Radio - Operator (Bronze)", 375),)),
+        Level(BLUE,   ("Radio - Basic Operator (Blue)",),   (BaderQual("Radio - Basic Operator (Blue)", 373),)),
     )),
 
-    # Core radio operator badge ladder. (Other "Radio - ..." entries such as
-    # Datacomms / LAN-WAN / Technical Skills are add-on modules, not the ladder.)
-    BadgeType("radio", "Radio", (
-        Level(BLUE,   (BaderQual("Radio - Basic Operator (Blue)", 373),)),
-        Level(BRONZE, (BaderQual("Radio - Operator (Bronze)", 375),)),
-        Level(SILVER, (BaderQual("Radio - Communicator (Silver)", 376),)),
-        Level(GOLD,   (BaderQual("Radio - Comms Specialist (Gold)", 377),)),
+    BadgeType("road_marching", "Road Marching", LEVELED, (
+        Level(NIJMEGEN, ("Nijmegen Road Marching",), (BaderQual("Nijmegen Road Marching", 473),)),
+        Level(GOLD,     ("Gold Road Marching",),     (BaderQual("Gold Road Marching", 1932),)),
+        Level(SILVER,   ("Silver Road Marching",),   (BaderQual("Silver Road Marching", 471),)),
+        Level(BRONZE,   ("Bronze Road Marching",),   (BaderQual("Bronze Road Marching", 472),)),
+        Level(BLUE,     ("Blue Road Marching",),     (BaderQual("Blue Road Marching", 1931),)),
     )),
 
-    # Cyber has no blue rung. (The older First/Leading/Senior Class scheme is
-    # intentionally omitted — add a separate badge type if it's still tracked.)
-    BadgeType("cyber", "Cyber", (
-        Level(BRONZE, (BaderQual("Cyber - Bronze Award", 497),)),
-        Level(SILVER, (BaderQual("Cyber - Silver Award", 496),)),
-        Level(GOLD,   (BaderQual("Cyber - Specialist (Gold)", 378),)),
+    # Older themed Space modules (Life on Mars, etc.) count toward a level too.
+    BadgeType("space", "Space", LEVELED, (
+        Level(GOLD,   ("Gold Space Studies",), (BaderQual("Gold Space Studies", 5001),)),
+        Level(SILVER, ("Life on Mars (Silver)", "Planetary Landscapes (Silver)", "Silver Space Studies"),
+                      (BaderQual("Silver Space Studies", 4995),)),
+        Level(BRONZE, ("Exploring Space (Bronze)", "The Moon our Nearest Neighbour (Bronze)", "Bronze Space Studies"),
+                      (BaderQual("Bronze Space Studies", 4994),)),
+        Level(BLUE,   ("Applications of Space Technology (Blue)", "Blue Space Studies"),
+                      (BaderQual("Blue Space Studies", 4993),)),
     )),
 
-    BadgeType("flying", "Aviation / Flying Badge", (
-        Level(BLUE,   (BaderQual("RAFAC Aviation Training Package Blue Training Badge", 2989),)),
-        Level(BRONZE, (BaderQual("RAFAC Aviation Training Package Bronze Training Badge", 2990),)),
-        Level(SILVER, (BaderQual("RAFAC Silver Flying Badge", 2991),)),
-        Level(GOLD,   (BaderQual("RAFAC Gold Flying Badge", 2992),)),
-    )),
-
-    # Collapsed across the four instrument variants per the design decision.
-    BadgeType("music", "Music", (
-        Level(BLUE, (
-            BaderQual("Musician (Blue) - Crossed Trumpets", 1899),
-            BaderQual("Musician (Blue) - Drum", 1900),
-            BaderQual("Musician (Blue) - Lyre", 1898),
-            BaderQual("Musician (Blue) - Pipes", 1897),
-        )),
-        Level(BRONZE, (
-            BaderQual("Wing Musician (Bronze) - Crossed Trumpets", 1903),
-            BaderQual("Wing Musician (Bronze) - Drums", 1904),
-            BaderQual("Wing Musician (Bronze) - Lyre", 1902),
-            BaderQual("Wing Musician (Bronze) - Pipes", 1901),
-        )),
-        Level(SILVER, (
-            BaderQual("Regional Musician (Silver) - Crossed Trumpets", 1907),
-            BaderQual("Regional Musician (Silver) - Drums", 1908),
-            BaderQual("Regional Musician (Silver) - Lyre", 1906),
-            BaderQual("Regional Musician (Silver) - Pipes", 1905),
-        )),
-        Level(GOLD, (
+    # Collapsed across the four instrument variants — pattern matches any of them.
+    BadgeType("music", "Music", LEVELED, (
+        Level(GOLD,   ("National Musician",), (
             BaderQual("National Musician (Gold) - Crossed Trumpets", 1911),
             BaderQual("National Musician (Gold) - Drums", 1912),
             BaderQual("National Musician (Gold) - Lyre", 1910),
             BaderQual("National Musician (Gold) - Pipes", 1909),
         )),
+        Level(SILVER, ("Regional Musician",), (
+            BaderQual("Regional Musician (Silver) - Crossed Trumpets", 1907),
+            BaderQual("Regional Musician (Silver) - Drums", 1908),
+            BaderQual("Regional Musician (Silver) - Lyre", 1906),
+            BaderQual("Regional Musician (Silver) - Pipes", 1905),
+        )),
+        Level(BRONZE, ("Wing Musician",), (
+            BaderQual("Wing Musician (Bronze) - Crossed Trumpets", 1903),
+            BaderQual("Wing Musician (Bronze) - Drums", 1904),
+            BaderQual("Wing Musician (Bronze) - Lyre", 1902),
+            BaderQual("Wing Musician (Bronze) - Pipes", 1901),
+        )),
+        # "Musician" is a substring of the higher tiers, so it must be checked last.
+        Level(BLUE,   ("Musician",), (
+            BaderQual("Musician (Blue) - Crossed Trumpets", 1899),
+            BaderQual("Musician (Blue) - Drum", 1900),
+            BaderQual("Musician (Blue) - Lyre", 1898),
+            BaderQual("Musician (Blue) - Pipes", 1897),
+        )),
     )),
 
-    # Collapsed across the four weapon variants. NOTE: only Blue and Bronze were
-    # present in the captured dropdown HTML — Silver/Gold names are inferred from
-    # the naming pattern and their option ids are unknown.
-    BadgeType("shooting", "Shooting (Marksman)", (
-        Level(BLUE, (
-            BaderQual("Blue Shot (Air Rifle)", 1662),
-            BaderQual("Blue Shot (L98A2)", 1670),
-            BaderQual("Blue Shot (Small Bore)", 1666),
-            BaderQual("Blue Shot (Target Rifle)", 1674),
+    BadgeType("flying", "Flying Badge", LEVELED, (
+        Level(GOLD,   ("RAFAC Gold Flying Badge",),   (BaderQual("RAFAC Gold Flying Badge", 2992),)),
+        Level(SILVER, ("RAFAC Silver Flying Badge",), (BaderQual("RAFAC Silver Flying Badge", 2991),)),
+        Level(BRONZE, ("RAFAC Aviation Training Package Bronze Training Badge",),
+                      (BaderQual("RAFAC Aviation Training Package Bronze Training Badge", 2990),)),
+        Level(BLUE,   ("RAFAC Aviation Training Package Blue Training Badge",),
+                      (BaderQual("RAFAC Aviation Training Package Blue Training Badge", 2989),)),
+    )),
+
+    BadgeType("fieldcraft", "Fieldcraft", LEVELED, (
+        Level(GOLD,   ("Gold Fieldcraft Skills",), (
+            BaderQual("Gold Fieldcraft Skills", 4983),
+            BaderQual("Gold Fieldcraft Skills (MOD A)", 4984),
         )),
-        Level(BRONZE, (
+        Level(SILVER, ("Silver Fieldcraft Skills",), (BaderQual("Silver Fieldcraft Skills", 4982),)),
+        Level(BRONZE, ("Bronze Fieldcraft Skills",), (BaderQual("Bronze Fieldcraft Skills", 4981),)),
+        Level(BLUE,   ("Blue Fieldcraft Skills",),   (BaderQual("Blue Fieldcraft Skills", 4980),)),
+    )),
+
+    # Collapsed across the four weapon variants — pattern matches any of them.
+    BadgeType("shooting", "Shooting", LEVELED, (
+        Level(GOLD,   ("Gold Shot",), (
+            BaderQual("Gold Shot (Air Rifle)", 1665),
+            BaderQual("Gold Shot (L98A2)", 1673),
+            BaderQual("Gold Shot (Small Bore)", 1669),
+            BaderQual("Gold Shot (Target Rifle)", 1677),
+        )),
+        Level(SILVER, ("Silver Shot",), (
+            BaderQual("Silver Shot (Air Rifle)", 1664),
+            BaderQual("Silver Shot (L98A2)", 1672),
+            BaderQual("Silver Shot (Small Bore)", 1668),
+            BaderQual("Silver Shot (Target Rifle)", 1676),
+        )),
+        Level(BRONZE, ("Bronze Shot",), (
             BaderQual("Bronze Shot (Air Rifle)", 1663),
             BaderQual("Bronze Shot (L98A2)", 1671),
             BaderQual("Bronze Shot (Small Bore)", 1667),
             BaderQual("Bronze Shot (Target Rifle)", 1675),
         )),
-        Level(SILVER, (
-            BaderQual("Silver Shot (Air Rifle)", None),     # TODO: confirm name + bader_id
-            BaderQual("Silver Shot (L98A2)", None),         # TODO
-            BaderQual("Silver Shot (Small Bore)", None),    # TODO
-            BaderQual("Silver Shot (Target Rifle)", None),  # TODO
-        )),
-        Level(GOLD, (
-            BaderQual("Gold Shot (Air Rifle)", None),       # TODO: confirm name + bader_id
-            BaderQual("Gold Shot (L98A2)", None),           # TODO
-            BaderQual("Gold Shot (Small Bore)", None),      # TODO
-            BaderQual("Gold Shot (Target Rifle)", None),    # TODO
+        Level(BLUE,   ("Blue Shot",), (
+            BaderQual("Blue Shot (Air Rifle)", 1662),
+            BaderQual("Blue Shot (L98A2)", 1670),
+            BaderQual("Blue Shot (Small Bore)", 1666),
+            BaderQual("Blue Shot (Target Rifle)", 1674),
         )),
     )),
 
-    # No progression — best-guess set of the first-aid quals a cadet might hold.
-    # Trim this to whatever the squadron actually counts as "has first aid".
-    BadgeType("first_aid", "First Aid", (
-        Level(SINGLE, (
-            BaderQual("St John Youth First Aid", 125),
-            BaderQual("St John Activity First Aid", 124),
-            BaderQual("St John Essential First Aid", 2973),
-            BaderQual("First Aid At Work", 36),
-            BaderQual("Emergency First Aid at Work (6 hours)", 265),
-            BaderQual("Red Cross Practical First Aid", 267),
-            BaderQual("Cadet First Aid Instructor Award", 470),
+    BadgeType("swimming", "Swimming Proficiency", LEVELED, (
+        Level(ADVANCED,     ("Advanced Swimming Competence",)),
+        Level(INTERMEDIATE, ("Intermediate Swimming Competence",)),
+        Level(BASIC,        ("Basic Swimming Competence",)),
+    )),
+
+    BadgeType("presentation_skills", "Presentation Skills", BOOLEAN, (
+        Level(YES, ("Presentation Skills",), (BaderQual("Presentation Skills", 1918),)),
+    )),
+
+    BadgeType("moi", "MOI", BOOLEAN, (
+        Level(YES, ("Instructor Cadet",), (
+            BaderQual("Instructor Cadet", 1920),
+            BaderQual("Instructor Cadet (pre May2019)", 1921),
         )),
+    )),
+
+    BadgeType("climatic_injuries", "Climatic Injuries", BOOLEAN, (
+        Level(YES, ("Heat Injury - Cadet Presentation",), (BaderQual("Heat Injury - Cadet Presentation", 3979),)),
     )),
 )
 
@@ -205,39 +236,24 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
 BADGE_TYPE_BY_KEY: dict[str, BadgeType] = {b.key: b for b in BADGE_TYPES}
 
 
-def _normalize(name: str) -> str:
-    return name.strip().casefold()
-
-
-# Bader qual name (normalized) → (badge_key, level). Lets you reverse a scraped
-# qual_type back to the badge type / level it represents.
-BADER_NAME_INDEX: dict[str, tuple[str, str]] = {
-    _normalize(q.name): (badge.key, lvl.level)
-    for badge in BADGE_TYPES
-    for lvl in badge.levels
-    for q in lvl.quals
-}
-
-
-def held_level(badge: BadgeType, qual_names: set[str]) -> Optional[str]:
-    """Highest level of ``badge`` represented in ``qual_names`` (a set of the
-    cadet's raw ``qual_type`` strings), or ``None`` if none are held."""
-    wanted = {_normalize(n) for n in qual_names}
-    best: Optional[str] = None
-    for lvl in badge.levels:
-        if any(_normalize(q.name) in wanted for q in lvl.quals):
-            if best is None or LEVEL_ORDER[lvl.level] > LEVEL_ORDER[best]:
-                best = lvl.level
-    return best
+def held_level(badge: BadgeType, qual_names) -> Optional[str]:
+    """The level of ``badge`` held by a cadet, given an iterable of their raw
+    ``qual_type`` strings. Returns the highest-priority level whose pattern
+    matches (mirroring the spreadsheet cascade), or ``None`` if none match."""
+    blob = "\n".join(qual_names).casefold()
+    for lvl in badge.levels:  # highest priority first
+        if any(p.casefold() in blob for p in lvl.patterns):
+            return lvl.level
+    return None
 
 
 def bader_quals_for(badge_key: str, level: str) -> tuple[BaderQual, ...]:
-    """The Bader qual(s) for a ``(badge_key, level)`` — used by the uploader to
-    pick the dropdown option (default to the first entry)."""
+    """The Bader dropdown qual(s) for a ``(badge_key, level)`` — used by the
+    uploader to select the option (default to the first entry)."""
     badge = BADGE_TYPE_BY_KEY.get(badge_key)
     if not badge:
         return ()
     for lvl in badge.levels:
         if lvl.level == level:
-            return lvl.quals
+            return lvl.bader
     return ()
