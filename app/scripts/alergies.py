@@ -50,9 +50,9 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
                 scraper_messages.append(json.dumps({"type": "info", "value": f"[debug] {msg}"}))
 
     for i in range(numberOfCadets):
-        if i == 10:
-            dbg("Hit the i == 10 debug cap — only the first 10 cadets are scraped.")
-            break
+        # if i == 10:
+        #     dbg("Hit the i == 10 debug cap — only the first 10 cadets are scraped.")
+        #     break
         if stop_event and stop_event.is_set():
             return cadet_data
 
