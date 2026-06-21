@@ -7,7 +7,7 @@ from scripts.add_quali import add_qualification_with_attachment
 import json
 from datetime import datetime
 
-from database.models import Cadet, CadetQualification, AllEvent, CadetEvent
+from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary
 from google_admin_api.get_all_users import get_workspace_users
 
 import os
@@ -124,6 +124,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             cadet.flight        = entry.get("flight")      or cadet.flight
             cadet.date_of_birth = entry.get("date_of_birth") or cadet.date_of_birth
             cadet.email         = email or cadet.email  # keep existing if no match
+            cadet.classification = entry.get("classification") or cadet.classification
 
             # Deduplicate scraped qualifications by qual_type, keeping most recent date_achieved
             deduped_quals = {}
@@ -435,16 +436,71 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
             stop_event=stop_event,
         )
 
-        # 5. Push to Apps Script if not stopped
-        if not stop_event.is_set():
-            push_to_google_apps_script(
-                cadet_allergies_data,
-                "https://script.google.com/macros/s/AKfycbxl94R1lBUwx4R2yu3Bzi82GEvPk6tpDVNE1EW065STdDUBYEDrC2ItdpfidcuRPwBg/exec",
-                scraper_messages,
-                scraper_lock
-            )
+        if stop_event.is_set():
             with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
+                scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped by timeout."}))
+            return
+
+        # 5. Save to DB
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Saving medical and dietary data to database..."}))
+
+        saved = 0
+        skipped = 0
+        for entry in cadet_allergies_data:
+            cin = entry.get("cin")
+            if not cin:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({"type": "warning", "value": f"[WARN] No CIN for {entry.get('cadet_name')} — skipping DB save."}))
+                skipped += 1
+                continue
+
+            cadet = db_session.query(Cadet).filter(Cadet.cin == cin).first()
+            if not cadet:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({"type": "warning", "value": f"[WARN] Cadet CIN {cin} ({entry.get('cadet_name')}) not found in DB — skipping."}))
+                skipped += 1
+                continue
+
+            # Replace existing records with fresh data
+            db_session.query(CadetMedical).filter(CadetMedical.cadet_id == cin).delete()
+            db_session.query(CadetDietary).filter(CadetDietary.cadet_id == cin).delete()
+
+            for allergy in entry.get("allergies", []):
+                db_session.add(CadetMedical(
+                    cadet_id=cin,
+                    allergy_name=allergy.get("allergy", ""),
+                    auto_injector=allergy.get("auto_injector", "No"),
+                    severity=allergy.get("severity", ""),
+                    details=allergy.get("details", ""),
+                ))
+
+            for dietary in entry.get("dietary_restrictions", []):
+                db_session.add(CadetDietary(
+                    cadet_id=cin,
+                    name=dietary.get("name", ""),
+                    details=dietary.get("details", ""),
+                ))
+
+            saved += 1
+
+        db_session.commit()
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"DB update complete — {saved} cadets saved, {skipped} skipped."
+            }))
+
+        # 6. Also push to Apps Script (legacy)
+        push_to_google_apps_script(
+            cadet_allergies_data,
+            "https://script.google.com/macros/s/AKfycbxl94R1lBUwx4R2yu3Bzi82GEvPk6tpDVNE1EW065STdDUBYEDrC2ItdpfidcuRPwBg/exec",
+            scraper_messages,
+            scraper_lock
+        )
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
     except TimeoutException:
         if not stop_event.is_set():
@@ -452,6 +508,7 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 scraper_messages.append(json.dumps({"type": "error", "value": "Connection timed out while loading cadet profiles."}))
     except Exception as e:
         if not stop_event.is_set():
+            db_session.rollback()
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Medical Scraper Error: {str(e)}"}))
     finally:
