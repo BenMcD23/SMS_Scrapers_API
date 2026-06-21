@@ -98,8 +98,102 @@ def get_classification(driver):
         return None
 
 
+def _norm_name(name: str) -> str:
+    """Normalise a name for matching: collapse whitespace, casefold."""
+    return " ".join((name or "").split()).casefold()
+
+
+def _report_signature(driver):
+    """A cheap fingerprint of the currently-rendered report page, used to detect
+    when SSRS has actually swapped in the next page after clicking Next."""
+    try:
+        el = driver.find_element(By.CSS_SELECTOR, "div[id^='VisibleReportContent']")
+        return el.text[:300]
+    except Exception:
+        return ""
+
+
+def _parse_classification_page(driver, result, current):
+    """Parse the rows of the currently-shown report page into ``result``
+    ({normalised name → classification}). ``current`` is the classification
+    group carried over from the previous page (groups can span page breaks)."""
+    content = driver.find_element(By.CSS_SELECTOR, "div[id^='VisibleReportContent']")
+    for row in content.find_elements(By.XPATH, ".//tr[@valign='top']"):
+        tds = row.find_elements(By.XPATH, "./td")
+        if len(tds) < 4:
+            continue
+        # Layout per data row: [spacer, classification, rank, name]. The three
+        # content cells tell us the row type by which are populated.
+        classification_cell, rank_cell, name_cell = (td.text.strip() for td in tds[-3:])
+        if classification_cell == "Classification" and name_cell == "Name":
+            continue  # column header
+        if classification_cell and not rank_cell and not name_cell:
+            current = classification_cell  # group header (e.g. "Leading Cadet")
+        elif name_cell and rank_cell and not classification_cell:
+            result[_norm_name(name_cell)] = current  # cadet row
+    return current
+
+
+def get_all_classifications(driver):
+    """Load the squadron Classifications report once and return
+    {normalised name → classification label} for every cadet. Far faster than
+    opening each cadet's Classification → Summary tab (one report vs N postbacks).
+    Returns {} on failure, so callers fall back to the per-cadet scrape."""
+    result = {}
+    try:
+        driver.get("https://sms.bader.mod.uk/reports/unitPersonnelClassifications.aspx")
+        wait_for_preloader(driver)
+        wait_for_aspx_load(driver)
+
+        # Wait for the SSRS report to render its first page of rows.
+        WebDriverWait(driver, 60).until(lambda d: len(d.find_elements(
+            By.XPATH, "//div[starts-with(@id,'VisibleReportContent')]//tr[@valign='top']")) > 3)
+
+        # Walk every page. Don't trust the "of N" total (SSRS populates it
+        # lazily, so it can read 1 even when there are more) — instead keep
+        # clicking Next until SSRS hides the enabled Next button on the last page.
+        next_id = "ctl00_ctl00_cphBaseBody_cphBody_rptvwReport_ctl05_ctl00_Next_ctl00_ctl00"
+        current = None
+        pages = 0
+        while True:
+            current = _parse_classification_page(driver, result, current)
+            pages += 1
+
+            try:
+                next_btn = driver.find_element(By.ID, next_id)
+            except Exception:
+                break
+            # On the last page the enabled Next button is hidden (display:none).
+            if not next_btn.is_displayed() or pages > 100:
+                break
+
+            # SSRS "Next Page" — async postback re-renders the report area. The
+            # generic aspx wait returns before the swap, so wait until the
+            # rendered content actually changes.
+            before = _report_signature(driver)
+            safe_click(driver, next_btn)
+            try:
+                WebDriverWait(driver, 30).until(
+                    lambda d: _report_signature(d) not in ("", before))
+            except TimeoutException:
+                print(f"Warning: classification report stopped advancing at page {pages}")
+                break
+            wait_for_aspx_load(driver)
+            time.sleep(0.3)
+
+        print(f"Classification report: {pages} page(s), {len(result)} cadets matched")
+
+    except Exception as e:
+        print(f"Warning: Could not load classification report: {e}")
+    return result
+
+
 def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None):
     cadet_data = []
+
+    # One-shot: pull every cadet's classification from the report up front. The
+    # per-cadet Summary tab is only used as a fallback for names not in the report.
+    classifications_by_name = get_all_classifications(driver)
 
     for i in range(numberOfCadets):
         if stop_event and stop_event.is_set():
@@ -184,11 +278,15 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
         except Exception:
             flight = None
 
-        # ── Classification (Classification → Summary tab) ─────────────────────
-        # Done BEFORE the qualifications tabs: navigating to General Qualifications
-        # leaves the cadet profile (its own page), so the TabsCadet1 bar — and the
-        # Classification tab with it — is no longer in the DOM afterwards.
-        classification = get_classification(driver)
+        # ── Classification ───────────────────────────────────────────────────
+        # Prefer the up-front report lookup (by name); fall back to the per-cadet
+        # Summary tab only if this cadet wasn't matched in the report. The fallback
+        # must run BEFORE the qualifications tabs — navigating to General
+        # Qualifications leaves the profile, taking the TabsCadet1 bar with it.
+        classification = classifications_by_name.get(
+            _norm_name(f"{first_name} {last_name}"))
+        if classification is None:
+            classification = get_classification(driver)
 
         # ── Navigate to qualifications tabs ──────────────────────────────────
 
