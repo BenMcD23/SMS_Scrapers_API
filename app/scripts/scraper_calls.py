@@ -124,6 +124,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             cadet.flight        = entry.get("flight")      or cadet.flight
             cadet.date_of_birth = entry.get("date_of_birth") or cadet.date_of_birth
             cadet.email         = email or cadet.email  # keep existing if no match
+            cadet.classification = entry.get("classification") or cadet.classification
 
             # Deduplicate scraped qualifications by qual_type, keeping most recent date_achieved
             deduped_quals = {}

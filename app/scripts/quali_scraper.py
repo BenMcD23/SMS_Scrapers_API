@@ -45,6 +45,59 @@ def get_cadet_names(driver):
 
     return cadetNames, numberOfCadets
 
+
+# Classification levels, highest first. Each maps the classification label to the
+# "result type" input on the Classification → Summary panel, which reads "Pass"
+# once achieved. "Basic Cadet Part 3" is the First Class pass (Parts 1 & 2 ignored).
+CLASSIFICATION_LEVELS = [
+    ("Master Air Cadet",  "ctl00_ctl00_cphBaseBody_cphBody_fvClassification_StaffCadetPart1ResultTypeLabel"),
+    ("Senior Cadet",      "ctl00_ctl00_cphBaseBody_cphBody_fvClassification_SeniorCadetResultTypeLabel"),
+    ("Leading Cadet",     "ctl00_ctl00_cphBaseBody_cphBody_fvClassification_LeadingCadetResultTypeLabel"),
+    ("First Class Cadet", "ctl00_ctl00_cphBaseBody_cphBody_fvClassification_FirstClassPart3TypeLabel"),
+]
+
+
+def get_classification(driver):
+    """Open the cadet's Classification → Summary panel and return the highest
+    classification they've passed (or "Junior Cadet" if none). Returns None on
+    failure so the rest of the scrape isn't lost."""
+    try:
+        # Same click-through pattern as the qualifications tabs above: open the
+        # "Classification" tab (a Bootstrap dropdown-toggle), then its "Summary"
+        # item. Matched by EXACT tab id, not link text — the sidebar's
+        # "Classification" report link has identical text and sits earlier in the
+        # DOM, so a text match navigates to /reports instead.
+        class_tab_ids = [
+            "ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Classification",
+            "ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Summary",
+        ]
+        for elem_id in class_tab_ids:
+            tab_element = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, elem_id)))
+            safe_click(driver, tab_element)
+            wait_for_preloader(driver)
+            wait_for_aspx_load(driver)
+            time.sleep(0.5)
+
+        # Wait for the classification panel to render before reading the rows.
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located(
+                (By.ID, "ctl00_ctl00_cphBaseBody_cphBody_fvClassification_lbEdit")))
+
+        for label, input_id in CLASSIFICATION_LEVELS:
+            try:
+                value = driver.find_element(By.ID, input_id).get_attribute("value")
+            except Exception:
+                continue
+            if value and value.strip().lower() == "pass":
+                return label
+        return "Junior Cadet"
+
+    except Exception as e:
+        print(f"Warning: Could not extract classification: {e}")
+        return None
+
+
 def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None):
     cadet_data = []
 
@@ -131,6 +184,12 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
         except Exception:
             flight = None
 
+        # ── Classification (Classification → Summary tab) ─────────────────────
+        # Done BEFORE the qualifications tabs: navigating to General Qualifications
+        # leaves the cadet profile (its own page), so the TabsCadet1 bar — and the
+        # Classification tab with it — is no longer in the DOM afterwards.
+        classification = get_classification(driver)
+
         # ── Navigate to qualifications tabs ──────────────────────────────────
 
         tabs = [
@@ -195,6 +254,7 @@ def get_cadet_info_and_qualifications(driver, cadetNames, numberOfCadets, scrape
             "rank":          rank,
             "flight":        flight,
             "date_of_birth": date_of_birth,
+            "classification": classification,
             "qualifications": cadetQualifications,
         })
 
