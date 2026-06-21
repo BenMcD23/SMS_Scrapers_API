@@ -18,7 +18,7 @@ class Cadet(Base):
     rank          = Column(Text, nullable=True)
     flight        = Column(Text, nullable=True)
     banned        = Column(Boolean, nullable=False, default=False, server_default="0")
-    # classification = Column(Text, nullable=True)
+    classification = Column(Text, nullable=True)  # highest classification passed, e.g. "Leading Cadet"
 
     qualifications    = relationship("CadetQualification", back_populates="cadet")
     cadet_events      = relationship("CadetEvent",         back_populates="cadet")

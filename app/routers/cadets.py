@@ -34,11 +34,12 @@ class CadetPatch(BaseModel):
 
 def _cadet_summary(c: Cadet) -> dict:
     return {
-        "cin":        c.cin,
-        "first_name": c.first_name,
-        "last_name":  c.last_name,
-        "rank":       c.rank,
-        "flight":     c.flight,
+        "cin":            c.cin,
+        "first_name":     c.first_name,
+        "last_name":      c.last_name,
+        "rank":           c.rank,
+        "flight":         c.flight,
+        "classification": c.classification,
     }
 
 
