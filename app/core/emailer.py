@@ -6,10 +6,15 @@ import email.mime.text
 import email.mime.base
 import email.encoders
 
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build as google_build
 
-from core.config import SA_EMAIL, SA_PRIVATE_KEY, NOREPLY_EMAIL
-from core.security import _service_account_creds
+from core.config import (
+    NOREPLY_EMAIL,
+    GMAIL_OAUTH_CLIENT_ID,
+    GMAIL_OAUTH_CLIENT_SECRET,
+    GMAIL_NOREPLY_REFRESH_TOKEN,
+)
 
 FOOTER = (
     '<p style="margin:20px 0 0;font-size:12px;color:#999">'
@@ -19,13 +24,21 @@ FOOTER = (
 
 def send_email(to: str, subject: str, html_body: str, attachment: bytes | None = None,
                attachment_filename: str = "attachment.pdf") -> None:
-    if not SA_EMAIL or not SA_PRIVATE_KEY or not NOREPLY_EMAIL:
-        print("[send_email] skipped: service account or noreply email not configured")
+    if not GMAIL_OAUTH_CLIENT_ID or not GMAIL_OAUTH_CLIENT_SECRET or not GMAIL_NOREPLY_REFRESH_TOKEN or not NOREPLY_EMAIL:
+        print("[send_email] skipped: noreply Gmail credentials not configured")
         return
     try:
-        creds = _service_account_creds(
-            ["https://www.googleapis.com/auth/gmail.send"]
-        ).with_subject(NOREPLY_EMAIL)
+        # A user credential for the noreply mailbox only — it can send *as noreply*
+        # and nothing else, so the sender identity is enforced by the credential
+        # rather than by domain-wide delegation.
+        creds = Credentials(
+            None,
+            refresh_token=GMAIL_NOREPLY_REFRESH_TOKEN,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GMAIL_OAUTH_CLIENT_ID,
+            client_secret=GMAIL_OAUTH_CLIENT_SECRET,
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
+        )
         gmail = google_build("gmail", "v1", credentials=creds, cache_discovery=False)
 
         msg = email.mime.multipart.MIMEMultipart("mixed")

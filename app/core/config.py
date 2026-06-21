@@ -21,6 +21,13 @@ SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\
 IMPERSONATE_EMAIL = os.getenv("GOOGLE_IMPERSONATE_EMAIL", "ci.mcdonald@317atc.co.uk")
 NOREPLY_EMAIL = os.getenv("NOREPLY_EMAIL")
 
+# Dedicated OAuth credentials for the noreply mailbox, used to send email *as that
+# mailbox only* (no domain-wide delegation). The refresh token is minted once by
+# consenting as noreply@ — see app/google_admin_api/mint_noreply_token.py.
+GMAIL_OAUTH_CLIENT_ID = os.getenv("GMAIL_OAUTH_CLIENT_ID")
+GMAIL_OAUTH_CLIENT_SECRET = os.getenv("GMAIL_OAUTH_CLIENT_SECRET")
+GMAIL_NOREPLY_REFRESH_TOKEN = os.getenv("GMAIL_NOREPLY_REFRESH_TOKEN")
+
 # Pre-shared key for the Google Form uniform order importer
 UNIFORM_FORM_API_KEY = os.getenv("UNIFORM_FORM_API_KEY")
 

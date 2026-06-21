@@ -23,7 +23,7 @@ from datetime import datetime
 
 from googleapiclient.discovery import build as google_build
 
-from core.config import PROGRAMME_DRIVE_FOLDER_ID, IMPERSONATE_EMAIL
+from core.config import PROGRAMME_DRIVE_FOLDER_ID
 from core.security import _service_account_creds
 
 WEEKDAY_RE = re.compile(
@@ -41,10 +41,13 @@ MONTH_NAMES = {
 
 
 def _docs_clients():
+    # Uses the service account's *own* identity (no domain-wide delegation) — the
+    # programme folder is shared directly with the SA, so this can only read that
+    # folder rather than every user's Drive.
     creds = _service_account_creds([
         "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/documents.readonly",
-    ]).with_subject(IMPERSONATE_EMAIL)
+    ])
     drive = google_build("drive", "v3", credentials=creds, cache_discovery=False)
     docs = google_build("docs", "v1", credentials=creds, cache_discovery=False)
     return drive, docs
