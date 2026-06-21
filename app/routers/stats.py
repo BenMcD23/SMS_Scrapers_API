@@ -105,11 +105,15 @@ def compute_stats(db: Session) -> dict:
     flight_counts: dict = {}
     age_counts: dict = {}
     rank_counts: dict = {}
+    classification_counts: dict = {}
     for c in cadets:
         flight = c.flight or "Unknown"
         flight_counts[flight] = flight_counts.get(flight, 0) + 1
         rank = c.rank or "Unknown"
         rank_counts[rank] = rank_counts.get(rank, 0) + 1
+        # No classification recorded means they haven't passed First Class yet.
+        classification = c.classification or "Junior Cadet"
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
         if c.date_of_birth:
             dob = c.date_of_birth
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
@@ -140,6 +144,7 @@ def compute_stats(db: Session) -> dict:
         "by_flight": flight_counts,
         "by_age": age_counts,
         "by_rank": rank_counts,
+        "by_classification": classification_counts,
         "badges": badges,
     }
 

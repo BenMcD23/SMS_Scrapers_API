@@ -43,6 +43,8 @@ def get_cadet_medical(driver, cadetNames, numberOfCadets, scraper_messages, scra
     cadet_data = []
 
     for i in range(numberOfCadets):
+        if i == 10:
+            break
         if stop_event and stop_event.is_set():
             return cadet_data
 
