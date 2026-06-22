@@ -2,7 +2,6 @@
 
 from collections import defaultdict
 from datetime import datetime
-from functools import partial
 import io
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -11,8 +10,6 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database.models import AssessmentSheet, Cadet, User
-
-from scripts.scraper_calls import upload_qualifications_scraper
 
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
@@ -34,14 +31,10 @@ class MarkCompleteRequest(BaseModel):
     completed: bool = True
 
 
-# Assessment types that support in-place editing / PDF regeneration
 EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "MOI")
 
-
-# How many passed assessments are needed per type before upload is unlocked
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
-    # everything else defaults to 1
 }
 
 
@@ -50,7 +43,6 @@ def required_passes(assessment_type: str) -> int:
 
 
 def _resolve_cadet(db: Session, data: dict, allow_name_fallback: bool = True) -> Cadet:
-    """Find the cadet by CIN (preferred) or full name."""
     cadet_cin = data.get("cadet_cin")
     if cadet_cin:
         cadet = db.query(Cadet).filter(Cadet.cin == int(cadet_cin)).first()
@@ -81,7 +73,6 @@ def _save_sheet_and_notify(
     db: Session, user: User, cadet: Cadet,
     assessment_type: str, fields: dict, pdf_bytes: bytes,
 ) -> AssessmentSheet:
-    """Store the sheet, then email the cadet their assessment result."""
     sheet = AssessmentSheet(
         assessment_type=assessment_type,
         fields=fields,
@@ -112,14 +103,6 @@ def _save_sheet_and_notify(
         )
     return sheet
 
-
-# ── Build fields + PDF (shared by create and edit) ────────────────────────────
-#
-# Each helper takes the raw request `data` (with assessor identity already
-# injected by the caller) and returns the `fields` dict to persist plus the
-# regenerated PDF bytes. `fields` stores everything needed to faithfully
-# rebuild the PDF later — including the signature(s) and the original ISO
-# dates — so an assessment can be edited and its PDF remade.
 
 def _leadership_fields_and_pdf(data: dict) -> tuple[dict, bytes]:
     processed = process_assessment_data(data)
@@ -204,7 +187,7 @@ def _validate_moi(data: dict) -> None:
             raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
 
 
-# ── Creating assessments ──────────────────────────────────────────────────────
+# ── Creating assessments ────────────────────────────────────────────────────
 
 @router.post("/assessments/leadership/add-assessment")
 async def generate_leadership_assessment(
@@ -214,11 +197,9 @@ async def generate_leadership_assessment(
 ):
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data)
-
     assessor_name = _assessor_name(user)
     if assessor_name:
         data["assessor_name"] = assessor_name
-
     fields, pdf_bytes = _leadership_fields_and_pdf(data)
     sheet = _save_sheet_and_notify(db, user, cadet, "Blue Leadership", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
@@ -232,20 +213,15 @@ async def generate_radio_assessment(
 ):
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data)
-
     assessor_name = _assessor_name(user)
     if assessor_name:
         data["assessor_name"] = assessor_name
     data["assessor_initials"] = (
         (user.first_name or "")[:1].upper() + (user.last_name or "")[:1].upper()
     )
-
     _validate_radio(data, require_signature=True)
-
-    # Pass is determined solely by whether all criteria are ticked
     criteria = data.get("criteria", {})
     data["passed"] = all(criteria.get(c) for c in criteria)
-
     fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
     sheet = _save_sheet_and_notify(db, user, cadet, "Blue Radio", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
@@ -259,19 +235,16 @@ async def generate_moi_assessment(
 ):
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data, allow_name_fallback=False)
-
     _validate_moi(data)
-
     assessor_name = _assessor_name(user)
     if assessor_name:
         data["assessor_name"] = assessor_name
-
     fields, pdf_bytes = _moi_fields_and_pdf(data)
     sheet = _save_sheet_and_notify(db, user, cadet, "MOI", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
 
-# ── Overview and per-sheet endpoints ──────────────────────────────────────────
+# ── Overview and per-sheet endpoints ───────────────────────────────────────────
 
 @router.get("/assessments/overview")
 async def assessments_overview(
@@ -285,7 +258,6 @@ async def assessments_overview(
         .all()
     )
 
-    # Group by cadet, then by assessment_type
     cadet_map: dict[int, dict] = {}
     for sheet in sheets:
         cadet = sheet.cadet
@@ -320,10 +292,7 @@ async def assessments_overview(
             passed_count = sum(1 for a in assessments if a["passed"] is True)
             required = required_passes(atype)
 
-            uploaded_at = next(
-                (s.uploaded_at for s in type_sheets if s.uploaded_at),
-                None,
-            )
+            uploaded_at = next((s.uploaded_at for s in type_sheets if s.uploaded_at), None)
             groups.append({
                 "assessment_type":    atype,
                 "assessments":        assessments,
@@ -352,11 +321,6 @@ async def get_assessment_detail(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    """Full editable data for one assessment (used to pre-fill the edit form).
-
-    Signature blobs are stripped from the response — they are large and the
-    editor does not change them; they are preserved server-side on edit.
-    """
     sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
     if not sheet:
         raise HTTPException(status_code=404, detail="Assessment not found.")
@@ -388,12 +352,6 @@ async def edit_assessment(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    """Edit an assessment's data and regenerate its PDF.
-
-    Completed (uploaded) assessments are locked — they must be reopened first.
-    The original assessor name and signature(s) are preserved; only the
-    assessment content (scores, criteria, comments, dates, etc.) is editable.
-    """
     sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
     if not sheet:
         raise HTTPException(status_code=404, detail="Assessment not found.")
@@ -411,8 +369,6 @@ async def edit_assessment(
     existing = dict(sheet.fields or {})
     cadet = sheet.cadet
 
-    # Preserve the original assessor identity and signature — these are not
-    # editable from the assessments page.
     data["assessor_name"] = existing.get("assessor_name", "")
     if not data.get("assessor_signature"):
         data["assessor_signature"] = existing.get("assessor_signature", "")
@@ -425,7 +381,7 @@ async def edit_assessment(
         criteria = data.get("criteria", {})
         data["passed"] = all(criteria.get(c) for c in criteria) if criteria else False
         fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
-    else:  # MOI
+    else:
         if not data.get("cadet_signature"):
             data["cadet_signature"] = existing.get("cadet_signature", "")
         _validate_moi(data)
@@ -451,7 +407,7 @@ async def mark_assessment_complete(
     assessment_type: str,
     body: MarkCompleteRequest,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),  # staff override — NCOs cannot force-complete
+    idinfo: dict = Depends(require_staff),
 ):
     cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
     if not cadet:
@@ -468,10 +424,7 @@ async def mark_assessment_complete(
     db.commit()
 
     verb = "marked complete" if body.completed else "reopened"
-    return {
-        "status":  "success",
-        "message": f"{assessment_type.title()} qualification {verb} for cadet {cin}.",
-    }
+    return {"status": "success", "message": f"{assessment_type.title()} qualification {verb} for cadet {cin}."}
 
 
 @router.get("/assessments/{assessment_id}/pdf")
@@ -511,7 +464,7 @@ async def delete_assessment(
     return {"status": "success", "message": f"Assessment {assessment_id} deleted."}
 
 
-# ── Upload to Bader (runs in the global scraper slot) ─────────────────────────
+# ── Upload to Bader ─────────────────────────────────────────────────────────
 
 @router.post("/assessments/upload-to-bader")
 async def upload_qualifications_to_bader(
@@ -531,7 +484,6 @@ async def upload_qualifications_to_bader(
     if not data.assessment_ids:
         raise HTTPException(status_code=400, detail="No assessment IDs provided.")
 
-    # Validate all assessment IDs exist before starting
     sheets = (
         db.query(AssessmentSheet)
         .filter(AssessmentSheet.id.in_(data.assessment_ids))
@@ -541,9 +493,10 @@ async def upload_qualifications_to_bader(
     if missing:
         raise HTTPException(status_code=404, detail=f"Assessment ID(s) not found: {sorted(missing)}")
 
-    scrapers.claim_global_scraper("upload-qualifications", idinfo.get("email"))
+    # create_upload_job checks RAM and raises 503 if too low
+    job_id, _ = scrapers.create_upload_job(idinfo.get("email"))
+    background_tasks.add_task(
+        scrapers.run_upload_job, job_id, user.id, idinfo.get("email", ""), data.assessment_ids
+    )
 
-    bound_scraper = partial(upload_qualifications_scraper, assessment_ids=data.assessment_ids)
-    background_tasks.add_task(scrapers.run_scraper_task, bound_scraper, user.id)
-
-    return {"status": "started", "assessment_ids": data.assessment_ids}
+    return {"status": "started", "job_id": job_id, "assessment_ids": data.assessment_ids}
