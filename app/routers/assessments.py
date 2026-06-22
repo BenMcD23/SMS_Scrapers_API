@@ -83,7 +83,7 @@ def _save_sheet_and_notify(
     assessment_type: str, fields: dict, pdf_bytes: bytes,
     lesson_plan_pdf: bytes | None = None, lesson_plan_filename: str | None = None,
 ) -> AssessmentSheet:
-    """Store the sheet, then email the assessor a copy of the PDF."""
+    """Store the sheet, then email the cadet their assessment result."""
     sheet = AssessmentSheet(
         assessment_type=assessment_type,
         fields=fields,
@@ -100,19 +100,20 @@ def _save_sheet_and_notify(
     db.commit()
     db.refresh(sheet)
 
-    send_email(
-        to=user.email,
-        subject=f"Assessment Completed ({assessment_type})",
-        html_body=assessment_email_html(
-            cadet_name=f"{cadet.first_name} {cadet.last_name}",
-            assessment_type=assessment_type,
-            passed=fields.get("passed"),
-            date=fields.get("date"),
-            assessor_name=fields.get("assessor_name", ""),
-        ),
-        attachment=pdf_bytes,
-        attachment_filename=f"{assessment_type.replace(' ', '_')}_{cadet.last_name}_{cadet.first_name}.pdf",
-    )
+    if cadet.email:
+        send_email(
+            to=cadet.email,
+            subject=f"Assessment Completed ({assessment_type})",
+            html_body=assessment_email_html(
+                cadet_name=f"{cadet.first_name} {cadet.last_name}",
+                assessment_type=assessment_type,
+                passed=fields.get("passed"),
+                date=fields.get("date"),
+                assessor_name=fields.get("assessor_name", ""),
+            ),
+            attachment=pdf_bytes,
+            attachment_filename=f"{assessment_type.replace(' ', '_')}_{cadet.last_name}_{cadet.first_name}.pdf",
+        )
     return sheet
 
 

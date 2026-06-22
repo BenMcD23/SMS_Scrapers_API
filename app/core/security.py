@@ -20,23 +20,49 @@ from googleapiclient.discovery import build as google_build
 
 from core.config import (
     GOOGLE_CLIENT_ID, STAFF_GROUP, NCO_GROUP,
-    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL,
+    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL,
 )
 
 _role_cache: dict = {}
 _role_cache_lock = threading.Lock()
 
+# Verified-token cache. Google's verify_oauth2_token fetches signing certs over
+# the network on every call, so without this we pay a Google round-trip on every
+# request. Keyed by the raw token string → (idinfo, expires_at).
+_token_cache: dict = {}
+_token_cache_lock = threading.Lock()
+
+# Reused across verifications so even cache misses share a single HTTP session
+# (and its cert cache) rather than building a fresh one each time.
+_google_request = requests.Request()
+
 
 def verify_token(authorization: str) -> dict:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization.split(" ", 1)[1]
+
+    now = time.time()
+    with _token_cache_lock:
+        cached = _token_cache.get(token)
+        if cached and now < cached[1]:
+            return cached[0]
+
     try:
-        token = authorization.split(" ", 1)[1]
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+        idinfo = id_token.verify_oauth2_token(token, _google_request, GOOGLE_CLIENT_ID)
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid Token")
     if not idinfo.get("email_verified"):
         raise HTTPException(status_code=401, detail="Email not verified")
+
+    # Cache until the token's own expiry (capped at 1h), so a revoked/expired
+    # token is never served from cache past its lifetime.
+    expires_at = min(idinfo.get("exp", now), now + 3600)
+    with _token_cache_lock:
+        # Prune expired entries to keep the cache bounded.
+        for tok in [t for t, (_, exp) in _token_cache.items() if exp <= now]:
+            del _token_cache[tok]
+        _token_cache[token] = (idinfo, expires_at)
     return idinfo
 
 
@@ -103,4 +129,12 @@ def require_staff_or_nco(authorization: str = Header(None)) -> dict:
     idinfo = verify_token(authorization)
     if get_user_role(idinfo["email"]) not in ("staff", "nco"):
         raise HTTPException(status_code=403, detail="Staff or NCO access required")
+    return idinfo
+
+
+def require_owner(authorization: str = Header(None)) -> dict:
+    """Developer-only access — restricted to the single OWNER_EMAIL account."""
+    idinfo = verify_token(authorization)
+    if idinfo.get("email", "").lower() != OWNER_EMAIL.lower():
+        raise HTTPException(status_code=403, detail="Owner access required")
     return idinfo

@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func
 
-from database.create_db import init_db
 from database.database import SessionLocal
 from database.models import AssessmentSheet, StoresOrder
 
@@ -65,9 +65,11 @@ def _cleanup_old_completed_assessments():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    # Schema is managed exclusively by Alembic migrations (run on deploy via the
+    # container command), not create_all — see README "Database Migrations".
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
+    scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
     scheduler.add_job(
         scheduled_send_job,
@@ -80,6 +82,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Compress larger JSON payloads (cadet lists, stats, stores) — the home link is
+# the bottleneck, so shrinking the body cuts transfer time noticeably.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Allow the Next.js frontends to talk to us
 app.add_middleware(

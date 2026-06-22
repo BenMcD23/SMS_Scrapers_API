@@ -7,10 +7,15 @@ from sqlalchemy.orm import Session
 
 from database.models import Cadet, CadetQualification, StatsSnapshot
 
+from core import cache
 from core.db import get_db
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
+
+# Cache keys shared with writers that invalidate cadet-derived data.
+STATS_CACHE_KEY = "stats:current"
+STATS_CACHE_TTL = 120
 
 BADGE_TYPES = [
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -100,11 +105,15 @@ def compute_stats(db: Session) -> dict:
     flight_counts: dict = {}
     age_counts: dict = {}
     rank_counts: dict = {}
+    classification_counts: dict = {}
     for c in cadets:
         flight = c.flight or "Unknown"
         flight_counts[flight] = flight_counts.get(flight, 0) + 1
         rank = c.rank or "Unknown"
         rank_counts[rank] = rank_counts.get(rank, 0) + 1
+        # No classification recorded means they haven't passed First Class yet.
+        classification = c.classification or "Junior Cadet"
+        classification_counts[classification] = classification_counts.get(classification, 0) + 1
         if c.date_of_birth:
             dob = c.date_of_birth
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
@@ -135,6 +144,7 @@ def compute_stats(db: Session) -> dict:
         "by_flight": flight_counts,
         "by_age": age_counts,
         "by_rank": rank_counts,
+        "by_classification": classification_counts,
         "badges": badges,
     }
 
@@ -144,7 +154,12 @@ async def get_current_stats(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    return compute_stats(db)
+    cached = cache.get(STATS_CACHE_KEY)
+    if cached is not None:
+        return cached
+    stats = compute_stats(db)
+    cache.set(STATS_CACHE_KEY, stats, STATS_CACHE_TTL)
+    return stats
 
 
 @router.get("/stats/history")
