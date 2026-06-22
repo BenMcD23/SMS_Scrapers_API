@@ -164,6 +164,13 @@ class AssessmentSheet(Base):
     uploaded        = Column(Boolean, nullable=False, default=False, server_default="0")
     uploaded_at     = Column(DateTime, nullable=True)
 
+    # Optional supporting document (currently only used by MOI — the lesson
+    # plan submitted for that lesson). Stored separately from `pdf_data` so
+    # the rendered assessment sheet and the lesson plan stay independently
+    # editable/replaceable; they're only concatenated at view/upload time.
+    lesson_plan_pdf      = Column(LargeBinary, nullable=True)
+    lesson_plan_filename = Column(Text, nullable=True)
+
     cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
     assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False)  # the user who did it
 
