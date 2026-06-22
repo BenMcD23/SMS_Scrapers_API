@@ -20,29 +20,28 @@ def check_ram_ok() -> tuple[bool, float]:
 
 
 class BrowserPool:
-    _instance = None
-    _class_lock = threading.Lock()
+    """Per-thread Playwright + browser.
 
-    def __new__(cls):
-        with cls._class_lock:
-            if cls._instance is None:
-                inst = super().__new__(cls)
-                inst._lock = threading.Lock()
-                inst._playwright = None
-                inst._browser = None
-                cls._instance = inst
-        return cls._instance
+    Playwright's sync API binds its event loop to the thread that started it, so a
+    single shared instance can't be driven from another thread ("Cannot switch to
+    a different thread"). Scrapers run as sync background tasks on Starlette's
+    threadpool, so each thread gets its own Playwright + browser, lazily started
+    and reused across runs on that same thread.
+    """
+    _local = threading.local()
 
     def new_context(self) -> BrowserContext:
-        with self._lock:
-            self._ensure_running()
-            return self._browser.new_context(viewport={"width": 1920, "height": 1080})
+        self._ensure_running()
+        return self._local.browser.new_context(viewport={"width": 1920, "height": 1080})
 
     def _ensure_running(self):
-        if self._playwright is None:
-            self._playwright = sync_playwright().start()
-        if self._browser is None or not self._browser.is_connected():
-            self._browser = self._playwright.chromium.launch(
+        pw = getattr(self._local, "playwright", None)
+        if pw is None:
+            pw = sync_playwright().start()
+            self._local.playwright = pw
+        browser = getattr(self._local, "browser", None)
+        if browser is None or not browser.is_connected():
+            self._local.browser = pw.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
