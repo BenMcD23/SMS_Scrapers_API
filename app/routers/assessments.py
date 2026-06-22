@@ -14,6 +14,7 @@ from database.models import AssessmentSheet, Cadet, User
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
 from assessment_builders.moi import generate_moi_pdf, process_assessment_data as process_moi_data
+from assessment_builders.pdf_utils import merge_pdfs, decode_pdf_data_url
 
 from core.db import get_db, get_or_create_user
 from core.emailer import send_email, assessment_email_html
@@ -33,9 +34,16 @@ class MarkCompleteRequest(BaseModel):
 
 EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "MOI")
 
+
+# How many assessments are needed per type before upload is unlocked
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
+    "MOI": 2,
+    # everything else defaults to 1
 }
+
+# Types gated on COMPLETED assessment count (any result), not passes.
+COUNT_COMPLETED_TYPES = {"MOI"}
 
 
 def required_passes(assessment_type: str) -> int:
@@ -72,6 +80,7 @@ def _assessor_name(user: User) -> str:
 def _save_sheet_and_notify(
     db: Session, user: User, cadet: Cadet,
     assessment_type: str, fields: dict, pdf_bytes: bytes,
+    lesson_plan_pdf: bytes | None = None, lesson_plan_filename: str | None = None,
 ) -> AssessmentSheet:
     sheet = AssessmentSheet(
         assessment_type=assessment_type,
@@ -82,6 +91,8 @@ def _save_sheet_and_notify(
         created_at=datetime.utcnow(),
         cadet_id=cadet.cin,
         assessor_id=user.id,
+        lesson_plan_pdf=lesson_plan_pdf,
+        lesson_plan_filename=lesson_plan_filename,
     )
     db.add(sheet)
     db.commit()
@@ -240,7 +251,12 @@ async def generate_moi_assessment(
     if assessor_name:
         data["assessor_name"] = assessor_name
     fields, pdf_bytes = _moi_fields_and_pdf(data)
-    sheet = _save_sheet_and_notify(db, user, cadet, "MOI", fields, pdf_bytes)
+    lesson_plan_pdf = decode_pdf_data_url(data.get("lesson_plan_pdf"))
+    lesson_plan_filename = data.get("lesson_plan_filename") if lesson_plan_pdf else None
+    sheet = _save_sheet_and_notify(
+        db, user, cadet, "MOI", fields, pdf_bytes,
+        lesson_plan_pdf=lesson_plan_pdf, lesson_plan_filename=lesson_plan_filename,
+    )
     return {"status": "success", "assessment_id": sheet.id}
 
 
@@ -291,6 +307,8 @@ async def assessments_overview(
 
             passed_count = sum(1 for a in assessments if a["passed"] is True)
             required = required_passes(atype)
+            # MOI unlocks on completed count (any result); others on passes.
+            count_for_upload = len(assessments) if atype in COUNT_COMPLETED_TYPES else passed_count
 
             uploaded_at = next((s.uploaded_at for s in type_sheets if s.uploaded_at), None)
             groups.append({
@@ -298,7 +316,7 @@ async def assessments_overview(
                 "assessments":        assessments,
                 "passed_count":       passed_count,
                 "required_to_upload": required,
-                "can_upload":         passed_count >= required,
+                "can_upload":         count_for_upload >= required,
                 "uploaded":           any(s.uploaded for s in type_sheets),
                 "uploaded_at":        uploaded_at.isoformat() if uploaded_at else None,
             })
@@ -342,6 +360,8 @@ async def get_assessment_detail(
             "rank":       cadet.rank,
         },
         "fields": fields,
+        "has_lesson_plan":      sheet.lesson_plan_pdf is not None,
+        "lesson_plan_filename": sheet.lesson_plan_filename,
     }
 
 
@@ -386,6 +406,16 @@ async def edit_assessment(
             data["cadet_signature"] = existing.get("cadet_signature", "")
         _validate_moi(data)
         fields, pdf_bytes = _moi_fields_and_pdf(data)
+
+        # Lesson plan: replace only if a new file was sent; explicit removal
+        # via `remove_lesson_plan`; otherwise leave the stored one untouched.
+        new_lesson_plan = decode_pdf_data_url(data.get("lesson_plan_pdf"))
+        if new_lesson_plan:
+            sheet.lesson_plan_pdf = new_lesson_plan
+            sheet.lesson_plan_filename = data.get("lesson_plan_filename")
+        elif data.get("remove_lesson_plan"):
+            sheet.lesson_plan_pdf = None
+            sheet.lesson_plan_filename = None
 
     sheet.fields = fields
     sheet.pdf_data = pdf_bytes
@@ -444,6 +474,44 @@ async def get_assessment_pdf(
         media_type=sheet.pdf_mime_type or "application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="assessment_{assessment_id}.pdf"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@router.get("/assessments/group/{cin}/{assessment_type}/combined-pdf")
+async def get_combined_group_pdf(
+    cin: int,
+    assessment_type: str,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """The full record for one cadet+type as a single PDF.
+
+    Each assessment in the group contributes its rendered sheet followed by
+    its lesson plan (if any), oldest first — so re-assessing the same lesson
+    keeps building one cumulative document instead of overwriting it.
+    """
+    sheets = (
+        db.query(AssessmentSheet)
+        .filter(AssessmentSheet.cadet_id == cin, AssessmentSheet.assessment_type == assessment_type)
+        .order_by(AssessmentSheet.created_at)
+        .all()
+    )
+    if not sheets:
+        raise HTTPException(status_code=404, detail="No assessments found for this cadet/type.")
+
+    blobs: list[bytes | None] = []
+    for s in sheets:
+        blobs.append(s.pdf_data)
+        blobs.append(s.lesson_plan_pdf)
+
+    merged = merge_pdfs(blobs)
+    return StreamingResponse(
+        io.BytesIO(merged),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{assessment_type.replace(" ", "_")}_{cin}_combined.pdf"',
             "Cache-Control": "no-cache",
         },
     )
