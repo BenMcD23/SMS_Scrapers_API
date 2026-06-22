@@ -522,11 +522,15 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 
 
 
-# Map assessment_type → exact qualification name as it appears in the Bader dropdown
-ASSESSMENT_TYPE_TO_QUAL_NAME: dict[str, str] = {
-    "Blue Leadership": "Blue Leadership",
-    "Blue Radio":      "Radio - Basic Operator (Blue)",
-    # "MOI": "<exact Bader dropdown name>",  # add once the target qual is confirmed
+# Map assessment_type → (badge_key, level) in core.qualifications, the single
+# source of truth for the Bader dropdown name + option id. bader_quals_for()
+# resolves these to BaderQual(name, bader_id); we upload using the first entry.
+from core.qualifications import bader_quals_for, BLUE, YES
+
+ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
+    "Blue Leadership": ("leadership", BLUE),
+    "Blue Radio":      ("radio", BLUE),
+    "MOI":             ("moi", YES),
 }
 
 # Assessment types where every sheet in the group (plus any lesson plan) is
@@ -591,14 +595,17 @@ def upload_qualifications_scraper(
                 log(f"No cadet linked to assessment group (cadet_id={cadet_id}) — skipping.", "warning")
                 continue
 
-            qual_name = ASSESSMENT_TYPE_TO_QUAL_NAME.get(assessment_type)
-            if not qual_name:
+            badge = ASSESSMENT_TYPE_TO_BADGE.get(assessment_type)
+            quals = bader_quals_for(*badge) if badge else ()
+            if not quals:
                 log(
                     f"No Bader qualification mapped for type '{assessment_type}' "
                     f"(cadet {cadet_id}) — skipping.",
                     "warning",
                 )
                 continue
+            qual_name = quals[0].name
+            qual_id = quals[0].bader_id
 
             sheets_with_pdf = [s for s in group_sheets if s.pdf_data]
             if not sheets_with_pdf:
@@ -622,8 +629,14 @@ def upload_qualifications_scraper(
                     blobs.append(s.pdf_data)
                     blobs.append(s.lesson_plan_pdf)
                 pdf_payloads = [merge_pdfs(blobs)]
+                attachment_label = (
+                    "Assessment Sheet + Lesson Plan"
+                    if any(s.lesson_plan_pdf for s in ordered)
+                    else "Assessment Sheet"
+                )
             else:
                 pdf_payloads = [s.pdf_data for s in sheets_with_pdf]
+                attachment_label = "Assessment Sheet"
 
             log(
                 f"[{group_num}/{total_groups}] Uploading '{qual_name}' for "
@@ -665,6 +678,8 @@ def upload_qualifications_scraper(
                     driver=driver,
                     cadet_cin=cadet.cin,
                     qualification_name=qual_name,
+                    qualification_id=qual_id,
+                    attachment_label=attachment_label,
                     pdf_paths=tmp_paths,
                     award_date=award_date,
                     scraper_messages=scraper_messages,

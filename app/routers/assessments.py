@@ -39,11 +39,15 @@ class MarkCompleteRequest(BaseModel):
 EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "MOI")
 
 
-# How many passed assessments are needed per type before upload is unlocked
+# How many assessments are needed per type before upload is unlocked
 UPLOAD_THRESHOLDS: dict[str, int] = {
     "Blue Leadership": 2,
+    "MOI": 2,
     # everything else defaults to 1
 }
+
+# Types gated on COMPLETED assessment count (any result), not passes.
+COUNT_COMPLETED_TYPES = {"MOI"}
 
 
 def required_passes(assessment_type: str) -> int:
@@ -328,6 +332,8 @@ async def assessments_overview(
 
             passed_count = sum(1 for a in assessments if a["passed"] is True)
             required = required_passes(atype)
+            # MOI unlocks on completed count (any result); others on passes.
+            count_for_upload = len(assessments) if atype in COUNT_COMPLETED_TYPES else passed_count
 
             uploaded_at = next(
                 (s.uploaded_at for s in type_sheets if s.uploaded_at),
@@ -338,7 +344,7 @@ async def assessments_overview(
                 "assessments":        assessments,
                 "passed_count":       passed_count,
                 "required_to_upload": required,
-                "can_upload":         passed_count >= required,
+                "can_upload":         count_for_upload >= required,
                 "uploaded":           any(s.uploaded for s in type_sheets),
                 "uploaded_at":        uploaded_at.isoformat() if uploaded_at else None,
             })

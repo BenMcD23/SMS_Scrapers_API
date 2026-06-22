@@ -17,6 +17,8 @@ def add_qualification_with_attachment(
     qualification_name: str,
     pdf_paths: list[str],
     award_date: str | None = None,
+    qualification_id: int | str | None = None,
+    attachment_label: str = "Assessment Sheet",
     scraper_messages=None,
     scraper_lock=None,
 ):
@@ -29,7 +31,12 @@ def add_qualification_with_attachment(
     driver            : Selenium WebDriver
     cadet_cin         : The cadet's CIN (used to find them in the list)
     qualification_name: Exact or partial name of the qualification to select
-                        (matched against the dropdown options, case-insensitive)
+                        (matched against the dropdown options, case-insensitive).
+                        Also used to find the qualification's row after saving.
+    qualification_id  : Bader dropdown <option value> for the qualification (from
+                        core.qualifications). When given, the dropdown is selected
+                        by value directly — robust against text variations — and
+                        the name is only used to relocate the row afterwards.
     pdf_path          : Absolute path to the PDF file to upload
     scraper_messages  : Optional shared list for status messages
     scraper_lock      : Optional threading lock for scraper_messages
@@ -120,19 +127,28 @@ def add_qualification_with_attachment(
     )
     qual_select = Select(qual_select_el)
 
-    # Try exact match first, then case-insensitive partial match
-    target = qualification_name.strip().lower()
     matched_value = None
-    for option in qual_select.options:
-        if option.text.strip().lower() == target:
-            matched_value = option.get_attribute("value")
-            break
+    # Preferred: select by the known Bader option id (from core.qualifications).
+    if qualification_id is not None:
+        wanted = str(qualification_id)
+        if any(o.get_attribute("value") == wanted for o in qual_select.options):
+            matched_value = wanted
+        else:
+            log(f"Option id {wanted} not in dropdown — falling back to name match.", "warning")
+
+    # Fallback: exact match first, then case-insensitive partial match.
     if matched_value is None:
+        target = qualification_name.strip().lower()
         for option in qual_select.options:
-            if target in option.text.strip().lower():
+            if option.text.strip().lower() == target:
                 matched_value = option.get_attribute("value")
-                log(f"Partial match found: '{option.text.strip()}'")
                 break
+        if matched_value is None:
+            for option in qual_select.options:
+                if target in option.text.strip().lower():
+                    matched_value = option.get_attribute("value")
+                    log(f"Partial match found: '{option.text.strip()}'")
+                    break
     if matched_value is None:
         raise ValueError(
             f"Qualification '{qualification_name}' not found in the dropdown. "
@@ -277,7 +293,8 @@ def add_qualification_with_attachment(
         # Build clean names for this PDF
         safe_qual_name = qualification_name.replace(" ", "_")
         new_filename = f"{safe_qual_name}_Assessment_{i + 1}.pdf"
-        description = f"Assessment Sheet {i + 1}"
+        suffix = f" {i + 1}" if len(pdf_paths) > 1 else ""
+        description = f"{attachment_label}{suffix}"
 
         log(f"Uploading PDF {i+1}/{len(pdf_paths)} as '{new_filename}'...")
 
