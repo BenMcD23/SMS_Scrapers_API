@@ -219,9 +219,11 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
     )),
 
     BadgeType("moi", "MOI", BOOLEAN, (
+        # Detection (audit) keys off the completed award "Instructor Cadet";
+        # the UPLOAD target for a new MOI assessment sheet is the "(Training)"
+        # qual, so that's the bader entry the uploader selects.
         Level(YES, ("Instructor Cadet",), (
-            BaderQual("Instructor Cadet", 1920),
-            BaderQual("Instructor Cadet (pre May2019)", 1921),
+            BaderQual("Methods of Instruction(Training)", 1919),
         )),
     )),
 

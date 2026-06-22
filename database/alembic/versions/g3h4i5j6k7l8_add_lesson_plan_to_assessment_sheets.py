@@ -1,7 +1,7 @@
 """add lesson plan pdf to assessment sheets
 
 Revision ID: g3h4i5j6k7l8
-Revises: f7g8h9i0j1k2
+Revises: a1b2c3d4e5f7
 Create Date: 2026-06-16 00:00:00.000000
 
 """
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = 'g3h4i5j6k7l8'
-down_revision = 'f7g8h9i0j1k2'
+down_revision = 'a1b2c3d4e5f7'
 branch_labels = None
 depends_on = None
 
