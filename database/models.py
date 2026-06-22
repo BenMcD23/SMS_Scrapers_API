@@ -18,7 +18,7 @@ class Cadet(Base):
     rank          = Column(Text, nullable=True)
     flight        = Column(Text, nullable=True)
     banned        = Column(Boolean, nullable=False, default=False, server_default="0")
-    # classification = Column(Text, nullable=True)
+    classification = Column(Text, nullable=True)  # highest classification passed, e.g. "Leading Cadet"
 
     qualifications    = relationship("CadetQualification", back_populates="cadet")
     cadet_events      = relationship("CadetEvent",         back_populates="cadet")
@@ -26,6 +26,8 @@ class Cadet(Base):
     stores_orders     = relationship("StoresOrder",        back_populates="cadet")
     item_issuances    = relationship("StoresItemIssuance", back_populates="cadet", cascade="all, delete-orphan")
     badge_orders      = relationship("BadgeOrder",         back_populates="cadet")
+    medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
+    dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
 
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
@@ -45,6 +47,31 @@ class CadetQualification(Base):
     date_expires  = Column(DateTime, nullable=True) 
 
     cadet = relationship("Cadet", back_populates="qualifications")
+
+
+class CadetMedical(Base):
+    __tablename__ = "Cadet_Medical"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    allergy_name  = Column(Text,       nullable=False)
+    auto_injector = Column(Text,       nullable=False, default="No", server_default="No")
+    severity      = Column(Text,       nullable=True)
+    details       = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="medical")
+
+
+class CadetDietary(Base):
+    __tablename__ = "Cadet_Dietary"
+
+    id       = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    name     = Column(Text,       nullable=False)
+    details  = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="dietary")
+
 
 class Event317(Base):
     __tablename__ = "317_Events"
@@ -233,6 +260,7 @@ class ScraperRun(Base):
     ran_at     = Column(DateTime, nullable=False)
     success    = Column(Boolean, nullable=False, default=True)
     ran_by     = Column(Text, nullable=True)    # email of triggering user
+    logs       = Column(Text, nullable=True)    # newline-joined run log buffer
 
 
 class ScraperSchedule(Base):

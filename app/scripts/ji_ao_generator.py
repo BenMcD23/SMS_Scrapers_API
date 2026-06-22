@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from database.database import SessionLocal
 from database.models import Event317
 
+from scripts.ji_ao_ai import generate_ji_description_ai, generate_ao_description_ai
+
 
 contacts = {
     "McDonald": {
@@ -103,7 +105,7 @@ def replace_placeholder_with_signature(paragraph, placeholder, name, email, sign
     paragraph.add_run(f"{name} RAFAC")
 
 
-def generate_ji(event):
+def generate_ji(event, use_ai=False):
     """Generate a JI for the selected event"""
     template_path = get_template_path("ji_template.docx")
     if not os.path.exists(template_path):
@@ -126,6 +128,8 @@ def generate_ji(event):
     else:
         location_text = "N/A"
 
+    description = generate_ji_description_ai(event) if use_ai else (event.description or "")
+
     replacements = {
         "{{ title }}": event.title,
         "{{ date_from_to }}": date_from_to,
@@ -133,7 +137,7 @@ def generate_ji(event):
         "{{ arrival_date }}": event.date_from.strftime("%d/%m/%Y"),
         "{{ departure_time }}": event.date_to.strftime("%H:%M"),
         "{{ departure_date }}": event.date_to.strftime("%d/%m/%Y"),
-        "{{ description }}": event.description or "",
+        "{{ description }}": description,
         "{{ location }}": location_text,
         "{{ cost }}": f"Cadets are required to pay £{event.cost:.2f} to attend this event. This can be paid via cash/card at squadron or through BACS." if event.cost and event.cost > 0 else "There is no cost for cadets to attend this event.",
         "{{ dress }}": event.dress or "",
@@ -166,7 +170,7 @@ def generate_ji(event):
     buffer.seek(0)
     return buffer
 
-def generate_ao(event):
+def generate_ao(event, use_ai=False):
     """Generate a AO for the selected event"""
     template_path = get_template_path("ao_template.docx")
     
@@ -198,6 +202,18 @@ def generate_ao(event):
     # Replace in paragraphs
     for paragraph in doc.paragraphs:
         replace_text_preserve_format(paragraph, replacements)
+
+    # The AO template has no free-text section of its own, so the AI
+    # description gets inserted as a new paragraph rather than replacing a
+    # placeholder.
+    if use_ai:
+        description = generate_ao_description_ai(event)
+        for paragraph in doc.paragraphs:
+            if "{{ adult_ic_signature }}" in paragraph.text:
+                paragraph.insert_paragraph_before("Activity Description:").runs[0].bold = True
+                paragraph.insert_paragraph_before(description)
+                paragraph.insert_paragraph_before("")
+                break
 
     # Handle signature
     for paragraph in doc.paragraphs:

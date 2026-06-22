@@ -150,10 +150,51 @@ docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"Cadets\" 
 
 ## Database Migrations (Alembic)
 
-```bash
-# Generate a new migration
-alembic -c database/alembic.ini revision --autogenerate -m "<description>"
+**Alembic is the single source of truth for the schema.** The app no longer
+calls `Base.metadata.create_all()` on startup — the deployed containers run
+`alembic upgrade head` automatically before launching uvicorn (see the `command`
+in `docker-compose.yml` / the Dockerfile `CMD`). So on every deploy the schema
+is brought up to date from the migration history, and nothing creates tables
+out-of-band.
 
-# Apply migrations
-alembic -c database/alembic.ini upgrade head
+### Adding a schema change
+
+1. Edit the SQLAlchemy models in `database/models.py`.
+2. Autogenerate a migration:
+
+   ```bash
+   alembic -c database/alembic.ini revision --autogenerate -m "<description>"
+   ```
+
+3. **Review the generated file** in `database/alembic/versions/` — autogenerate
+   can miss or mis-order things. Check `down_revision` points at the current head.
+4. Apply it locally to test:
+
+   ```bash
+   alembic -c database/alembic.ini upgrade head
+   ```
+
+5. Commit the model change **and** the migration file together. Deploying the
+   branch applies it automatically.
+
+### Useful commands
+
+```bash
+alembic -c database/alembic.ini current     # what revision the DB is on
+alembic -c database/alembic.ini history      # full migration graph
+alembic -c database/alembic.ini downgrade -1 # roll back one revision
 ```
+
+### Fixing "relation already exists" / DuplicateTable
+
+This means the table physically exists but Alembic's `alembic_version` table
+still points at an older revision (e.g. a table was created out-of-band by an old
+`create_all` startup). The tables are correct — Alembic just needs to be told the
+migration is already applied, without re-running its `CREATE TABLE`:
+
+```bash
+alembic -c database/alembic.ini stamp head
+```
+
+Only use `stamp` when the existing table actually matches the migration. If it
+doesn't, drop the stray table first, then `upgrade head` to create it properly.

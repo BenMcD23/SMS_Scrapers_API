@@ -12,6 +12,9 @@ GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleuse
 STAFF_GROUP = "staff@317atc.co.uk"
 NCO_GROUP = "ncoteam@317atc.co.uk"
 
+# Sole owner/maintainer — has access to developer-only views (e.g. API logs)
+OWNER_EMAIL = "ci.mcdonald@317atc.co.uk"
+
 # Service account used for the admin directory lookups and sending email
 SA_EMAIL = os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\n", "\n").strip('"')
