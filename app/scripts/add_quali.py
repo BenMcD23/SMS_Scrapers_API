@@ -110,11 +110,12 @@ def add_qualification_with_attachment(
     )
     qual_select_el = page.wait_for_selector(qual_select_id, timeout=15000)
 
+    options = qual_select_el.query_selector_all("option")
     matched_value = None
     # Preferred: select by the known Bader option id (from core.qualifications).
     if qualification_id is not None:
         wanted = str(qualification_id)
-        if any(o.get_attribute("value") == wanted for o in qual_select.options):
+        if any(o.get_attribute("value") == wanted for o in options):
             matched_value = wanted
         else:
             log(f"Option id {wanted} not in dropdown — falling back to name match.", "warning")
@@ -122,15 +123,15 @@ def add_qualification_with_attachment(
     # Fallback: exact match first, then case-insensitive partial match.
     if matched_value is None:
         target = qualification_name.strip().lower()
-        for option in qual_select.options:
-            if option.text.strip().lower() == target:
-                matched_value = option.get_attribute("value")
+        for opt in options:
+            if opt.inner_text().strip().lower() == target:
+                matched_value = opt.get_attribute("value")
                 break
         if matched_value is None:
-            for option in qual_select.options:
-                if target in option.text.strip().lower():
-                    matched_value = option.get_attribute("value")
-                    log(f"Partial match found: '{option.text.strip()}'")
+            for opt in options:
+                if target in opt.inner_text().strip().lower():
+                    matched_value = opt.get_attribute("value")
+                    log(f"Partial match found: '{opt.inner_text().strip()}'")
                     break
     if matched_value is None:
         raise ValueError(

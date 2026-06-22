@@ -461,11 +461,6 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 pass
 
 
-<<<<<<< HEAD
-ASSESSMENT_TYPE_TO_QUAL_NAME: dict[str, str] = {
-    "Blue Leadership": "Blue Leadership",
-    "Blue Radio": "Radio - Basic Operator (Blue)",
-=======
 
 
 # Map assessment_type → (badge_key, level) in core.qualifications, the single
@@ -477,7 +472,6 @@ ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
     "Blue Leadership": ("leadership", BLUE),
     "Blue Radio":      ("radio", BLUE),
     "MOI":             ("moi", YES),
->>>>>>> main
 }
 
 # Assessment types where every sheet in the group (plus any lesson plan) is
@@ -539,11 +533,6 @@ def upload_qualifications_scraper(
                 log(f"No cadet linked to assessment group (cadet_id={cadet_id}) — skipping.", "warning")
                 continue
 
-<<<<<<< HEAD
-            qual_name = ASSESSMENT_TYPE_TO_QUAL_NAME.get(assessment_type)
-            if not qual_name:
-                log(f"No Bader qualification mapped for type '{assessment_type}' (cadet {cadet_id}) — skipping.", "warning")
-=======
             badge = ASSESSMENT_TYPE_TO_BADGE.get(assessment_type)
             quals = bader_quals_for(*badge) if badge else ()
             if not quals:
@@ -552,7 +541,6 @@ def upload_qualifications_scraper(
                     f"(cadet {cadet_id}) — skipping.",
                     "warning",
                 )
->>>>>>> main
                 continue
             qual_name = quals[0].name
             qual_id = quals[0].bader_id
@@ -593,16 +581,11 @@ def upload_qualifications_scraper(
 
             tmp_paths = []
             try:
-<<<<<<< HEAD
-                for s in sheets_with_pdf:
-                    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", prefix=f"assessment_{s.id}_")
-=======
                 for i, pdf_bytes in enumerate(pdf_payloads):
                     tmp_fd, tmp_path = tempfile.mkstemp(
                         suffix=".pdf",
                         prefix=f"assessment_group_{cadet_id}_{i}_",
                     )
->>>>>>> main
                     os.close(tmp_fd)
                     with open(tmp_path, "wb") as f:
                         f.write(pdf_bytes)
@@ -641,12 +624,6 @@ def upload_qualifications_scraper(
                 for j, p in enumerate(tmp_paths):
                     if os.path.exists(p):
                         os.remove(p)
-<<<<<<< HEAD
-                    renamed = os.path.join(os.path.dirname(p), f"{safe_qual_name}_Assessment_{j + 1}.pdf")
-                    if os.path.exists(renamed):
-                        os.remove(renamed)
-
-=======
                     safe_qual_name = qual_name.replace(" ", "_")
                     for j in range(len(tmp_paths)):
                         renamed = os.path.join(
@@ -657,7 +634,6 @@ def upload_qualifications_scraper(
                             os.remove(renamed)
 
             # ── Mark all sheets in this group as uploaded ─────────────────────
->>>>>>> main
             _uploaded_now = datetime.utcnow()
             for s in group_sheets:
                 s.uploaded = True
