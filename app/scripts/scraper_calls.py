@@ -3,6 +3,7 @@ from scripts.quali_scraper import *
 from scripts.event_scraper import *
 from scripts.alergies import *
 from scripts.add_quali import add_qualification_with_attachment
+from assessment_builders.pdf_utils import merge_pdfs
 
 import json
 from datetime import datetime
@@ -521,12 +522,20 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 
 
 
-# Map assessment_type → exact qualification name as it appears in the Bader dropdown
-ASSESSMENT_TYPE_TO_QUAL_NAME: dict[str, str] = {
-    "Blue Leadership": "Blue Leadership",
-    "Blue Radio":      "Radio - Basic Operator (Blue)",
-    # "MOI": "<exact Bader dropdown name>",  # add once the target qual is confirmed
+# Map assessment_type → (badge_key, level) in core.qualifications, the single
+# source of truth for the Bader dropdown name + option id. bader_quals_for()
+# resolves these to BaderQual(name, bader_id); we upload using the first entry.
+from core.qualifications import bader_quals_for, BLUE, YES
+
+ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
+    "Blue Leadership": ("leadership", BLUE),
+    "Blue Radio":      ("radio", BLUE),
+    "MOI":             ("moi", YES),
 }
+
+# Assessment types where every sheet in the group (plus any lesson plan) is
+# merged into ONE PDF before upload, rather than attached as separate files.
+MERGE_GROUP_PDF_TYPES = {"MOI"}
 
 
 def upload_qualifications_scraper(
@@ -586,14 +595,17 @@ def upload_qualifications_scraper(
                 log(f"No cadet linked to assessment group (cadet_id={cadet_id}) — skipping.", "warning")
                 continue
 
-            qual_name = ASSESSMENT_TYPE_TO_QUAL_NAME.get(assessment_type)
-            if not qual_name:
+            badge = ASSESSMENT_TYPE_TO_BADGE.get(assessment_type)
+            quals = bader_quals_for(*badge) if badge else ()
+            if not quals:
                 log(
                     f"No Bader qualification mapped for type '{assessment_type}' "
                     f"(cadet {cadet_id}) — skipping.",
                     "warning",
                 )
                 continue
+            qual_name = quals[0].name
+            qual_id = quals[0].bader_id
 
             sheets_with_pdf = [s for s in group_sheets if s.pdf_data]
             if not sheets_with_pdf:
@@ -603,23 +615,46 @@ def upload_qualifications_scraper(
                 )
                 continue
 
+            merge_into_one = assessment_type in MERGE_GROUP_PDF_TYPES
+
+            # ── Build the PDF(s) to upload ──────────────────────────────────────
+            # Most types: one attachment per assessment. Types in
+            # MERGE_GROUP_PDF_TYPES (e.g. MOI): every sheet's rendered sheet +
+            # lesson plan, oldest first, flattened into a single PDF — Bader
+            # ends up with one cumulative file per qualification, not several.
+            if merge_into_one:
+                ordered = sorted(sheets_with_pdf, key=lambda s: s.created_at)
+                blobs: list[bytes | None] = []
+                for s in ordered:
+                    blobs.append(s.pdf_data)
+                    blobs.append(s.lesson_plan_pdf)
+                pdf_payloads = [merge_pdfs(blobs)]
+                attachment_label = (
+                    "Assessment Sheet + Lesson Plan"
+                    if any(s.lesson_plan_pdf for s in ordered)
+                    else "Assessment Sheet"
+                )
+            else:
+                pdf_payloads = [s.pdf_data for s in sheets_with_pdf]
+                attachment_label = "Assessment Sheet"
+
             log(
                 f"[{group_num}/{total_groups}] Uploading '{qual_name}' for "
                 f"{cadet.first_name} {cadet.last_name} (CIN {cadet.cin}) — "
-                f"{len(sheets_with_pdf)} PDF(s)..."
+                f"{len(pdf_payloads)} PDF(s)..."
             )
 
             # ── Write each PDF to a temp file ─────────────────────────────────
             tmp_paths = []
             try:
-                for s in sheets_with_pdf:
+                for i, pdf_bytes in enumerate(pdf_payloads):
                     tmp_fd, tmp_path = tempfile.mkstemp(
                         suffix=".pdf",
-                        prefix=f"assessment_{s.id}_",
+                        prefix=f"assessment_group_{cadet_id}_{i}_",
                     )
                     os.close(tmp_fd)
                     with open(tmp_path, "wb") as f:
-                        f.write(s.pdf_data)
+                        f.write(pdf_bytes)
                     tmp_paths.append(tmp_path)
 
                 # ── Resolve the award date from the assessment ────────────────
@@ -643,6 +678,8 @@ def upload_qualifications_scraper(
                     driver=driver,
                     cadet_cin=cadet.cin,
                     qualification_name=qual_name,
+                    qualification_id=qual_id,
+                    attachment_label=attachment_label,
                     pdf_paths=tmp_paths,
                     award_date=award_date,
                     scraper_messages=scraper_messages,
@@ -669,7 +706,7 @@ def upload_qualifications_scraper(
                         )
                         if os.path.exists(renamed):
                             os.remove(renamed)
-                            
+
             # ── Mark all sheets in this group as uploaded ─────────────────────
             _uploaded_now = datetime.utcnow()
             for s in group_sheets:
