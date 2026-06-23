@@ -29,6 +29,17 @@ class Cadet(Base):
     medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
     dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
 
+class Staff(Base):
+    """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
+    __tablename__ = "Staff"
+
+    cin        = Column(BigInteger, primary_key=True)  # CIN is the real ID
+    first_name = Column(Text, nullable=False)
+    last_name  = Column(Text, nullable=False)
+    rank       = Column(Text, nullable=True)
+    email      = Column(Text, nullable=True)  # ponytail: only the 4 fields the page needs
+
+
 QUALIFICATION_TYPES = (
     "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
     "road_marching", "space", "music", "flying_badge", "fieldcraft",
