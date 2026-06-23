@@ -2,17 +2,13 @@ import time
 import os
 import json
 
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait, Select
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 
 
 def add_qualification_with_attachment(
-    driver,
+    page: Page,
     cadet_cin: int | str,
     qualification_name: str,
     pdf_paths: list[str],
@@ -50,35 +46,24 @@ def add_qualification_with_attachment(
                 scraper_messages.append(payload)
 
     cin_str = str(cadet_cin).strip()
-    # ── 1. Open cadets list and find the cadet by CIN ────────────────────────
+
+    # 1. Open cadets list and find the cadet by CIN
     log(f"Navigating to cadet list to find CIN {cin_str}...")
-    driver.get("https://sms.bader.mod.uk/cadets/default.aspx")
-    wait_for_aspx_load(driver)
+    page.goto("https://sms.bader.mod.uk/cadets/default.aspx")
+    wait_for_aspx_load(page)
 
-    # Show all cadets
-    Select(
-        WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.NAME, "Cadets_length"))
-        )
-    ).select_by_value("-1")
+    page.locator("[name='Cadets_length']").select_option(value="-1")
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)
 
-    wait_for_preloader(driver)
-    wait_for_aspx_load(driver)
-
-    # Find the row whose last <td> (CIN column) matches our CIN, then click
-    # the family-name link in that row to open the cadet profile.
-    rows = WebDriverWait(driver, 20).until(
-        EC.presence_of_all_elements_located((By.XPATH, "//tbody/tr"))
-    )
+    rows = page.query_selector_all("xpath=//tbody/tr")
 
     cadet_index = None
     for row in rows:
-        cols = row.find_elements(By.TAG_NAME, "td")
-        if cols and cols[-1].text.strip() == cin_str:
-            # The family-name link id encodes the row index
-            link = row.find_element(By.XPATH, ".//a[contains(@id,'lbFamilyName')]")
+        cols = row.query_selector_all("td")
+        if cols and cols[-1].inner_text().strip() == cin_str:
+            link = row.query_selector("xpath=.//a[contains(@id,'lbFamilyName')]")
             link_id = link.get_attribute("id")
-            # e.g. ctl00_ctl00_cphBaseBody_cphBody_lvCadets_ctrl5_lbFamilyName
             cadet_index = int(link_id.split("_ctrl")[1].split("_")[0])
             break
 
@@ -86,52 +71,51 @@ def add_qualification_with_attachment(
         raise ValueError(f"Cadet with CIN {cin_str} not found in the cadets list.")
 
     log(f"Found cadet at list index {cadet_index}. Opening profile...")
-    link = WebDriverWait(driver, 20).until(
-        EC.element_to_be_clickable(
-            (By.ID, f"ctl00_ctl00_cphBaseBody_cphBody_lvCadets_ctrl{cadet_index}_lbFamilyName")
-        )
+    link = page.wait_for_selector(
+        f"#ctl00_ctl00_cphBaseBody_cphBody_lvCadets_ctrl{cadet_index}_lbFamilyName",
+        timeout=20000,
     )
-    safe_click(driver, link)
-    wait_for_preloader(driver)
-    wait_for_aspx_load(driver)
+    safe_click(page, link)
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)
 
-    # ── 2. Navigate to Qualifications & Awards → General Qualifications ───────
+    # 2. Navigate to Qualifications & Awards -> General Qualifications
     log("Navigating to General Qualifications tab...")
     for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-        tab = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located(
-                (By.XPATH, f"//a[contains(text(), '{tab_text}')]")
-            )
+        tab = page.wait_for_selector(
+            f"xpath=//a[contains(text(), '{tab_text}')]",
+            timeout=15000,
         )
-        safe_click(driver, tab)
-        wait_for_preloader(driver)
-        wait_for_aspx_load(driver)
+        safe_click(page, tab)
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
         time.sleep(0.5)
 
-    # ── 3. Click "Add Qualification" button ───────────────────────────────────
+    # 3. Click "Add Qualification" button
     log("Clicking 'Add Qualification'...")
-    add_qual_btn = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable((By.ID, "ctl00_ctl00_cphBaseBody_cphBody_lbBulkAddQuals"))
+    add_qual_btn = page.wait_for_selector(
+        "#ctl00_ctl00_cphBaseBody_cphBody_lbBulkAddQuals",
+        timeout=15000,
     )
-    safe_click(driver, add_qual_btn)
-    wait_for_preloader(driver)
-    wait_for_aspx_load(driver)
+    safe_click(page, add_qual_btn)
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)
     time.sleep(0.5)
 
-    # ── 4. Select qualification in the modal dropdown ─────────────────────────
+    # 4. Select qualification in the modal dropdown
     log(f"Selecting qualification: {qualification_name}...")
-    qual_select_el = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable(
-            (By.ID, "ctl00_ctl00_cphBaseBody_cphBody_bulkUpdateQualifications_fvBulkAddQualifications_ddlValidQualifications")
-        )
+    qual_select_id = (
+        "#ctl00_ctl00_cphBaseBody_cphBody_bulkUpdateQualifications_"
+        "fvBulkAddQualifications_ddlValidQualifications"
     )
-    qual_select = Select(qual_select_el)
+    qual_select_el = page.wait_for_selector(qual_select_id, timeout=15000)
 
+    options = qual_select_el.query_selector_all("option")
     matched_value = None
     # Preferred: select by the known Bader option id (from core.qualifications).
     if qualification_id is not None:
         wanted = str(qualification_id)
-        if any(o.get_attribute("value") == wanted for o in qual_select.options):
+        if any(o.get_attribute("value") == wanted for o in options):
             matched_value = wanted
         else:
             log(f"Option id {wanted} not in dropdown — falling back to name match.", "warning")
@@ -139,124 +123,109 @@ def add_qualification_with_attachment(
     # Fallback: exact match first, then case-insensitive partial match.
     if matched_value is None:
         target = qualification_name.strip().lower()
-        for option in qual_select.options:
-            if option.text.strip().lower() == target:
-                matched_value = option.get_attribute("value")
+        for opt in options:
+            if opt.inner_text().strip().lower() == target:
+                matched_value = opt.get_attribute("value")
                 break
         if matched_value is None:
-            for option in qual_select.options:
-                if target in option.text.strip().lower():
-                    matched_value = option.get_attribute("value")
-                    log(f"Partial match found: '{option.text.strip()}'")
+            for opt in options:
+                if target in opt.inner_text().strip().lower():
+                    matched_value = opt.get_attribute("value")
+                    log(f"Partial match found: '{opt.inner_text().strip()}'")
                     break
     if matched_value is None:
         raise ValueError(
-            f"Qualification '{qualification_name}' not found in the dropdown. "
-            "Check the exact name against the available options."
+            f"Qualification '{qualification_name}' not found in the dropdown."
         )
 
-    qual_select.select_by_value(matched_value)
+    qual_select_el.select_option(value=matched_value)
     time.sleep(0.3)
 
-    # ── 4b. Set the Date Awarded in the modal (if provided) ──────────────────
+    # 4b. Set Date Awarded
     if award_date:
         log(f"Setting date awarded to {award_date}...")
-        date_input = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable(
-                (By.ID,
-                 "ctl00_ctl00_cphBaseBody_cphBody_bulkUpdateQualifications_"
-                 "fvBulkAddQualifications_txtDateAwarded")
-            )
+        date_input_id = (
+            "#ctl00_ctl00_cphBaseBody_cphBody_bulkUpdateQualifications_"
+            "fvBulkAddQualifications_txtDateAwarded"
         )
-        # This is a Tempus Dominus / Bootstrap datetimepicker. A raw value= set
-        # is ignored (the widget keeps its own date model and overwrites the
-        # input on submit), so we type into it like a user, then TAB to commit
-        # and close the popup. Note: ESC reverts/clears the field, so never use
-        # it here.
+        date_input = page.wait_for_selector(date_input_id, timeout=10000)
         date_input.click()
-        date_input.send_keys(Keys.CONTROL, "a")
-        date_input.send_keys(Keys.DELETE)
-        date_input.send_keys(award_date)
+        date_input.press("Control+a")
+        date_input.press("Delete")
+        date_input.type(award_date)
         time.sleep(0.2)
-        date_input.send_keys(Keys.TAB)
+        date_input.press("Tab")
         time.sleep(0.2)
 
-        # Belt-and-braces: also push the value through the jQuery datetimepicker
-        # API if it's present, so the widget's internal model matches.
-        driver.execute_script(
-            """
-            const el = arguments[0], val = arguments[1];
-            if (window.jQuery) {
-                try { jQuery(el).datetimepicker('date', val); } catch (e) {}
-            }
-            if (el.value !== val) { el.value = val; }
-            if (window.jQuery) { jQuery(el).trigger('change'); }
-            el.dispatchEvent(new Event('change', {bubbles: true}));
-            """,
-            date_input,
+        date_input.evaluate(
+            """(el, val) => {
+                if (window.jQuery) { try { jQuery(el).datetimepicker('date', val); } catch(e) {} }
+                if (el.value !== val) { el.value = val; }
+                if (window.jQuery) { jQuery(el).trigger('change'); }
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""",
             award_date,
         )
         time.sleep(0.2)
 
-        actual = date_input.get_attribute("value")
+        actual = date_input.input_value()
         if actual != award_date:
             log(f"[WARN] Date field shows '{actual}' after setting '{award_date}'.", "warning")
 
-    # ── 5. Submit the modal (find and click the Save/Add button inside it) ────
+    # 5. Submit the modal
     log("Submitting the Add Qualification modal...")
-    # The modal save button — look for a button/link with "Save" or "Add" inside the modal
-    save_btn = WebDriverWait(driver, 15).until(
-        EC.element_to_be_clickable(
-            (By.XPATH,
-             "//div[contains(@class,'modal show')]//a[contains(@class,'btn') and "
-             "(contains(translate(text(),'SAVE','save'),'save') or "
-             " contains(translate(text(),'ADD','add'),'add'))] | "
-             "//div[contains(@class,'modal show')]//input[@type='submit']")
-        )
-    )
-    safe_click(driver, save_btn)
-    wait_for_preloader(driver)
-    wait_for_aspx_load(driver)
+    save_btn = None
+    for xpath in [
+        "//div[contains(@class,'modal show')]//a[contains(@class,'btn') and (contains(translate(text(),'SAVE','save'),'save') or contains(translate(text(),'ADD','add'),'add'))]",
+        "//div[contains(@class,'modal show')]//input[@type='submit']",
+        "//a[contains(@class,'btn') and contains(translate(text(),'SAVE','save'),'save')]",
+    ]:
+        try:
+            save_btn = page.wait_for_selector(f"xpath={xpath}", timeout=5000)
+            if save_btn:
+                break
+        except PlaywrightTimeoutError:
+            continue
+
+    if save_btn is None:
+        raise Exception("Could not find save button in Add Qualification modal.")
+
+    safe_click(page, save_btn)
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)
     time.sleep(1)
 
-    # ── 6. Refresh and re-navigate to General Qualifications ─────────────────
+    # 6. Refresh and re-navigate to General Qualifications
     log("Refreshing page to load qualification row...")
-    driver.refresh()
-    wait_for_preloader(driver)
-    wait_for_aspx_load(driver)
+    page.reload()
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)
     time.sleep(1)
 
     for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-        tab = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located(
-                (By.XPATH, f"//a[contains(text(), '{tab_text}')]")
-            )
+        tab = page.wait_for_selector(
+            f"xpath=//a[contains(text(), '{tab_text}')]",
+            timeout=15000,
         )
-        safe_click(driver, tab)
-        wait_for_preloader(driver)
-        wait_for_aspx_load(driver)
+        safe_click(page, tab)
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
         time.sleep(0.5)
 
-    # ── 7. Find the ctrl index for our qualification ──────────────────────────
-    # The qual's edit link id encodes its real ASP.NET ctrl number, e.g.
-    # lvQualifications_ctrl12_lbEdit. We must use that number — not the row's
-    # position in the table — because the attachments (sibling) row is matched
-    # by the same _ctrl{N}_ token, and the two collections are not aligned.
+    # 7. Find ctrl index for our qualification
     log(f"Finding ctrl index for '{qualification_name}'...")
-
     target = qualification_name.strip().lower()
 
-    edit_links = WebDriverWait(driver, 20).until(
-        EC.presence_of_all_elements_located(
-            (By.XPATH, "//a[contains(@id,'lvQualifications_ctrl') and contains(@id,'_lbEdit')]")
-        )
+    edit_links = page.query_selector_all(
+        "xpath=//a[contains(@id,'lvQualifications_ctrl') and contains(@id,'_lbEdit')]"
     )
 
     ctrl_index = None
-    for link in edit_links:
-        parent_tr = link.find_element(By.XPATH, "./ancestor::tr[1]")
-        if target in parent_tr.text.strip().lower():
-            ctrl_index = int(link.get_attribute("id").split("_ctrl")[1].split("_")[0])
+    for lnk in edit_links:
+        parent_tr = lnk.evaluate_handle("el => el.closest('tr')")
+        parent_text = parent_tr.evaluate("el => el.innerText").lower()
+        if target in parent_text:
+            ctrl_index = int(lnk.get_attribute("id").split("_ctrl")[1].split("_")[0])
             break
 
     if ctrl_index is None:
@@ -264,33 +233,26 @@ def add_qualification_with_attachment(
 
     log(f"Found qualification at ctrl index {ctrl_index}.")
 
-    # ── 8. Show the sibling (attachments) row via JS ─────────────────────────
-    # The sibling row carries the same lvQualifications_ctrl{N}_ token in its
-    # descendants' ids, so match on that rather than positional indexing.
+    # 8. Show the sibling (attachments) row via JS
     def reveal_sibling_row():
-        matches = driver.find_elements(
-            By.XPATH,
-            f"//tr[contains(@class,'sibling')]"
-            f"[.//*[contains(@id,'lvQualifications_ctrl{ctrl_index}_')]]",
+        matches = page.query_selector_all(
+            f"xpath=//tr[contains(@class,'sibling')][.//*[contains(@id,'lvQualifications_ctrl{ctrl_index}_')]]"
         )
         if not matches:
-            raise ValueError(
-                f"Could not find attachments (sibling) row for ctrl index {ctrl_index}."
-            )
-        driver.execute_script("arguments[0].style.display = 'table-row';", matches[0])
+            raise ValueError(f"Could not find attachments (sibling) row for ctrl index {ctrl_index}.")
+        matches[0].evaluate("el => el.style.display = 'table-row'")
         return matches[0]
 
     log("Revealing attachments panel via JavaScript...")
     reveal_sibling_row()
     time.sleep(0.5)
 
-# ── 9. Upload each PDF one at a time ─────────────────────────────────────
+    # 9. Upload each PDF one at a time
     for i, path in enumerate(pdf_paths):
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(f"PDF not found: {path}")
 
-        # Build clean names for this PDF
         safe_qual_name = qualification_name.replace(" ", "_")
         new_filename = f"{safe_qual_name}_Assessment_{i + 1}.pdf"
         suffix = f" {i + 1}" if len(pdf_paths) > 1 else ""
@@ -298,7 +260,6 @@ def add_qualification_with_attachment(
 
         log(f"Uploading PDF {i+1}/{len(pdf_paths)} as '{new_filename}'...")
 
-        # Re-show sibling row
         reveal_sibling_row()
         time.sleep(0.5)
 
@@ -307,44 +268,43 @@ def add_qualification_with_attachment(
             f"_gvQualificationProofs"
         )
 
-        # Rename the temp file to the clean name before sending —
-        # the browser uses the actual filename on disk as the upload name
         renamed_path = os.path.join(os.path.dirname(path), new_filename)
         os.rename(path, renamed_path)
 
-        file_input = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located(
-                (By.XPATH,
-                 f"//input[@type='file' and contains(@id,'{ctrl_prefix}') "
-                 f"and contains(@id,'AttachmentFileUpload')]")
-            )
+        # Playwright set_input_files works even on hidden file inputs
+        file_input = page.query_selector(
+            f"xpath=//input[@type='file' and contains(@id,'{ctrl_prefix}') "
+            f"and contains(@id,'AttachmentFileUpload')]"
         )
-        file_input.send_keys(renamed_path)
+        if file_input is None:
+            file_input = page.wait_for_selector(
+                f"xpath=//input[@type='file' and contains(@id,'{ctrl_prefix}') and contains(@id,'AttachmentFileUpload')]",
+                timeout=15000,
+            )
+        file_input.set_input_files(renamed_path)
         time.sleep(0.5)
 
-        desc_input = driver.find_element(
-            By.XPATH,
-            f"//input[@type='text' and contains(@id,'{ctrl_prefix}') "
+        desc_input = page.query_selector(
+            f"xpath=//input[@type='text' and contains(@id,'{ctrl_prefix}') "
             f"and (contains(@id,'txtEmptyInsertDescription') or contains(@id,'txtFooterDescription'))]"
         )
-        desc_input.clear()
-        desc_input.send_keys(description)
+        if desc_input:
+            desc_input.fill("")
+            desc_input.type(description)
         time.sleep(0.3)
 
-        add_btn = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable(
-                (By.XPATH,
-                 f"//a[contains(@id,'{ctrl_prefix}') "
-                 f"and (contains(@id,'lbAddEmptyInsert') or contains(@id,'lbAddFooterInsert') or contains(@id,'lbAddQualificationProof'))]")
-            )
+        add_btn = page.wait_for_selector(
+            f"xpath=//a[contains(@id,'{ctrl_prefix}') "
+            f"and (contains(@id,'lbAddEmptyInsert') or contains(@id,'lbAddFooterInsert') or contains(@id,'lbAddQualificationProof'))]",
+            timeout=15000,
         )
-        driver.execute_script("arguments[0].scrollIntoView(true);", add_btn)
+        add_btn.evaluate("el => el.scrollIntoView(true)")
         time.sleep(0.3)
-        driver.execute_script("arguments[0].click();", add_btn)
-        wait_for_preloader(driver)
-        wait_for_aspx_load(driver)
+        add_btn.evaluate("el => el.click()")
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
         time.sleep(1)
 
-        log(f"✓ PDF {i+1} attached as '{new_filename}'.")
+        log(f"PDF {i+1} attached as '{new_filename}'.")
 
     log(f"Done — qualification '{qualification_name}' with {len(pdf_paths)} PDF(s) saved for CIN {cin_str}.")
