@@ -1,7 +1,7 @@
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 import json
 
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 from scripts.scraper_utils import init_scraper, login, match_email
 
 from database.models import Staff
@@ -35,6 +35,60 @@ def get_staff(page: Page):
     return staff
 
 
+def get_staff_address(page: Page):
+    """Return the current address from a loaded staff profile, or None.
+
+    Picks the row flagged 'Current'; falls back to the first address row. The
+    address is the first non-empty text node of the cell (before the <br>/badge).
+    """
+    try:
+        card = "//h4[normalize-space()='Address Details']/ancestor::div[contains(@class,'card')]"
+        row = page.query_selector(
+            f"xpath={card}//tbody//tr[.//span[contains(@class,'badge') and normalize-space()='Current']]"
+        ) or page.query_selector(f"xpath={card}//tbody//tr[1]")
+        if not row:
+            return None
+        td = row.query_selector("td")
+        if not td:
+            return None
+        address = td.evaluate(
+            "el => { for (const n of el.childNodes) { if (n.nodeType === 3) { const t = n.textContent.trim(); if (t) return t; } } return ''; }"
+        )
+        return address or None
+    except Exception:
+        return None
+
+
+def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=None):
+    """Visit each staff member's profile (by row index) and set entry['address']."""
+    total = len(staff)
+    for i, entry in enumerate(staff):
+        if stop_event and stop_event.is_set():
+            return
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Fetching address {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
+            }))
+
+        page.goto("https://sms.bader.mod.uk/staff/default.aspx")
+        wait_for_aspx_load(page)
+        page.locator("[name='Staff_length']").select_option(value="-1")
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
+
+        link = page.wait_for_selector(
+            f"#ctl00_ctl00_cphBaseBody_cphBody_lvStaff_ctrl{i}_lnkFamilyName",
+            timeout=20000,
+        )
+        safe_click(page, link)
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
+
+        entry["address"] = get_staff_address(page)
+
+
 def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
     context = None
     try:
@@ -52,7 +106,13 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         staff = get_staff(page)
 
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Matching emails..."}))
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching addresses..."}))
+
+        add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
+        if stop_event.is_set(): return
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Matching emails..."}))
 
         try:
             workspace_users = get_workspace_users()
@@ -96,6 +156,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
             member.last_name = entry.get("last_name") or member.last_name
             member.rank = entry.get("rank") or member.rank
             member.email = email or member.email
+            member.address = entry.get("address") or member.address
             saved += 1
 
         db_session.commit()
