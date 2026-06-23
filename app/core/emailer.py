@@ -1,6 +1,7 @@
 """Outbound email via the Gmail API, plus the HTML templates we send."""
 
 import base64
+import os
 import email.mime.multipart
 import email.mime.text
 import email.mime.base
@@ -19,6 +20,9 @@ FOOTER = (
 
 def send_email(to: str, subject: str, html_body: str, attachment: bytes | None = None,
                attachment_filename: str = "attachment.pdf") -> None:
+    if os.getenv("EMAIL_DISABLED", "").lower() in ("1", "true", "yes"):
+        print(f"[send_email] skipped (EMAIL_DISABLED): would send to {to}: {subject}")
+        return
     if not SA_EMAIL or not SA_PRIVATE_KEY or not NOREPLY_EMAIL:
         print("[send_email] skipped: service account or noreply email not configured")
         return
