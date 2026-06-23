@@ -360,6 +360,7 @@ def list_staff(
             "rank":      s.rank,
             "email":     s.email,
             "address":   s.address,
+            "attendance": s.attendance,
             "userId":    user_by_email.get((s.email or "").lower()),
         }
         for s in db.query(Staff).all()

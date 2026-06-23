@@ -39,6 +39,7 @@ class Staff(Base):
     rank       = Column(Text, nullable=True)
     email      = Column(Text, nullable=True)
     address    = Column(Text, nullable=True)  # current address from SMS profile
+    attendance = Column(Integer, nullable=True)  # PC+PI parade nights this half-year
 
 
 QUALIFICATION_TYPES = (
