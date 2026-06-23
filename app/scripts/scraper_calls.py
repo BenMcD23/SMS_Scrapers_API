@@ -8,6 +8,8 @@ from assessment_builders.pdf_utils import merge_pdfs
 import json
 from datetime import datetime
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary
 from google_admin_api.get_all_users import get_workspace_users
 
@@ -16,35 +18,30 @@ import tempfile
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
-def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
-    driver = None
+
+def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
+    context = None
     try:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Initializing scraper..."}))
 
-        driver, credentials = init_scraper(user_id, db_session)
-        driver.set_page_load_timeout(50)
-        if on_driver_ready:
-            on_driver_ready(driver)
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
 
         if stop_event.is_set(): return
 
-        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
         if stop_event.is_set(): return
 
-        cadetNames, numberOfCadets = get_cadet_names(driver)
+        cadetNames, numberOfCadets = get_cadet_names(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Found {numberOfCadets} cadets. Fetching info and qualifications..."}))
 
         cadet_data = get_cadet_info_and_qualifications(
-            driver,
-            cadetNames,
-            numberOfCadets,
-            scraper_messages,
-            scraper_lock,
-            stop_event=stop_event,
+            page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
         )
 
         if stop_event.is_set():
@@ -52,13 +49,10 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped by timeout."}))
             return
 
-        # ── Fetch workspace emails and build lookup ────────────────────────────
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Fetching Google Workspace emails..."}))
         try:
             workspace_users = get_workspace_users()
-            # Key: (first_name_upper, last_name_upper) → email
-            # uppercase keys for comparison, but the dict value retains original
             email_map = {
                 (u["first_name_key"], u["last_name_key"]): u["email"]
                 for u in workspace_users
@@ -70,19 +64,16 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "warning", "value": f"[WARN] Could not fetch workspace emails: {str(e)}. Continuing without emails."}))
 
-        # ── Upsert into DB ────────────────────────────────────────────────────
         saved = 0
         skipped = 0
         emails_matched = 0
 
         for entry in cadet_data:
             cin = entry.get("cin")
-
             if not cin:
                 print(f"[Scraper] Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found")
                 skipped += 1
                 continue
-
             try:
                 cin = int(cin)
             except (ValueError, TypeError):
@@ -90,25 +81,20 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 skipped += 1
                 continue
 
-            # Uppercase only for comparison — names saved to DB come from SMS as-is
             first_key = (entry.get("first_name") or "").strip().upper()
-            last_key  = (entry.get("last_name")  or "").strip().upper()
+            last_key = (entry.get("last_name") or "").strip().upper()
 
-            # 1. Full first + last
             email = email_map.get((first_key, last_key))
             if not email:
-                # 2. First initial + last  (e.g. 'T' 'SMITH')
                 initial_key = first_key[0] if first_key else ""
                 email = next(
                     (v for (f, l), v in email_map.items() if l == last_key and f.startswith(initial_key)),
-                    None
+                    None,
                 )
                 if not email:
-                    # 3. Last name only — only use if exactly one workspace account shares that surname
                     last_matches = [(f, l, v) for (f, l), v in email_map.items() if l == last_key]
                     if len(last_matches) == 1:
                         email = last_matches[0][2]
-
 
             if email:
                 emails_matched += 1
@@ -118,16 +104,14 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 cadet = Cadet(cin=cin)
                 db_session.add(cadet)
 
-            # Store names exactly as SMS returned them, not uppercased
-            cadet.first_name    = entry.get("first_name") or cadet.first_name
-            cadet.last_name     = entry.get("last_name")  or cadet.last_name
-            cadet.rank          = entry.get("rank")        or cadet.rank
-            cadet.flight        = entry.get("flight")      or cadet.flight
+            cadet.first_name = entry.get("first_name") or cadet.first_name
+            cadet.last_name = entry.get("last_name") or cadet.last_name
+            cadet.rank = entry.get("rank") or cadet.rank
+            cadet.flight = entry.get("flight") or cadet.flight
             cadet.date_of_birth = entry.get("date_of_birth") or cadet.date_of_birth
-            cadet.email         = email or cadet.email  # keep existing if no match
+            cadet.email = email or cadet.email
             cadet.classification = entry.get("classification") or cadet.classification
 
-            # Deduplicate scraped qualifications by qual_type, keeping most recent date_achieved
             deduped_quals = {}
             for qual in entry.get("qualifications", []):
                 if isinstance(qual, str):
@@ -137,10 +121,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                     st = qual.get("status", "true")
                     da = qual.get("date_achieved")
                     de = qual.get("date_expires")
-
                 if not qt:
                     continue
-
                 if qt not in deduped_quals:
                     deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
                 else:
@@ -148,7 +130,6 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                     if da is not None and (existing_da is None or da > existing_da):
                         deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
 
-            # Upsert qualifications — update dates if missing, insert if new
             existing_quals = {cq.qual_type: cq for cq in cadet.qualifications}
             for qt, qual in deduped_quals.items():
                 if qt in existing_quals:
@@ -159,11 +140,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                         cq.date_expires = qual["date_expires"]
                 else:
                     db_session.add(CadetQualification(
-                        cadet_id=cin,
-                        qual_type=qt,
-                        status=qual["status"],
-                        date_achieved=qual["date_achieved"],
-                        date_expires=qual["date_expires"],
+                        cadet_id=cin, qual_type=qt, status=qual["status"],
+                        date_achieved=qual["date_achieved"], date_expires=qual["date_expires"],
                     ))
 
             saved += 1
@@ -191,8 +169,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
-        
-    except TimeoutException:
+
+    except PlaywrightTimeoutError:
         if not stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "A page took too long to load (Timeout)."}))
@@ -202,63 +180,49 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Scraper Error: {str(e)}"}))
     finally:
-        if driver:
+        if context:
             try:
-                driver.quit()
+                context.close()
             except Exception:
                 pass
 
-def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
-    driver = None
+
+def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
+    context = None
     try:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Started cadet event scraper"}))
-        
-        # 1. Initialize and set timeout
-        driver, credentials = init_scraper(user_id, db_session)
-        driver.set_page_load_timeout(50)
-        if on_driver_ready:
-            on_driver_ready(driver)
 
-        # 2. Login with stop check
-        if stop_event.is_set(): return
-        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
 
-        # 3. Get all event names and count
         if stop_event.is_set(): return
-        event_names, number_of_events = get_all_event_names(driver)
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+
+        if stop_event.is_set(): return
+        event_names, number_of_events = get_all_event_names(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Got event names, starting to get cadets on events"}))
 
-        # 4. Get Attendees
         event_attendees = get_event_attendees(
-            driver,
-            event_names,
-            number_of_events,
-            scraper_messages,
-            scraper_lock,
-            stop_event=stop_event,
+            page, event_names, number_of_events, scraper_messages, scraper_lock, stop_event=stop_event,
         )
-        
+
         if stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped: Timeout reached."}))
             return
 
-        # 5. Save events and attendees to DB
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Saving events to database..."}))
 
-        # Clear existing data so we get a fresh sync each run
         db_session.query(CadetEvent).delete()
         db_session.query(AllEvent).delete()
         db_session.commit()
 
         saved_events = 0
-        unmatched_cadets = 0
-
-        # Build a name lookup: (first_upper, last_upper) -> cin
         all_cadets = db_session.query(Cadet).all()
         cadet_lookup = {
             (c.first_name.strip().upper(), c.last_name.strip().upper()): c.cin
@@ -270,7 +234,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 if not isinstance(row, list) or len(row) < 3:
                     continue
                 first = row[1].strip().upper()
-                last  = row[2].strip().upper()
+                last = row[2].strip().upper()
                 cin = cadet_lookup.get((first, last))
                 if not cin:
                     initial = first[0] if first else ""
@@ -284,14 +248,14 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 else:
                     unmatched_ref[0] += 1
 
-        matched_ref   = [0]
+        matched_ref = [0]
         unmatched_ref = [0]
 
         for entry in event_attendees:
             attendees = entry.get("attendees")
-            sub_apps  = entry.get("sub_apps", [])
+            sub_apps = entry.get("sub_apps", [])
             has_direct = isinstance(attendees, list)
-            has_subs   = any(isinstance(s.get("attendees"), list) for s in sub_apps)
+            has_subs = any(isinstance(s.get("attendees"), list) for s in sub_apps)
 
             if not has_direct and not has_subs:
                 continue
@@ -314,7 +278,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 _save_cadet_events(sub_event.id, sub_attendees, matched_ref, unmatched_ref)
                 saved_events += 1
 
-        matched_cadets   = matched_ref[0]
+        matched_cadets = matched_ref[0]
         unmatched_cadets = unmatched_ref[0]
         db_session.commit()
 
@@ -329,7 +293,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
-    except TimeoutException:
+    except PlaywrightTimeoutError:
         if not stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Page load timed out."}))
@@ -339,50 +303,39 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Internal Error: {str(e)}"}))
     finally:
-        if driver:
+        if context:
             try:
-                driver.quit()
+                context.close()
             except Exception:
                 pass
 
-def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
-    driver = None
+
+def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
+    context = None
     try:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Started 317 event info scraper"}))
 
-        # 1. Initialize Driver & Set Safety Timeout
-        driver, credentials = init_scraper(user_id, db_session)
-        driver.set_page_load_timeout(50)
-        if on_driver_ready:
-            on_driver_ready(driver)
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
 
-        # 2. Login Check
         if stop_event.is_set(): return
-        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        # 3. Fetch 317 event links
         if stop_event.is_set(): return
-        event_links_317 = get_317_event_links(driver)
+        event_links_317 = get_317_event_links(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(event_links_317)} event links. Syncing to database..."}))
 
-        # 4. Sync Info
-        get_317_event_info(
-            driver,
-            event_links_317,
-            scraper_messages,
-            scraper_lock,
-            stop_event=stop_event,
-        )
+        get_317_event_info(page, event_links_317, scraper_messages, scraper_lock, stop_event=stop_event)
 
-        # 5. Final Status Update
         with scraper_lock:
             if not stop_event.is_set():
                 scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
-    except TimeoutException:
+    except PlaywrightTimeoutError:
         if not stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Bader took too long to respond. Connection timed out."}))
@@ -391,35 +344,32 @@ def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Sync Error: {str(e)}"}))
     finally:
-        if driver:
+        if context:
             try:
-                driver.quit()
+                context.close()
             except Exception:
                 pass
 
+
 def check_banned_scraper():
     pass
-    # banned_and_bidding = get_event_bans(event_data)
 
-def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_driver_ready=None):
-    driver = None
+
+def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
+    context = None
     try:
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Started medical and dietary scraper"}))
 
-        # 1. Initialize and set page timeout
-        driver, credentials = init_scraper(user_id, db_session)
-        driver.set_page_load_timeout(50)
-        if on_driver_ready:
-            on_driver_ready(driver)
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
 
-        # 2. Login with stop check
         if stop_event.is_set(): return
-        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        # 3. Get Cadet List
         if stop_event.is_set(): return
-        cadetNames, numberOfCadets = get_cadet_names(driver)
+        cadetNames, numberOfCadets = get_cadet_names(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
@@ -427,14 +377,8 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 "value": f"Got {numberOfCadets} cadets, starting to fetch allergies and dietary requirements"
             }))
 
-        # 4. Fetch Medical Data
         cadet_allergies_data = get_cadet_medical(
-            driver,
-            cadetNames,
-            numberOfCadets,
-            scraper_messages,
-            scraper_lock,
-            stop_event=stop_event,
+            page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
         )
 
         if stop_event.is_set():
@@ -442,7 +386,6 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped by timeout."}))
             return
 
-        # 5. Save to DB
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Saving medical and dietary data to database..."}))
 
@@ -463,7 +406,6 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 skipped += 1
                 continue
 
-            # Replace existing records with fresh data
             db_session.query(CadetMedical).filter(CadetMedical.cadet_id == cin).delete()
             db_session.query(CadetDietary).filter(CadetDietary.cadet_id == cin).delete()
 
@@ -493,17 +435,16 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 "value": f"DB update complete — {saved} cadets saved, {skipped} skipped."
             }))
 
-        # 6. Also push to Apps Script (legacy)
         push_to_google_apps_script(
             cadet_allergies_data,
             "https://script.google.com/macros/s/AKfycbxl94R1lBUwx4R2yu3Bzi82GEvPk6tpDVNE1EW065STdDUBYEDrC2ItdpfidcuRPwBg/exec",
             scraper_messages,
-            scraper_lock
+            scraper_lock,
         )
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
-    except TimeoutException:
+    except PlaywrightTimeoutError:
         if not stop_event.is_set():
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": "Connection timed out while loading cadet profiles."}))
@@ -513,9 +454,9 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Medical Scraper Error: {str(e)}"}))
     finally:
-        if driver:
+        if context:
             try:
-                driver.quit()
+                context.close()
             except Exception:
                 pass
 
@@ -545,8 +486,9 @@ def upload_qualifications_scraper(
     db_session,
     stop_event,
     assessment_ids: list[int],
+    on_context_ready=None,
 ):
-    driver = None
+    context = None
 
     def log(msg: str, level: str = "info"):
         print(f"[upload-to-bader] {level}: {msg}", flush=True)
@@ -556,16 +498,16 @@ def upload_qualifications_scraper(
                 scraper_messages.append(payload)
 
     try:
-        driver, credentials = init_scraper(user_id, db_session)
-        driver.set_page_load_timeout(50)
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
 
         if stop_event.is_set():
             return
 
-        login(driver, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
-        log("✓ Logged in to Bader SMS.")
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+        log("Logged in to Bader SMS.")
 
-        # ── Load all requested sheets ─────────────────────────────────────────
         from database.models import AssessmentSheet
         sheets = (
             db_session.query(AssessmentSheet)
@@ -573,11 +515,8 @@ def upload_qualifications_scraper(
             .all()
         )
 
-        # ── Group by (cadet_id, assessment_type) ──────────────────────────────
-        # We want one add_qualification_with_attachment call per cadet+type,
-        # passing ALL the PDFs for that group at once.
         from collections import defaultdict
-        groups: dict[tuple[int, str], list[AssessmentSheet]] = defaultdict(list)
+        groups: dict[tuple[int, str], list] = defaultdict(list)
         for sheet in sheets:
             groups[(sheet.cadet_id, sheet.assessment_type)].append(sheet)
 
@@ -589,7 +528,6 @@ def upload_qualifications_scraper(
                 log("Upload stopped by timeout.", "error")
                 return
 
-            # ── Validate ──────────────────────────────────────────────────────
             cadet = group_sheets[0].cadet
             if not cadet:
                 log(f"No cadet linked to assessment group (cadet_id={cadet_id}) — skipping.", "warning")
@@ -609,10 +547,7 @@ def upload_qualifications_scraper(
 
             sheets_with_pdf = [s for s in group_sheets if s.pdf_data]
             if not sheets_with_pdf:
-                log(
-                    f"No PDFs stored for {assessment_type} / CIN {cadet.cin} — skipping.",
-                    "warning",
-                )
+                log(f"No PDFs stored for {assessment_type} / CIN {cadet.cin} — skipping.", "warning")
                 continue
 
             merge_into_one = assessment_type in MERGE_GROUP_PDF_TYPES
@@ -644,7 +579,6 @@ def upload_qualifications_scraper(
                 f"{len(pdf_payloads)} PDF(s)..."
             )
 
-            # ── Write each PDF to a temp file ─────────────────────────────────
             tmp_paths = []
             try:
                 for i, pdf_bytes in enumerate(pdf_payloads):
@@ -657,10 +591,6 @@ def upload_qualifications_scraper(
                         f.write(pdf_bytes)
                     tmp_paths.append(tmp_path)
 
-                # ── Resolve the award date from the assessment ────────────────
-                # The stored date format varies (ISO from <input type=date>, or
-                # UK dd/mm/yy from edited sheets); Bader's datetimepicker wants
-                # 4-digit UK DD/MM/YYYY.
                 award_date = None
                 raw_date = (sheets_with_pdf[0].fields or {}).get("date")
                 if raw_date:
@@ -671,11 +601,10 @@ def upload_qualifications_scraper(
                         except (ValueError, TypeError):
                             continue
                     if award_date is None:
-                        award_date = raw_date  # unknown format — pass through as-is
+                        award_date = raw_date
 
-                # ── Call the Bader scraper ────────────────────────────────────
                 add_qualification_with_attachment(
-                    driver=driver,
+                    page=page,
                     cadet_cin=cadet.cin,
                     qualification_name=qual_name,
                     qualification_id=qual_id,
@@ -687,15 +616,12 @@ def upload_qualifications_scraper(
                 )
 
             except Exception as qual_err:
-                log(
-                    f"Failed to upload '{qual_name}' for CIN {cadet.cin}: {qual_err}",
-                    "error",
-                )
-                raise  # stop the whole job on hard failure
+                log(f"Failed to upload '{qual_name}' for CIN {cadet.cin}: {qual_err}", "error")
+                raise
 
             finally:
-                for p in tmp_paths:
-                    # File may have been renamed inside the scraper, clean up both
+                safe_qual_name = qual_name.replace(" ", "_")
+                for j, p in enumerate(tmp_paths):
                     if os.path.exists(p):
                         os.remove(p)
                     safe_qual_name = qual_name.replace(" ", "_")
@@ -714,10 +640,7 @@ def upload_qualifications_scraper(
                 s.uploaded_at = _uploaded_now
             db_session.commit()
 
-            log(
-                f"✓ '{qual_name}' uploaded for "
-                f"{cadet.first_name} {cadet.last_name} (CIN {cadet.cin})."
-            )
+            log(f"'{qual_name}' uploaded for {cadet.first_name} {cadet.last_name} (CIN {cadet.cin}).")
 
         log("All qualifications processed.", "status")
 
@@ -725,5 +648,8 @@ def upload_qualifications_scraper(
         db_session.rollback()
         log(f"Upload scraper error: {e}", "error")
     finally:
-        if driver:
-            driver.quit()
+        if context:
+            try:
+                context.close()
+            except Exception:
+                pass
