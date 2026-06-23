@@ -37,7 +37,8 @@ class Staff(Base):
     first_name = Column(Text, nullable=False)
     last_name  = Column(Text, nullable=False)
     rank       = Column(Text, nullable=True)
-    email      = Column(Text, nullable=True)  # ponytail: only the 4 fields the page needs
+    email      = Column(Text, nullable=True)
+    address    = Column(Text, nullable=True)  # current address from SMS profile
 
 
 QUALIFICATION_TYPES = (

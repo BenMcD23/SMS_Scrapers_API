@@ -30,6 +30,7 @@ def upgrade() -> None:
             sa.Column('last_name', sa.Text(), nullable=False),
             sa.Column('rank', sa.Text(), nullable=True),
             sa.Column('email', sa.Text(), nullable=True),
+            sa.Column('address', sa.Text(), nullable=True),
         )
 
 
