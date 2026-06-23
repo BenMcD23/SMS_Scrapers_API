@@ -38,7 +38,7 @@ router = APIRouter()
 SCRAPER_TIMEOUT_SECONDS = 900
 RUN_LOG_RETENTION_DAYS = 7
 
-# ── Per-scraper state for the 4 named scrapers ────────────────────────────────────
+# ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
 
 NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical"]
 
@@ -63,7 +63,7 @@ named_scraper_states: dict = {
     for name in NAMED_SCRAPERS
 }
 
-# ── Per-job upload state ────────────────────────────────────────────────
+# ── Per-job upload state ────────────────────────────────────────────────────────────────
 
 upload_jobs: dict[str, dict] = {}
 upload_jobs_lock = threading.Lock()
@@ -244,7 +244,7 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
         state["started_by"] = None
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/run-scraper/{name}")
 async def start_scraper(
@@ -438,7 +438,7 @@ async def scrapers_running(idinfo: dict = Depends(require_staff)):
     with upload_jobs_lock:
         jobs_snapshot = list(upload_jobs.values())
     return {
-        "named_scrapers": {
+        **{
             name: {"running": state["running"], "started_by": state["started_by"]}
             for name, state in named_scraper_states.items()
         },
@@ -564,7 +564,7 @@ def cleanup_old_run_logs():
         db.close()
 
 
-# ── Schedules ──────────────────────────────────────────────────────────────
+# ── Schedules ──────────────────────────────────────────────────────────────────
 
 VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
