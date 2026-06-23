@@ -15,7 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium && playwright install-deps chromium
+# Browser OS libs are installed manually above; `playwright install-deps` is
+# skipped because it pulls obsolete font packages (ttf-unifont/ttf-ubuntu-font-
+# family) that no longer exist on Debian bookworm and fail the build.
+RUN playwright install chromium
 
 COPY . .
 
