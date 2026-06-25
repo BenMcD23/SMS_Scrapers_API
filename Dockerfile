@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libnss3 libgdk-pixbuf-xlib-2.0-0 libasound2 libx11-xcb1 \
       libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxtst6 \
       libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libpango-1.0-0 libpangocairo-1.0-0 \
+      libxrandr2 libxkbcommon0 \
       poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
