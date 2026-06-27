@@ -1,5 +1,8 @@
-"""Self-check for match_email (run: python -m scripts.test_match_email)."""
+"""Self-checks for staff scraper logic (run: python -m scripts.test_match_email)."""
+from datetime import date
+
 from scripts.scraper_utils import match_email
+from scripts.staff_scraper import attendance_periods
 
 EMAILS = {
     ("JONATHON", "BARKER"): "j.barker@x",
@@ -23,5 +26,22 @@ def test():
     print("match_email self-check passed")
 
 
+def test_attendance_periods():
+    # January: previous year Jul–Dec, then current January
+    assert attendance_periods(date(2026, 1, 15)) == \
+        [(2025, m) for m in range(7, 13)] + [(2026, 1)]
+    # March (still H1): previous Jul–Dec + Jan..Mar
+    assert attendance_periods(date(2026, 3, 1)) == \
+        [(2025, m) for m in range(7, 13)] + [(2026, 1), (2026, 2), (2026, 3)]
+    # September (H2): current year only, no previous year
+    assert attendance_periods(date(2026, 9, 1)) == [(2026, m) for m in range(1, 10)]
+    # June boundary still counts as H1
+    assert (2025, 7) in attendance_periods(date(2026, 6, 30))
+    # July boundary is H2 — no previous year
+    assert all(y == 2026 for y, _ in attendance_periods(date(2026, 7, 1)))
+    print("attendance_periods self-check passed")
+
+
 if __name__ == "__main__":
     test()
+    test_attendance_periods()
