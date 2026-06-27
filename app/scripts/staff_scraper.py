@@ -126,11 +126,23 @@ def get_staff_attendance(page, scraper_messages, scraper_lock, stop_event=None):
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Fetching attendance for {month_key}..."}))
 
-        page.fill("#ctl00_ctl00_cphBaseBody_cphBody_txtDateFrom", date_from)
-        page.fill("#ctl00_ctl00_cphBaseBody_cphBody_txtDateTo", date_to)
-
-        filter_btn = page.wait_for_selector("#ctl00_ctl00_cphBaseBody_cphBody_lbFilter", timeout=20000)
-        safe_click(page, filter_btn)
+        # The Tempus Dominus pickers fight any value we set (a deferred linked
+        # handler reverts "to" to the from-date). The server only reads the posted
+        # text inputs, so bypass the widget: set both input values and click Filter
+        # in ONE synchronous block. A real .click() puts the submit button's name in
+        # the POST (so the server-side filter actually runs, unlike __doPostBack),
+        # while staying synchronous with no blur, so the dates don't revert.
+        try:
+            page.evaluate(
+                """([from, to]) => {
+                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_txtDateFrom').value = from;
+                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_txtDateTo').value = to;
+                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_lbFilter').click();
+                }""",
+                [date_from, date_to],
+            )
+        except Exception:
+            pass  # the click navigates; the eval context gets torn down mid-call
         wait_for_preloader(page)
         wait_for_aspx_load(page)
 

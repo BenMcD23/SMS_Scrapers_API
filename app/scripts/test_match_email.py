@@ -42,6 +42,22 @@ def test_attendance_periods():
     print("attendance_periods self-check passed")
 
 
+def test_compute_htd():
+    from form_generators.HTD_gen import compute_htd
+
+    c = compute_htd(10, [4, 3, 0, 0, 0, 0])
+    assert c["car_cost"] == 2.50, c
+    assert c["total_a"] == 2.68, c          # 10 * 0.25 * 1.07 = 2.675 -> 2.68
+    assert c["amounts"] == [10.72, 8.04, 0.0, 0.0, 0.0, 0.0], c
+    assert c["totals"] == c["amounts"], c
+    assert c["total_claimed"] == 18.76, c
+    # zero distance -> all zero
+    z = compute_htd(0, [5])
+    assert z["total_a"] == 0.0 and z["total_claimed"] == 0.0, z
+    print("compute_htd self-check passed")
+
+
 if __name__ == "__main__":
     test()
     test_attendance_periods()
+    test_compute_htd()
