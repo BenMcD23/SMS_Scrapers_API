@@ -15,11 +15,13 @@ from sqlalchemy import func
 from database.database import SessionLocal
 from database.models import AssessmentSheet, StoresOrder
 
+from core.config import DB_BACKUP_ENABLED
 from core.scheduler import scheduler
 from core.security import require_user
+from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
-    assessments, badges, cadets, events, form_generators,
+    assessments, backups, badges, cadets, events, form_generators,
     newsletters, portal, programme, scrapers, settings, stats, stores, texts,
 )
 
@@ -76,6 +78,13 @@ async def lifespan(app: FastAPI):
         CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone="Europe/London"),
     )
     scrapers.register_schedule_jobs()
+    # Daily DB backup to Google Drive — prod only (gated by the env flag).
+    if DB_BACKUP_ENABLED:
+        scheduler.add_job(
+            run_db_backup,
+            CronTrigger(hour=3, minute=0, timezone="Europe/London"),
+            id="db_backup",
+        )
     scheduler.start()
     yield
     scheduler.shutdown()
@@ -118,3 +127,4 @@ app.include_router(stats.router)
 app.include_router(stores.router)
 app.include_router(badges.router)
 app.include_router(texts.router)
+app.include_router(backups.router)

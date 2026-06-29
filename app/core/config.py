@@ -37,6 +37,17 @@ PROGRAMME_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyqQbEdYxu5
 
 # Parade-night texts — programme doc lives in year subfolders of this Drive folder
 PROGRAMME_DRIVE_FOLDER_ID = "1sg1yemPOD_P3GIj9lwy3ArJ3c2pRmFo6"
+
+# Database backups — gzipped pg_dump files are uploaded to this Shared Drive
+# folder. The scheduled job only runs when DB_BACKUP_ENABLED is true (set in the
+# prod .env), but the owner-only /backups endpoints work whenever the folder is
+# configured.
+DB_BACKUP_ENABLED = os.getenv("DB_BACKUP_ENABLED", "false").lower() == "true"
+DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
+    "DB_BACKUP_DRIVE_FOLDER_ID", "1Bi5CmjUVObZfarx2FUqECNJvBg3R1MeQ"
+)
+DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFY_API_KEY = os.getenv("NOTIFY_API_KEY")
