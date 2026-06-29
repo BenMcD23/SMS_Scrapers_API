@@ -42,7 +42,7 @@ class BrowserPool:
         browser = getattr(self._local, "browser", None)
         if browser is None or not browser.is_connected():
             self._local.browser = pw.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -104,6 +104,29 @@ def init_scraper(user_id, db_session) -> tuple[Page, BrowserContext, dict]:
 
     context, page = init_driver()
     return page, context, credentials
+
+
+def match_email(first_key, last_key, email_map):
+    """Best-effort name -> email match against {(FIRST_UPPER, LAST_UPPER): email}.
+
+    Tiers: exact -> first-initial + surname -> sole match on surname -> None.
+    """
+    email = email_map.get((first_key, last_key))
+    if email:
+        return email
+
+    initial_key = first_key[0] if first_key else ""
+    email = next(
+        (v for (f, l), v in email_map.items() if l == last_key and f.startswith(initial_key)),
+        None,
+    )
+    if email:
+        return email
+
+    last_matches = [v for (_, l), v in email_map.items() if l == last_key]
+    if len(last_matches) == 1:
+        return last_matches[0]
+    return None
 
 
 def push_to_google_apps_script(data, url, scraper_messages, scraper_lock):

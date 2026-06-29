@@ -19,6 +19,9 @@ router = APIRouter()
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "word_templates", "F1771e_template.docx"
 )
+HTD_TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "word_templates", "7101_HTD.docx"
+)
 
 
 class MileageRequest(BaseModel):
@@ -44,6 +47,26 @@ class F1771eJourney(BaseModel):
 
 class F1771eRequest(BaseModel):
     journeys: list[F1771eJourney]
+
+
+class HTDMonth(BaseModel):
+    label: str          # "MM/YY"
+    journeys: int
+
+
+class HTDRequest(BaseModel):
+    rank: str = ""
+    initials: str = ""
+    surname: str = ""
+    service_number: str = ""
+    street_house_num: str = ""
+    town: str = ""
+    city: str = ""
+    postcode: str = ""
+    distance: float = 0.0
+    bank_last3: str = ""
+    date: str = ""        # dd/mm/yyyy
+    months: list[HTDMonth] = []
 
 
 async def geocode(client: httpx.AsyncClient, address: str) -> tuple[float, float]:
@@ -146,6 +169,56 @@ async def generate_f1771e(
 
     return StreamingResponse(
         io.BytesIO(doc_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/form-generators/htd")
+async def generate_htd(
+    data: HTDRequest,
+    idinfo: dict = Depends(require_staff),
+):
+    from form_generators.HTD_gen import fill_form, compute_htd
+
+    calc = compute_htd(data.distance, [m.journeys for m in data.months])
+
+    sn = "".join(c for c in data.service_number if c.isdigit())[:8]
+    bank = "".join(c for c in data.bank_last3 if c.isdigit())[:3]
+
+    context = {
+        "rank":             data.rank,
+        "initials":         data.initials,
+        "surname":          data.surname.upper(),
+        "street_house_num": data.street_house_num,
+        "town":             data.town,
+        "city":             data.city,
+        "postcode":         data.postcode,
+        "distance":         f"{data.distance:g}",
+        "date":             data.date,
+        "car_cost":         f"{calc['car_cost']:.2f}",
+        "tota_jl_cost":     f"{calc['total_a']:.2f}",
+        "total_claimed":    f"{calc['total_claimed']:.2f}",
+    }
+    for i in range(8):
+        context[f"sn_{i + 1}"] = sn[i] if i < len(sn) else ""
+    for i in range(3):
+        context[f"b_{i + 1}"] = bank[i] if i < len(bank) else ""
+    for i in range(6):
+        m = data.months[i] if i < len(data.months) else None
+        context[f"my_{i + 1}"]     = m.label if m else ""
+        context[f"num_j_{i + 1}"]  = str(m.journeys) if m else ""
+        context[f"amount_{i + 1}"] = f"{calc['amounts'][i]:.2f}" if i < len(calc["amounts"]) else ""
+        context[f"total_{i + 1}"]  = f"{calc['totals'][i]:.2f}" if i < len(calc["totals"]) else ""
+
+    buffer = io.BytesIO()
+    fill_form(HTD_TEMPLATE_PATH, buffer, context)
+    buffer.seek(0)
+
+    surname = (data.surname or "UNKNOWN").upper().replace(" ", "_")
+    filename = f"HTD_{surname}.docx"
+    return StreamingResponse(
+        buffer,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
