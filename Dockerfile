@@ -14,6 +14,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# postgresql-client-16 (pg_dump/psql) for DB backups & restores. Bookworm ships
+# v15, which can't dump a v16 server, so pull the matching client from PGDG.
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && wget -qO /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+         https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 # Browser OS libs are installed manually above; `playwright install-deps` is
