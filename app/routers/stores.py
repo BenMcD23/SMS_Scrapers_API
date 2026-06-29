@@ -148,6 +148,7 @@ def stores_post_structure(
     action  = body.get("action")
     box_lbl = body.get("box", "").strip().upper()
     sec_lbl = body.get("section", "").strip() if body.get("section") else None
+    new_lbl = body.get("newLabel", "").strip() if body.get("newLabel") else None
 
     if action == "add-box":
         if not box_lbl:
@@ -227,6 +228,32 @@ def stores_post_structure(
         )
         for i, s in enumerate(remaining):
             s.position = i
+        db.commit()
+
+    elif action == "rename-box":
+        new_box_lbl = (new_lbl or "").upper()
+        if not box_lbl or not new_box_lbl:
+            raise HTTPException(status_code=400, detail="Box and new label required")
+        box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        if new_box_lbl != box_lbl and db.query(StoresBox).filter(StoresBox.label == new_box_lbl).first():
+            raise HTTPException(status_code=400, detail="Label already exists")
+        box.label = new_box_lbl
+        db.commit()
+
+    elif action == "rename-section":
+        if not box_lbl or not sec_lbl or not new_lbl:
+            raise HTTPException(status_code=400, detail="Box, section and new label required")
+        box = db.query(StoresBox).filter(StoresBox.label == box_lbl).first()
+        if not box:
+            raise HTTPException(status_code=404, detail="Box not found")
+        section = next((s for s in box.sections if s.label == sec_lbl), None)
+        if not section:
+            raise HTTPException(status_code=404, detail="Section not found")
+        if new_lbl != sec_lbl and any(s.label == new_lbl for s in box.sections):
+            raise HTTPException(status_code=400, detail="Section already exists")
+        section.label = new_lbl
         db.commit()
 
     else:
