@@ -46,8 +46,8 @@ def test_compute_htd():
     from form_generators.HTD_gen import compute_htd
 
     c = compute_htd(10, [4, 3, 0, 0, 0, 0])
-    assert c["car_cost"] == 2.50, c
-    assert c["total_a"] == 2.68, c          # 10 * 0.25 * 1.07 = 2.675 -> 2.68
+    assert c["car_cost"] == 2.68, c         # 10 * 0.25 * 1.07 = 2.675 -> 2.68
+    assert c["total_a"] == c["car_cost"], c  # 7% applied at car_cost, carried down
     assert c["amounts"] == [10.72, 8.04, 0.0, 0.0, 0.0, 0.0], c
     assert c["totals"] == c["amounts"], c
     assert c["total_claimed"] == 18.76, c

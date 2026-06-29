@@ -21,11 +21,11 @@ _PLACEHOLDER = re.compile(r"\{\{?\s*(\w+)\s*\}\}?")
 def compute_htd(distance: float, journeys: list[int]) -> dict:
     """Pure money logic. `journeys` = nights attended per month (≤ 6 entries).
 
-    car_cost = miles × 25p; Total A = car_cost + 7% (applied per return journey);
+    car_cost = miles × 25p + 7%; Total A carries that same figure down;
     each month's amount = journeys × Total A; total claimed = sum of amounts.
     """
-    car_cost = round(distance * RATE_PER_MILE, 2)
-    total_a = round(distance * RATE_PER_MILE * UPLIFT, 2)
+    car_cost = round(distance * RATE_PER_MILE * UPLIFT, 2)
+    total_a = car_cost  # 7% already applied at car_cost, carried down
     amounts = [round(j * total_a, 2) for j in journeys]
     return {
         "car_cost": car_cost,
