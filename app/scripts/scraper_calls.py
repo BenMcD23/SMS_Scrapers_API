@@ -1,4 +1,4 @@
-from scripts.scraper_utils import init_scraper, push_to_google_apps_script, login
+from scripts.scraper_utils import init_scraper, push_to_google_apps_script, login, match_email
 from scripts.quali_scraper import *
 from scripts.event_scraper import *
 from scripts.alergies import *
@@ -84,17 +84,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             first_key = (entry.get("first_name") or "").strip().upper()
             last_key = (entry.get("last_name") or "").strip().upper()
 
-            email = email_map.get((first_key, last_key))
-            if not email:
-                initial_key = first_key[0] if first_key else ""
-                email = next(
-                    (v for (f, l), v in email_map.items() if l == last_key and f.startswith(initial_key)),
-                    None,
-                )
-                if not email:
-                    last_matches = [(f, l, v) for (f, l), v in email_map.items() if l == last_key]
-                    if len(last_matches) == 1:
-                        email = last_matches[0][2]
+            email = match_email(first_key, last_key, email_map)
 
             if email:
                 emails_matched += 1

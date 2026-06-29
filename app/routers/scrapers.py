@@ -26,6 +26,7 @@ from scripts.scraper_calls import (
     info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
     upload_qualifications_scraper,
 )
+from scripts.staff_scraper import staff_scraper
 
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
@@ -40,13 +41,14 @@ RUN_LOG_RETENTION_DAYS = 7
 
 # ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
 
-NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical"]
+NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff"]
 
 SCRAPER_FUNCS = {
     "cadet-quali": info_and_quali_scraper,
     "cadet-event": cadet_event_scraper,
     "317-event":   event_317_scraper,
     "medical":     medical_scraper,
+    "staff":       staff_scraper,
 }
 
 named_scraper_states: dict = {

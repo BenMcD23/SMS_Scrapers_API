@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database.models import Cadet, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
+from database.models import Cadet, Staff, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
 
 from core.db import get_db, get_current_cadet, get_current_user
 from core.security import require_staff, get_user_role
@@ -339,4 +339,29 @@ def list_users(
             "role":      get_user_role(u.email),
         }
         for u in users
+    ]
+
+
+@router.get("/staff")
+def list_staff(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Scraped SMS staff roster. `userId` is set only where a portal User
+    shares the email, so the detail page can show their uniform issuances."""
+    user_by_email = {
+        u.email.lower(): u.id for u in db.query(User).all() if u.email
+    }
+    return [
+        {
+            "cin":       s.cin,
+            "firstName": s.first_name,
+            "lastName":  s.last_name,
+            "rank":      s.rank,
+            "email":     s.email,
+            "address":   s.address,
+            "attendance": s.attendance,
+            "userId":    user_by_email.get((s.email or "").lower()),
+        }
+        for s in db.query(Staff).all()
     ]
