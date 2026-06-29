@@ -14,12 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# postgresql-client-16 (pg_dump/psql) for DB backups & restores. Bookworm ships
-# v15, which can't dump a v16 server, so pull the matching client from PGDG.
+# postgresql-client-16 (pg_dump/psql) for DB backups & restores. The slim base
+# ships an older client that can't dump a v16 server, so pull the matching
+# client from PGDG. Codename is read from the base image so it tracks bookworm/
+# trixie/etc. instead of breaking when the base moves.
 RUN install -d /usr/share/postgresql-common/pgdg \
     && wget -qO /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
          https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
          > /etc/apt/sources.list.d/pgdg.list \
     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/*
