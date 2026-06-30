@@ -22,7 +22,7 @@ from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
     assessments, backups, badges, cadets, events, form_generators,
-    newsletters, portal, programme, scrapers, settings, stats, stores, texts,
+    newsletters, people, portal, programme, scrapers, settings, stats, stores, texts,
 )
 
 
@@ -122,6 +122,7 @@ app.include_router(form_generators.router)
 app.include_router(events.router)
 app.include_router(programme.router)
 app.include_router(newsletters.router)
+app.include_router(people.router)
 app.include_router(assessments.router)
 app.include_router(stats.router)
 app.include_router(stores.router)
