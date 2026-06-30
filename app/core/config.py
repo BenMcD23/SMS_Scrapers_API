@@ -29,6 +29,9 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "BenMcD23/cadet-website"
 GITHUB_BRANCH = "master"
 
+# Staff/NCO photos — metadata lives in people.json, images under public/people/
+PEOPLE_JSON_PATH = "src/data/people.json"
+
 NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
 NEWSLETTER_BRANCH = "development"
 NEWSLETTER_JSON_PATH = "317_newsletter/lib/newsletters.json"
