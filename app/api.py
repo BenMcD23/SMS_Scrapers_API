@@ -3,6 +3,7 @@
 Endpoint logic lives in routers/, shared helpers in core/.
 """
 
+import calendar
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
@@ -13,9 +14,10 @@ from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func
 
 from database.database import SessionLocal
-from database.models import AssessmentSheet, StoresOrder
+from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
 
-from core.config import DB_BACKUP_ENABLED
+from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
+from core.emailer import send_email, quali_expiry_email_html
 from core.scheduler import scheduler
 from core.security import require_user
 from scripts.db_backup import run_db_backup
@@ -65,6 +67,48 @@ def _cleanup_old_completed_assessments():
         db.close()
 
 
+def _quali_expiry_cutoff(today: datetime) -> datetime:
+    """Same day 3 calendar months ahead, clamped to the target month's last day."""
+    m = today.month + 3
+    y, m = today.year + (m - 1) // 12, (m - 1) % 12 + 1
+    return datetime(y, m, min(today.day, calendar.monthrange(y, m)[1]))
+
+
+def _quali_expiry_alert():
+    """Daily email listing every cadet qualification expiring within 3 months."""
+    now = datetime.now()
+    db = SessionLocal()
+    try:
+        quals = (
+            db.query(CadetQualification)
+            .join(Cadet)
+            .filter(
+                CadetQualification.date_expires >= now,
+                CadetQualification.date_expires <= _quali_expiry_cutoff(now),
+            )
+            .order_by(CadetQualification.date_expires)
+            .all()
+        )
+        if not quals:
+            return
+        rows = [
+            (
+                f"{q.cadet.first_name} {q.cadet.last_name}",
+                q.qual_type,
+                q.date_expires.strftime("%d/%m/%Y"),
+                (q.date_expires - now).days,
+            )
+            for q in quals
+        ]
+        send_email(
+            QUALI_EXPIRY_ALERT_EMAIL,
+            f"Qualifications expiring within 3 months ({len(rows)})",
+            quali_expiry_email_html(rows),
+        )
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Schema is managed exclusively by Alembic migrations (run on deploy via the
@@ -72,6 +116,11 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
+    # Daily digest of qualifications expiring within the next 3 months
+    scheduler.add_job(
+        _quali_expiry_alert,
+        CronTrigger(hour=7, minute=0, timezone="Europe/London"),
+    )
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
     scheduler.add_job(
         scheduled_send_job,

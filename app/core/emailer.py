@@ -70,6 +70,37 @@ def assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, d
     """
 
 
+def quali_expiry_email_html(rows: list[tuple[str, str, str, int]]) -> str:
+    """rows: (cadet_name, qualification, expires_str, days_left), soonest first."""
+    trs = "".join(
+        f'<tr>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{name}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{qual}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{expires}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:bold;'
+        f'color:{"#c62828" if days <= 30 else "#e65100"}">{days} days</td>'
+        f'</tr>'
+        for name, qual, expires, days in rows
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Qualifications Expiring Soon</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>The following cadet qualifications expire within the next 3 months:</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Cadet</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Qualification</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Expires</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Time Left</th>
+        </tr>
+        {trs}
+      </table>
+      {FOOTER}
+    </div>
+    """
+
+
 def ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str, size: str = "") -> str:
     size_line = f'<p style="font-size:14px;color:#555;margin:0 0 16px">Size: {size}</p>' if size else ""
     return f"""
