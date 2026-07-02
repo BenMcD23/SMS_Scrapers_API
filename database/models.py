@@ -475,6 +475,58 @@ class BadgeOrderItem(Base):
     order = relationship("BadgeOrder", back_populates="order_items")
 
 
+# ─── Supplier order batches (Logs Form / badge order list) ───────────────────
+# Entries snapshot item/cadet details at add-time so later order edits or
+# deletions can't change a batch that has already been sent to RAFAC.
+
+class LogsForm(Base):
+    __tablename__ = "Logs_Forms"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, nullable=False)
+    ordered_at = Column(DateTime, nullable=True)  # null = the current open batch
+
+    entries = relationship("LogsFormEntry", back_populates="form", cascade="all, delete-orphan")
+
+
+class LogsFormEntry(Base):
+    __tablename__ = "Logs_Form_Entries"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    form_id       = Column(Integer,    ForeignKey("Logs_Forms.id", ondelete="CASCADE"), nullable=False)
+    order_item_id = Column(Integer,    ForeignKey("Stores_Order_Items.id", ondelete="SET NULL"), nullable=True, unique=True)
+    item_type     = Column(Text,       nullable=False)
+    size          = Column(Text,       nullable=False, default="")  # Tie: "Short"/"Standard"
+    cadet_name    = Column(Text,       nullable=False)
+    cadet_cin     = Column(BigInteger, nullable=True)  # null for staff orders
+    created_at    = Column(DateTime,   nullable=False)
+
+    form = relationship("LogsForm", back_populates="entries")
+
+
+class BadgeOrderList(Base):
+    __tablename__ = "Badge_Order_Lists"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, nullable=False)
+    ordered_at = Column(DateTime, nullable=True)  # null = the current open list
+
+    entries = relationship("BadgeOrderListEntry", back_populates="order_list", cascade="all, delete-orphan")
+
+
+class BadgeOrderListEntry(Base):
+    __tablename__ = "Badge_Order_List_Entries"
+
+    id            = Column(Integer,  primary_key=True, autoincrement=True)
+    list_id       = Column(Integer,  ForeignKey("Badge_Order_Lists.id", ondelete="CASCADE"), nullable=False)
+    order_item_id = Column(Integer,  ForeignKey("Badge_Order_Items.id", ondelete="SET NULL"), nullable=True, unique=True)
+    badge_name    = Column(Text,     nullable=False)
+    cadet_name    = Column(Text,     nullable=False)
+    created_at    = Column(DateTime, nullable=False)
+
+    order_list = relationship("BadgeOrderList", back_populates="entries")
+
+
 # ─── Parade Night Texts ───────────────────────────────────────────────────────
 
 class SmsRecipient(Base):
