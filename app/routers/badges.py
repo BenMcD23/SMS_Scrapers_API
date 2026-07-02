@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from database.models import (
     Cadet, BadgeGridConfig, BadgeGridCell, BadgeItem, BadgeOrder, BadgeOrderItem,
+    BadgeOrderList, BadgeOrderListEntry,
 )
 
 from core.db import get_db
@@ -398,3 +399,98 @@ def badge_orders_mark_item_ready(
 
     db.refresh(order)
     return badge_order_to_dict(order)
+
+
+# ── Badge order lists (supplier order batches) ────────────────────────────────
+
+def _order_list_to_dict(order_list: BadgeOrderList) -> dict:
+    return {
+        "id":        str(order_list.id),
+        "createdAt": order_list.created_at.isoformat(),
+        "orderedAt": order_list.ordered_at.isoformat() if order_list.ordered_at else None,
+        "entries": [
+            {
+                "id":          str(e.id),
+                "orderItemId": str(e.order_item_id) if e.order_item_id is not None else None,
+                "badgeName":   e.badge_name,
+                "cadetName":   e.cadet_name,
+            }
+            for e in sorted(order_list.entries, key=lambda x: x.id)
+        ],
+    }
+
+
+@router.get("/stores/badges/order-lists")
+def badge_order_lists_list(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    lists = db.query(BadgeOrderList).order_by(BadgeOrderList.created_at.desc()).all()
+    return [_order_list_to_dict(l) for l in lists]
+
+
+@router.post("/stores/badges/order-lists/entries", status_code=201)
+def badge_order_lists_add_entry(
+    body: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    if not body.get("orderItemId"):
+        raise HTTPException(status_code=400, detail="orderItemId required")
+    item = db.query(BadgeOrderItem).filter(BadgeOrderItem.id == int(body["orderItemId"])).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+
+    existing = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.order_item_id == item.id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Badge is already on an order list")
+
+    cadet = item.order.cadet
+    order_list = db.query(BadgeOrderList).filter(BadgeOrderList.ordered_at.is_(None)).first()
+    if not order_list:
+        order_list = BadgeOrderList(created_at=datetime.now())
+        db.add(order_list)
+        db.flush()
+
+    db.add(BadgeOrderListEntry(
+        list_id       = order_list.id,
+        order_item_id = item.id,
+        badge_name    = item.badge_name,
+        cadet_name    = f"{cadet.first_name} {cadet.last_name}",
+        created_at    = datetime.now(),
+    ))
+    db.commit()
+    db.refresh(order_list)
+    return _order_list_to_dict(order_list)
+
+
+@router.delete("/stores/badges/order-lists/entries/{entry_id}", status_code=204)
+def badge_order_lists_delete_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.order_list.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="List has been ordered and cannot be edited")
+    db.delete(entry)
+    db.commit()
+
+
+@router.post("/stores/badges/order-lists/{list_id}/mark-ordered")
+def badge_order_lists_mark_ordered(
+    list_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    order_list = db.query(BadgeOrderList).filter(BadgeOrderList.id == list_id).first()
+    if not order_list:
+        raise HTTPException(status_code=404, detail="Order list not found")
+    if order_list.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="List is already marked as ordered")
+    order_list.ordered_at = datetime.now()
+    db.commit()
+    db.refresh(order_list)
+    return _order_list_to_dict(order_list)
