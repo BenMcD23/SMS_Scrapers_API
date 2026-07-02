@@ -1,16 +1,19 @@
 """Stores — shelf/box structure, stock, uniform orders, and issuances."""
 
 import hmac
+import io
 import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import (
     Cadet, User, ITEM_GENDER_MAP, ISSUANCE_ITEM_TYPE_MAP,
     StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, StoresItemIssuance,
+    LogsForm, LogsFormEntry,
 )
 
 from core.config import UNIFORM_FORM_API_KEY
@@ -800,3 +803,173 @@ def stores_delete_issuance(
         raise HTTPException(status_code=404, detail="Issuance record not found")
     db.delete(issuance)
     db.commit()
+
+
+# ── Logs Form (RAFAC demand batches) ─────────────────────────────────────────
+
+TIE_VARIANTS = {"Short", "Standard"}
+
+
+def _logs_form_to_dict(form: LogsForm) -> dict:
+    return {
+        "id":        str(form.id),
+        "createdAt": form.created_at.isoformat(),
+        "orderedAt": form.ordered_at.isoformat() if form.ordered_at else None,
+        "entries": [
+            {
+                "id":          str(e.id),
+                "orderItemId": str(e.order_item_id) if e.order_item_id is not None else None,
+                "itemType":    e.item_type,
+                "size":        e.size,
+                "cadetName":   e.cadet_name,
+            }
+            for e in sorted(form.entries, key=lambda x: x.id)
+        ],
+    }
+
+
+def _order_subject(order: StoresOrder) -> tuple[str, int | None]:
+    if order.cadet_id is not None and order.cadet:
+        return f"{order.cadet.first_name} {order.cadet.last_name}", order.cadet_id
+    if order.user_id is not None and order.user:
+        name = f"{order.user.first_name or ''} {order.user.last_name or ''}".strip()
+        return name or order.user.email, None
+    return "Unknown", None
+
+
+@router.get("/stores/logs-forms")
+def logs_forms_list(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    forms = db.query(LogsForm).order_by(LogsForm.created_at.desc()).all()
+    return [_logs_form_to_dict(f) for f in forms]
+
+
+@router.post("/stores/logs-forms/entries", status_code=201)
+def logs_forms_add_entry(
+    body: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    from form_generators.logs_form_gen import DESCRIPTION_TEMPLATES
+
+    if not body.get("orderItemId"):
+        raise HTTPException(status_code=400, detail="orderItemId required")
+    item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(body["orderItemId"])).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+
+    if item.item_type not in DESCRIPTION_TEMPLATES:
+        raise HTTPException(status_code=400, detail=f"{item.item_type} cannot go on a logs form")
+
+    if item.item_type == "Tie":
+        size = body.get("tieVariant")
+        if size not in TIE_VARIANTS:
+            raise HTTPException(status_code=400, detail="tieVariant must be Short or Standard")
+    elif item.item_type == "Belt":
+        size = "64-114cm"
+    else:
+        if item.need_sizing or not item.size:
+            raise HTTPException(status_code=400, detail="Item has no size yet")
+        size = item.size
+
+    existing = db.query(LogsFormEntry).filter(LogsFormEntry.order_item_id == item.id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Item is already on a logs form")
+
+    cadet_name, cadet_cin = _order_subject(item.order)
+
+    form = db.query(LogsForm).filter(LogsForm.ordered_at.is_(None)).first()
+    if not form:
+        form = LogsForm(created_at=datetime.now())
+        db.add(form)
+        db.flush()
+
+    db.add(LogsFormEntry(
+        form_id       = form.id,
+        order_item_id = item.id,
+        item_type     = item.item_type,
+        size          = size,
+        cadet_name    = cadet_name,
+        cadet_cin     = cadet_cin,
+        created_at    = datetime.now(),
+    ))
+    db.commit()
+    db.refresh(form)
+    return _logs_form_to_dict(form)
+
+
+@router.delete("/stores/logs-forms/entries/{entry_id}", status_code=204)
+def logs_forms_delete_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    entry = db.query(LogsFormEntry).filter(LogsFormEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.form.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="Form has been ordered and cannot be edited")
+    db.delete(entry)
+    db.commit()
+
+
+@router.post("/stores/logs-forms/{form_id}/mark-ordered")
+def logs_forms_mark_ordered(
+    form_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    form = db.query(LogsForm).filter(LogsForm.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Logs form not found")
+    if form.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="Form is already marked as ordered")
+    form.ordered_at = datetime.now()
+    db.commit()
+    db.refresh(form)
+    return _logs_form_to_dict(form)
+
+
+@router.get("/stores/logs-forms/{form_id}/download")
+def logs_forms_download(
+    form_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    from form_generators.logs_form_gen import generate_logs_form
+
+    form = db.query(LogsForm).filter(LogsForm.id == form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Logs form not found")
+    entries = sorted(form.entries, key=lambda x: x.id)
+    if not entries:
+        raise HTTPException(status_code=400, detail="Logs form is empty")
+
+    nominal_roll = []
+    seen: set[str] = set()
+    for e in entries:
+        key = f"{e.cadet_cin}|{e.cadet_name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rank, issue = "", ""
+        if e.cadet_cin is not None:
+            cadet = db.query(Cadet).filter(Cadet.cin == e.cadet_cin).first()
+            rank = (cadet.rank if cadet else "") or ""
+            has_issuance = (
+                db.query(StoresItemIssuance)
+                .filter(StoresItemIssuance.cadet_id == e.cadet_cin)
+                .first()
+            )
+            issue = "Exchange" if has_issuance else "Initial Issue"
+        nominal_roll.append((rank, e.cadet_name, issue))
+
+    xlsx_bytes = generate_logs_form([(e.item_type, e.size) for e in entries], nominal_roll)
+    filename = f"Logs Form 202 - {form.created_at.strftime('%d %b %Y')}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
