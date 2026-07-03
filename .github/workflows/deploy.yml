@@ -37,6 +37,10 @@ jobs:
             set -e
             cd ~/sms-api/$ENV
             git pull origin ${{ github.ref_name }}
+            # The tailscale service uses a fixed container_name, so recreation can
+            # fail with a name conflict if an orphaned container is left behind.
+            # Remove it first so compose can create it cleanly.
+            docker rm -f tailscale-$ENV 2>/dev/null || true
             if [[ "$ENV" == "prod" ]]; then
               docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
             else
