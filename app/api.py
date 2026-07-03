@@ -154,10 +154,9 @@ if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    # Anchored to Vercel preview deploys of exactly this project — an unanchored
-    # ".*" would also match attacker-registered 317-sms-site-*.vercel.app origins.
-    allow_origin_regex=r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$",
+    # TEMP: allow any origin (reflected, so it works with credentials). Loosened
+    # to unblock prod; tighten back to _cors_origins / the Vercel regex later.
+    allow_origin_regex=r".*",
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],

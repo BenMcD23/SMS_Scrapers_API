@@ -41,6 +41,7 @@ services:
     environment:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_SERVE_CONFIG=/config/serve-config.json
+      - TS_HOSTNAME=317-sms-api 
     volumes:
       - ./tailscale_data:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
