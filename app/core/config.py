@@ -8,6 +8,10 @@ load_dotenv()
 # Google OAuth client used by both the SMS site and the cadet portal
 GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
 
+# Only tokens from this Google Workspace are accepted — outside Google accounts
+# (personal Gmail etc.) are rejected before any role check.
+GOOGLE_DOMAIN = os.getenv("GOOGLE_DOMAIN", "317atc.co.uk")
+
 # Google Workspace groups that decide roles
 STAFF_GROUP = "staff@317atc.co.uk"
 NCO_GROUP = "ncoteam@317atc.co.uk"

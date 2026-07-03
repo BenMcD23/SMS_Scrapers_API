@@ -25,13 +25,15 @@ from googleapiclient.http import MediaFileUpload
 from core.config import (
     DB_BACKUP_DRIVE_FOLDER_ID,
     DB_BACKUP_RETENTION,
-    IMPERSONATE_EMAIL,
 )
 from core.security import _service_account_creds
 
-# Full Drive scope so we can list, upload, download and delete backups (and see
-# any manually uploaded copies) on the Shared Drive. Must also be granted to the
-# service account's domain-wide delegation in the Workspace admin console.
+# Drive scope to list, upload, download and delete backups (and see manually
+# uploaded copies) on the Shared Drive. The service account uses its OWN
+# identity here (no domain-wide delegation) — it must be added as a member of
+# the backup Shared Drive. That bounds this scope to that one Shared Drive
+# instead of the impersonated admin's entire Drive, so `drive` no longer needs
+# to be granted in the Workspace DWD config.
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 _NAME_PREFIX = "317_SMS"
@@ -60,7 +62,7 @@ def _current_dbname() -> str:
 # ── Drive helpers ─────────────────────────────────────────────────────────────
 
 def _drive_client():
-    creds = _service_account_creds(_DRIVE_SCOPES).with_subject(IMPERSONATE_EMAIL)
+    creds = _service_account_creds(_DRIVE_SCOPES)
     return google_build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
