@@ -4,6 +4,7 @@ Endpoint logic lives in routers/, shared helpers in core/.
 """
 
 import calendar
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
@@ -145,11 +146,18 @@ app = FastAPI(lifespan=lifespan)
 # the bottleneck, so shrinking the body cuts transfer time noticeably.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Allow the Next.js frontends to talk to us
+# Allow the Next.js frontends to talk to us. localhost is only allowed when
+# CORS_ALLOW_LOCALHOST is set (dev), never in prod.
+_cors_origins = ["https://sms.317atc.co.uk", "https://317-sms-site.vercel.app"]
+if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
+    _cors_origins.append("http://localhost:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://sms.317atc.co.uk", "https://317-sms-site.vercel.app"],
-    allow_origin_regex=r"https://317-sms-site.*\.vercel\.app",
+    allow_origins=_cors_origins,
+    # Anchored to Vercel preview deploys of exactly this project — an unanchored
+    # ".*" would also match attacker-registered 317-sms-site-*.vercel.app origins.
+    allow_origin_regex=r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$",
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
