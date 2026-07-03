@@ -19,7 +19,7 @@ from google.auth.transport import requests
 from googleapiclient.discovery import build as google_build
 
 from core.config import (
-    GOOGLE_CLIENT_ID, STAFF_GROUP, NCO_GROUP,
+    GOOGLE_CLIENT_ID, GOOGLE_DOMAIN, STAFF_GROUP, NCO_GROUP,
     SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL,
 )
 
@@ -54,6 +54,16 @@ def verify_token(authorization: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid Token")
     if not idinfo.get("email_verified"):
         raise HTTPException(status_code=401, detail="Email not verified")
+
+    # Only accept accounts in our Workspace. Prefer the hd claim (Workspace
+    # tokens always carry it); fall back to the email suffix so the check still
+    # holds if hd is ever absent. This is the sole gate keeping outside Google
+    # accounts off every require_user/portal endpoint.
+    email = idinfo.get("email", "")
+    hd = idinfo.get("hd")
+    domain_ok = hd == GOOGLE_DOMAIN if hd else email.lower().endswith(f"@{GOOGLE_DOMAIN}")
+    if not domain_ok:
+        raise HTTPException(status_code=403, detail="Outside this Workspace")
 
     # Cache until the token's own expiry (capped at 1h), so a revoked/expired
     # token is never served from cache past its lifetime.
