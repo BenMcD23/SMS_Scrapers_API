@@ -5,10 +5,13 @@ from datetime import datetime, timedelta, date as date_type
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from collections import defaultdict
+
 from database.models import Cadet, CadetQualification, StatsSnapshot
 
 from core import cache
 from core.db import get_db
+from core.qualifications import BADGE_TYPES, LEVELED, held_level
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
@@ -17,85 +20,13 @@ router = APIRouter()
 STATS_CACHE_KEY = "stats:current"
 STATS_CACHE_TTL = 120
 
-BADGE_TYPES = [
-    "duke_of_edinburgh", "first_aid", "leadership", "cyber", "radio",
-    "road_marching", "space", "music", "flying_badge", "fieldcraft",
-    "shooting", "swimming_proficiency",
-]
+# The 12 leveled dashboard badges, driven off the shared qualifications catalog
+# (core.qualifications) so classification stays a single source of truth and picks
+# up every naming variant via substring matching — see held_level().
+STAT_BADGES = [b for b in BADGE_TYPES if b.kind == LEVELED]
 
-# Maps raw SMS qual names → (badge_category, level)
-QUAL_CATEGORY_MAP: dict[str, tuple[str, str]] = {
-    # Duke of Edinburgh
-    "Blue Pre-Duke of Edinburgh Award":     ("duke_of_edinburgh", "Blue"),
-    "Bronze Duke of Edinburgh Award":       ("duke_of_edinburgh", "Bronze"),
-    "Silver Duke of Edinburgh Award":       ("duke_of_edinburgh", "Silver"),
-    # First Aid
-    "St John Youth First Aid":              ("first_aid", "Blue"),
-    "St John Essential First Aid":          ("first_aid", "Blue"),
-    "St John Activity First Aid":           ("first_aid", "Bronze"),
-    "Cadet First Aid Instructor Award":     ("first_aid", "Gold"),
-    "St John Activity First Aid Assessor":  ("first_aid", "Gold"),
-    # Leadership
-    "Blue Air Cadet Foundation Leadership":   ("leadership", "Blue"),
-    "Bronze Air Cadet Foundation Leadership": ("leadership", "Bronze"),
-    "Bronze Leadership":                      ("leadership", "Bronze"),
-    "Silver Air Cadet Foundation Leadership": ("leadership", "Silver"),
-    "Silver Leadership":                      ("leadership", "Silver"),
-    "Gold Leadership":                        ("leadership", "Gold"),
-    # Cyber
-    "RAFAC Bronze Cyber Course":              ("cyber", "Bronze"),
-    "Cyber - Bronze Award":                   ("cyber", "Bronze"),
-    "CyberFirst Adventurer":                  ("cyber", "Bronze"),
-    "Cyber - Silver Award":                   ("cyber", "Silver"),
-    # Radio
-    "Radio - Basic Operator (Blue)":          ("radio", "Blue"),
-    "Radio - Operator (Bronze)":              ("radio", "Bronze"),
-    "Radio - Advanced Voice Procedure (Silver)": ("radio", "Silver"),
-    # Road Marching
-    "Blue Road Marching":                     ("road_marching", "Blue"),
-    "Bronze Road Marching":                   ("road_marching", "Bronze"),
-    # Space
-    "Blue Space Studies":                     ("space", "Blue"),
-    "Bronze Space Studies":                   ("space", "Bronze"),
-    # Music
-    "Musician (Blue) - Drum":                 ("music", "Blue"),
-    "Musician (Blue) - Lyre":                 ("music", "Blue"),
-    "Wing Musician (Bronze) - Drums":         ("music", "Bronze"),
-    "Wing Musician (Bronze) - Lyre":          ("music", "Bronze"),
-    "Regional Musician (Silver) - Drums":     ("music", "Silver"),
-    "Regional Musician (Silver) - Lyre":      ("music", "Silver"),
-    "National Musician (Gold) - Lyre":        ("music", "Gold"),
-    # Flying Badge
-    "PTT Blue":                               ("flying_badge", "Blue"),
-    "Blue ATP Ground School":                 ("flying_badge", "Blue"),
-    "Aviation FAM PTT":                       ("flying_badge", "Blue"),
-    "RAFAC Aviation Training Package Blue Training Badge":   ("flying_badge", "Blue"),
-    "Bronze ATP Ground School":               ("flying_badge", "Bronze"),
-    "RAFAC Aviation Training Package Bronze Training Badge": ("flying_badge", "Bronze"),
-    # Fieldcraft
-    "Blue Fieldcraft Skills":                 ("fieldcraft", "Blue"),
-    "Bronze Fieldcraft Skills":               ("fieldcraft", "Bronze"),
-    # Shooting
-    "Blue Shot (Air Rifle)":                  ("shooting", "Blue"),
-    "Blue Shot (L98A2)":                      ("shooting", "Blue"),
-    "Blue Shot (Small Bore)":                 ("shooting", "Blue"),
-    "Blue Shot (Target Rifle)":               ("shooting", "Blue"),
-    "Bronze Shot (Air Rifle)":                ("shooting", "Bronze"),
-    "Bronze Shot (L98A2)":                    ("shooting", "Bronze"),
-    "Bronze Shot (Small Bore)":               ("shooting", "Bronze"),
-    "Bronze Shot (Target Rifle)":             ("shooting", "Bronze"),
-    "Silver Shot (Air Rifle)":                ("shooting", "Silver"),
-    "Gold Shot (Air Rifle)":                  ("shooting", "Gold"),
-    # Swimming
-    "Basic Swimming Competence":              ("swimming_proficiency", "Basic"),
-    "Intermediate Swimming Competence":       ("swimming_proficiency", "Intermediate"),
-}
-
-# Higher index = higher level; used to pick the best level per cadet per badge
-LEVEL_RANK = {
-    "None": 0, "Blue": 1, "Basic": 1, "Bronze": 2, "Intermediate": 2,
-    "Silver": 3, "Advanced": 3, "Gold": 4, "Nijmegen": 5,
-}
+# Catalog slug → the key the frontend/history expect, where they differ.
+BADGE_KEY_ALIAS = {"flying": "flying_badge", "swimming": "swimming_proficiency"}
 
 
 def compute_stats(db: Session) -> dict:
@@ -119,25 +50,21 @@ def compute_stats(db: Session) -> dict:
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
             age_counts[str(age)] = age_counts.get(str(age), 0) + 1
 
-    # Badge breakdown — map raw qual names → (category, level), pick highest per cadet
-    best_level: dict = {}
+    # Badge breakdown — group each cadet's raw quals, then let the shared catalog
+    # decide the held level per badge (highest-first substring match).
+    quals_by_cadet: dict = defaultdict(list)
     for q in db.query(CadetQualification).all():
-        mapping = QUAL_CATEGORY_MAP.get(q.qual_type)
-        if not mapping:
-            continue
-        category, level = mapping
-        key = (q.cadet_id, category)
-        current = best_level.get(key, "None")
-        if LEVEL_RANK.get(level, 0) > LEVEL_RANK.get(current, 0):
-            best_level[key] = level
+        quals_by_cadet[q.cadet_id].append(q.qual_type)
 
     badges: dict = {}
-    for badge in BADGE_TYPES:
+    for badge in STAT_BADGES:
+        out_key = BADGE_KEY_ALIAS.get(badge.key, badge.key)
         level_counts: dict = {}
         for c in cadets:
-            level = best_level.get((c.cin, badge), "None")
-            level_counts[level] = level_counts.get(level, 0) + 1
-        badges[badge] = level_counts
+            lvl = held_level(badge, quals_by_cadet.get(c.cin, ()))
+            label = lvl.capitalize() if lvl else "None"
+            level_counts[label] = level_counts.get(label, 0) + 1
+        badges[out_key] = level_counts
 
     return {
         "total_cadets": len(cadets),
