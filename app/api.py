@@ -76,16 +76,19 @@ def _quali_expiry_cutoff(today: datetime) -> datetime:
 
 
 def _quali_expiry_alert():
-    """Daily email listing every cadet qualification expiring within 3 months."""
+    """Daily email listing cadet qualifications expiring exactly 3 months from today."""
     now = datetime.now()
+    today = datetime(now.year, now.month, now.day)
+    # (yesterday's cutoff, today's cutoff] — each expiry date is emailed exactly once,
+    # including dates skipped when the 3-month jump crosses a shorter month.
     db = SessionLocal()
     try:
         quals = (
             db.query(CadetQualification)
             .join(Cadet)
             .filter(
-                CadetQualification.date_expires >= now,
-                CadetQualification.date_expires <= _quali_expiry_cutoff(now),
+                CadetQualification.date_expires > _quali_expiry_cutoff(today - timedelta(days=1)),
+                CadetQualification.date_expires <= _quali_expiry_cutoff(today),
             )
             .order_by(CadetQualification.date_expires)
             .all()
@@ -103,7 +106,7 @@ def _quali_expiry_alert():
         ]
         send_email(
             QUALI_EXPIRY_ALERT_EMAIL,
-            f"Qualifications expiring within 3 months ({len(rows)})",
+            f"Qualifications expiring in 3 months ({len(rows)})",
             quali_expiry_email_html(rows),
         )
     finally:
@@ -117,7 +120,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
-    # Daily digest of qualifications expiring within the next 3 months
+    # Daily alert for qualifications expiring exactly 3 months from today
     scheduler.add_job(
         _quali_expiry_alert,
         CronTrigger(hour=7, minute=0, timezone="Europe/London"),
