@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database.database import SessionLocal, engine
-from database.models import ScraperRun, ScraperSchedule, StatsSnapshot
+from database.models import ScraperRun, ScraperSchedule, StatsSnapshot, AttachmentCheckQual
 
 from scripts.scraper_calls import (
     info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
@@ -700,3 +700,40 @@ async def put_scraper_schedule(
 
     register_schedule_jobs()
     return _schedule_json(name, sched)
+
+
+# ─── Attachment-check qualifications ──────────────────────────────────────────
+# The cadet-quali scraper checks each of these (exact Bader qual names) for a
+# proof attachment and flags cadets missing one.
+
+@router.get("/attachment-check-quals")
+async def get_attachment_check_quals(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    return {"quals": [q.qual_name for q in db.query(AttachmentCheckQual).order_by(AttachmentCheckQual.qual_name).all()]}
+
+
+class AttachmentCheckQualsPut(BaseModel):
+    quals: list[str]
+
+
+@router.put("/attachment-check-quals")
+async def put_attachment_check_quals(
+    body: AttachmentCheckQualsPut,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    # Whole-list replace — dedupe (case-insensitive) trimmed non-empty names.
+    seen = {}
+    for name in body.quals:
+        name = name.strip()
+        if name and name.casefold() not in seen:
+            seen[name.casefold()] = name
+
+    db.query(AttachmentCheckQual).delete()
+    for name in seen.values():
+        db.add(AttachmentCheckQual(qual_name=name))
+    db.commit()
+
+    return {"quals": sorted(seen.values())}
