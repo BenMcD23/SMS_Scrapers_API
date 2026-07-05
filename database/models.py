@@ -57,7 +57,10 @@ class CadetQualification(Base):
     qual_type = Column(Text, nullable=False)  # one of QUALIFICATION_TYPES
     status   = Column(Text, nullable=False)   # "blue" | "bronze..." | "false, basic, intermediate... - for swimming" | "true/false"
     date_achieved = Column(DateTime, nullable=True)
-    date_expires  = Column(DateTime, nullable=True) 
+    date_expires  = Column(DateTime, nullable=True)
+    # Set the first time this qualification is included in the 3-month pre-expiry
+    # alert email, so each cadet+qualification is only ever notified once.
+    expiry_alert_sent_at = Column(DateTime, nullable=True)
 
     cadet = relationship("Cadet", back_populates="qualifications")
 
