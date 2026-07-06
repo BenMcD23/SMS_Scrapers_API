@@ -10,6 +10,7 @@ Roles come from Google Workspace group membership and are cached for
 5 minutes so we don't hit the admin API on every request.
 """
 
+import os
 import threading
 import time
 
@@ -38,6 +39,11 @@ _google_request = requests.Request()
 
 
 def verify_token(authorization: str) -> dict:
+    # ponytail: dev-only fake token for local UI testing, pairs with the
+    # frontend's AUTH_DEV_BYPASS. Inert unless DEV_FAKE_AUTH=1 (never in prod).
+    if os.environ.get("DEV_FAKE_AUTH") == "1" and authorization == "Bearer dev-fake-token":
+        return {"email": OWNER_EMAIL, "email_verified": True, "hd": GOOGLE_DOMAIN}
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split(" ", 1)[1]
@@ -112,6 +118,9 @@ def _fetch_user_role(email: str) -> str | None:
 
 
 def get_user_role(email: str) -> str | None:
+    # ponytail: pairs with the dev-fake-token bypass above
+    if os.environ.get("DEV_FAKE_AUTH") == "1" and email.lower() == OWNER_EMAIL.lower():
+        return "staff"
     with _role_cache_lock:
         cached = _role_cache.get(email)
         if cached and time.time() < cached[1]:
