@@ -61,6 +61,9 @@ class CadetQualification(Base):
     # None = never checked / not on the attachment watch list; set by the
     # cadet-quali scraper for watched quals (see Attachment_Check_Quals).
     has_attachment = Column(Boolean, nullable=True)
+    # Set the first time this qualification is included in the 3-month pre-expiry
+    # alert email, so each cadet+qualification is only ever notified once.
+    expiry_alert_sent_at = Column(DateTime, nullable=True)
 
     cadet = relationship("Cadet", back_populates="qualifications")
 
