@@ -10,7 +10,7 @@ from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary
+from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual
 from google_admin_api.get_all_users import get_workspace_users
 
 import os
@@ -37,11 +37,14 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         cadetNames, numberOfCadets = get_cadet_names(page)
 
+        attachment_check_quals = {q.qual_name.casefold() for q in db_session.query(AttachmentCheckQual).all()}
+
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Found {numberOfCadets} cadets. Fetching info and qualifications..."}))
 
         cadet_data = get_cadet_info_and_qualifications(
             page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
+            attachment_check_quals=attachment_check_quals,
         )
 
         if stop_event.is_set():
@@ -67,6 +70,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         saved = 0
         skipped = 0
         emails_matched = 0
+        missing_attachments = 0
 
         for entry in cadet_data:
             cin = entry.get("cin")
@@ -105,20 +109,21 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             deduped_quals = {}
             for qual in entry.get("qualifications", []):
                 if isinstance(qual, str):
-                    qt, st, da, de = qual, "true", None, None
+                    qt, st, da, de, ha = qual, "true", None, None, None
                 else:
                     qt = qual.get("qual_type")
                     st = qual.get("status", "true")
                     da = qual.get("date_achieved")
                     de = qual.get("date_expires")
+                    ha = qual.get("has_attachment")
                 if not qt:
                     continue
                 if qt not in deduped_quals:
-                    deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
+                    deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de, "has_attachment": ha}
                 else:
                     existing_da = deduped_quals[qt]["date_achieved"]
                     if da is not None and (existing_da is None or da > existing_da):
-                        deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de}
+                        deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de, "has_attachment": ha}
 
             existing_quals = {cq.qual_type: cq for cq in cadet.qualifications}
             for qt, qual in deduped_quals.items():
@@ -128,11 +133,22 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                         cq.date_achieved = qual["date_achieved"]
                     if qual["date_expires"] is not None and cq.date_expires is None:
                         cq.date_expires = qual["date_expires"]
+                    if qual["has_attachment"] is not None:
+                        cq.has_attachment = qual["has_attachment"]
                 else:
                     db_session.add(CadetQualification(
                         cadet_id=cin, qual_type=qt, status=qual["status"],
                         date_achieved=qual["date_achieved"], date_expires=qual["date_expires"],
+                        has_attachment=qual["has_attachment"],
                     ))
+
+                if qual["has_attachment"] is False:
+                    missing_attachments += 1
+                    with scraper_lock:
+                        scraper_messages.append(json.dumps({
+                            "type": "warning",
+                            "value": f"[MISSING ATTACHMENT] {entry.get('first_name', '')} {entry.get('last_name', '')} — {qt}".strip(),
+                        }))
 
             saved += 1
 
@@ -141,7 +157,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing_attachments} missing attachment(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 

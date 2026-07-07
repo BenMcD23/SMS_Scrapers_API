@@ -86,13 +86,18 @@ async def list_cadets(
 
 # ─── Audit helpers ────────────────────────────────────────────────────────────
 
-def _build_audit_result(cadets, qualifications, include_medical, include_dietary):
+def _build_audit_result(cadets, qualifications, include_medical, include_dietary,
+                        include_missing_attachments=False):
     # `qualifications` is a list of badge-type keys from the catalog. Unknown
     # keys are ignored so the frontend can't crash the audit.
     badges = [BADGE_TYPE_BY_KEY[k] for k in qualifications if k in BADGE_TYPE_BY_KEY]
     results = []
     for c in cadets:
         entry = {**_cadet_summary(c)}
+        if include_missing_attachments:
+            entry["missing_attachments"] = [
+                q.qual_type for q in c.qualifications if q.has_attachment is False
+            ]
         if badges:
             qual_names = [q.qual_type for q in c.qualifications]
             entry["qualifications_check"] = [
@@ -184,6 +189,7 @@ class AuditCheckBody(BaseModel):
     qualifications: list[str] = []
     include_medical: bool = False
     include_dietary: bool = False
+    include_missing_attachments: bool = False
 
 
 @router.post("/cadets/audit/check")
@@ -202,7 +208,8 @@ async def audit_check_cadets(
     else:
         # Empty list means check all cadets
         cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
-    return _build_audit_result(cadets, body.qualifications, body.include_medical, body.include_dietary)
+    return _build_audit_result(cadets, body.qualifications, body.include_medical,
+                               body.include_dietary, body.include_missing_attachments)
 
 
 class EventAuditBody(BaseModel):
@@ -210,6 +217,7 @@ class EventAuditBody(BaseModel):
     qualifications: list[str] = []
     include_medical: bool = False
     include_dietary: bool = False
+    include_missing_attachments: bool = False
 
 
 @router.post("/cadets/audit/event-check")
@@ -228,7 +236,8 @@ async def audit_event_cadets(
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
     )
-    return _build_audit_result(cadets, body.qualifications, body.include_medical, body.include_dietary)
+    return _build_audit_result(cadets, body.qualifications, body.include_medical,
+                               body.include_dietary, body.include_missing_attachments)
 
 
 # ─── Theory progress routes (must be before /cadets/{cin}) ────────────────────
