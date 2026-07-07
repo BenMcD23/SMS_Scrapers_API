@@ -130,11 +130,10 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     # Friday alert for qualifications now within 3 months of expiry — each
     # cadet+qualification is emailed once (deduped via expiry_alert_sent_at).
-    # Temporarily disabled — keep for re-enabling later.
-    # scheduler.add_job(
-    #     _quali_expiry_alert,
-    #     CronTrigger(day_of_week="fri", hour=7, minute=0, timezone="Europe/London"),
-    # )
+    scheduler.add_job(
+        _quali_expiry_alert,
+        CronTrigger(day_of_week="fri", hour=7, minute=0, timezone="Europe/London"),
+    )
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
     scheduler.add_job(
         scheduled_send_job,
