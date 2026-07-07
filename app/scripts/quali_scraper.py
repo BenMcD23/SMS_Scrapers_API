@@ -167,6 +167,8 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
     classifications_by_name = get_all_classifications(page)
 
     for i in range(numberOfCadets):
+        # if i == 2:
+        #     break
         if stop_event and stop_event.is_set():
             return cadet_data
 
@@ -261,9 +263,11 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         try:
             wait_for_aspx_load(page)
             tbody = page.wait_for_selector("tbody", timeout=10000)
-            rows = tbody.query_selector_all("tr")
+            rows = tbody.query_selector_all(":scope > tr")  # direct children only — skips nested attachment tables
 
             for row in rows:
+                if "sibling" in (row.get_attribute("class") or ""):
+                    continue  # hidden proof/attachment row, not a qualification
                 cols = row.query_selector_all("td")
                 if not cols or not cols[0].inner_text().strip():
                     continue
