@@ -5,9 +5,39 @@ on:
     branches:
       - main
       - development
+  pull_request:
+    branches:
+      - main
+      - development
 
 jobs:
+  # Guardrail: a broken migration graph (duplicate revision ids or more than one
+  # head) makes `alembic upgrade head` fail on container start, which takes the
+  # API down. Catch it here — on PRs before merge, and again before every deploy.
+  check-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install alembic
+      - name: Assert a single, unambiguous migration head
+        run: |
+          out=$(alembic -c database/alembic.ini heads 2>&1)
+          echo "$out"
+          if echo "$out" | grep -qi 'more than once'; then
+            echo "::error::Duplicate Alembic revision id — two migrations share a revision. Rename one."
+            exit 1
+          fi
+          if [ "$(echo "$out" | grep -c '(head)')" -ne 1 ]; then
+            echo "::error::Expected exactly one Alembic head. Rebase/merge your migrations into a single chain."
+            exit 1
+          fi
+
   deploy:
+    needs: check-migrations
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
