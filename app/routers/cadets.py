@@ -17,7 +17,7 @@ from database.models import (
 from core import cache
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
-from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY
+from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
 from core.security import require_staff, require_staff_or_nco
 
 router = APIRouter()
@@ -356,18 +356,26 @@ async def theory_check(
     results = []
     for c in cadets:
         held = progress.get(c.cin, {})
-        results.append({
-            **_cadet_summary(c),
-            "lessons_check": [
-                {
-                    "lesson_key": key,
-                    "name": THEORY_LESSON_BY_KEY[key].name,
-                    "has": key in held,
-                    "completed_at": held[key].isoformat() if key in held else None,
-                }
-                for key in keys
-            ],
-        })
+        qual_names = [q.qual_type for q in c.qualifications]
+        lessons_check = [
+            {
+                "lesson_key": key,
+                "name": THEORY_LESSON_BY_KEY[key].name,
+                "has": key in held,
+                "completed_at": held[key].isoformat() if key in held else None,
+                "has_qualification": lesson_qual_held(
+                    THEORY_LESSON_BY_KEY[key], qual_names, c.classification
+                ),
+            }
+            for key in keys
+        ]
+        results.append({**_cadet_summary(c), "lessons_check": lessons_check})
+
+    # Cadets with theory done but the qualification still outstanding come first —
+    # they're the ones needing an assessment booked; name order within each group.
+    results.sort(key=lambda r: not any(
+        l["has"] and not l["has_qualification"] for l in r["lessons_check"]
+    ))
     return results
 
 
