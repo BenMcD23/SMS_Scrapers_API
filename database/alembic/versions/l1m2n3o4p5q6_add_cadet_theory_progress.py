@@ -4,7 +4,7 @@ Tracks when a cadet has completed the theory element of a lesson but not yet
 the formal assessment/qualification, so part-finished progress is visible.
 
 Revision ID: l1m2n3o4p5q6
-Revises: k1l2m3n4o5p6
+Revises: k2l3m4n5o6p7
 Create Date: 2026-07-06 00:00:00.000000
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'l1m2n3o4p5q6'
-down_revision: Union[str, Sequence[str], None] = 'k1l2m3n4o5p6'
+down_revision: Union[str, Sequence[str], None] = 'k2l3m4n5o6p7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
