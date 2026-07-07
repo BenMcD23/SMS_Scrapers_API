@@ -114,6 +114,23 @@ PYTHONPATH=app:. uvicorn api:app --reload
 
 The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
 
+## Dev fake auth (local UI testing)
+
+Real auth needs a Google login plus a Workspace service account, which can't be
+automated (e.g. for Playwright UI sweeps). A flag-gated bypass sidesteps it:
+
+```bash
+DEV_FAKE_AUTH=1 PYTHONPATH=app:. uvicorn api:app --reload
+```
+
+When `DEV_FAKE_AUTH=1`, `verify_token` accepts the literal `Bearer dev-fake-token`
+as the owner account (`OWNER_EMAIL`, role `staff`) — no Google round-trip. It's
+inert unless the flag is set, so production is unaffected (see `app/core/security.py`).
+
+The frontend has the matching flag: set `AUTH_DEV_BYPASS=1` in the UI's
+`.env.local` to expose a dev credentials login that issues `dev-fake-token`.
+**Both flags must be off in production.**
+
 ## Seeding a test cadet
 
 To test the cadet portal locally, insert a fake cadet row whose email matches your Google account (`ci.mcdonald@317atc.co.uk`).
@@ -147,6 +164,31 @@ docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"
 # dev Docker stack
 docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"Cadets\" WHERE cin = 9999999999;"
 ```
+
+## Wiping the dev database
+
+Drops the whole schema and rebuilds it empty.
+
+> **Not `alembic upgrade head`.** The migration history has no initial
+> create-tables migration — the base tables were originally made by
+> `create_all`, and Alembic only tracks deltas on top. So upgrading from an
+> empty DB dies on the first `add_column`. Rebuild the tables from the models,
+> then `stamp head` to mark Alembic as up to date.
+
+```bash
+# Local (Docker db + host venv)
+docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+PYTHONPATH=app:. python -c "from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)"
+alembic -c database/alembic.ini stamp head
+
+# Dev Docker stack (run the rebuild inside a one-off api container, then boot)
+docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+docker compose -p sms-dev run --rm --entrypoint sh api -c \
+  "PYTHONPATH=app:. python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)' && alembic -c database/alembic.ini stamp head"
+docker compose -p sms-dev restart api
+```
+
+Only ever run this against dev — it is irreversible and takes the whole schema with it.
 
 ## Database Migrations (Alembic)
 

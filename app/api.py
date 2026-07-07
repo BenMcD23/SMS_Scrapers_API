@@ -76,16 +76,22 @@ def _quali_expiry_cutoff(today: datetime) -> datetime:
 
 
 def _quali_expiry_alert():
-    """Daily email listing every cadet qualification expiring within 3 months."""
+    """Weekly (Friday) email of cadet qualifications now within 3 months of expiry.
+
+    Each cadet+qualification is emailed exactly once: the first time it falls in
+    the window it's stamped with ``expiry_alert_sent_at`` and skipped thereafter.
+    """
     now = datetime.now()
+    today = datetime(now.year, now.month, now.day)
     db = SessionLocal()
     try:
         quals = (
             db.query(CadetQualification)
             .join(Cadet)
             .filter(
-                CadetQualification.date_expires >= now,
-                CadetQualification.date_expires <= _quali_expiry_cutoff(now),
+                CadetQualification.expiry_alert_sent_at.is_(None),
+                CadetQualification.date_expires >= today,
+                CadetQualification.date_expires <= _quali_expiry_cutoff(today),
             )
             .order_by(CadetQualification.date_expires)
             .all()
@@ -103,9 +109,14 @@ def _quali_expiry_alert():
         ]
         send_email(
             QUALI_EXPIRY_ALERT_EMAIL,
-            f"Qualifications expiring within 3 months ({len(rows)})",
+            f"Qualifications expiring in 3 months ({len(rows)})",
             quali_expiry_email_html(rows),
         )
+        # Only stamp as notified after the send is attempted, so a qualification
+        # is never marked without an email having gone out for it.
+        for q in quals:
+            q.expiry_alert_sent_at = now
+        db.commit()
     finally:
         db.close()
 
@@ -117,10 +128,11 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
-    # Daily digest of qualifications expiring within the next 3 months
+    # Friday alert for qualifications now within 3 months of expiry — each
+    # cadet+qualification is emailed once (deduped via expiry_alert_sent_at).
     scheduler.add_job(
         _quali_expiry_alert,
-        CronTrigger(hour=7, minute=0, timezone="Europe/London"),
+        CronTrigger(day_of_week="fri", hour=7, minute=0, timezone="Europe/London"),
     )
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
     scheduler.add_job(

@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, BigInteger, Float, Boolean, Text, DateTime,
-    ForeignKey, LargeBinary, JSON,
+    ForeignKey, LargeBinary, JSON, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship, backref
 from database.database import Base
@@ -28,6 +28,7 @@ class Cadet(Base):
     badge_orders      = relationship("BadgeOrder",         back_populates="cadet")
     medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
     dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
+    theory_progress   = relationship("CadetTheoryProgress", back_populates="cadet", cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -57,9 +58,24 @@ class CadetQualification(Base):
     qual_type = Column(Text, nullable=False)  # one of QUALIFICATION_TYPES
     status   = Column(Text, nullable=False)   # "blue" | "bronze..." | "false, basic, intermediate... - for swimming" | "true/false"
     date_achieved = Column(DateTime, nullable=True)
-    date_expires  = Column(DateTime, nullable=True) 
+    date_expires  = Column(DateTime, nullable=True)
+    # None = never checked / not on the attachment watch list; set by the
+    # cadet-quali scraper for watched quals (see Attachment_Check_Quals).
+    has_attachment = Column(Boolean, nullable=True)
+    # Set the first time this qualification is included in the 3-month pre-expiry
+    # alert email, so each cadet+qualification is only ever notified once.
+    expiry_alert_sent_at = Column(DateTime, nullable=True)
 
     cadet = relationship("Cadet", back_populates="qualifications")
+
+
+class AttachmentCheckQual(Base):
+    """A qualification name (exact Bader text) the cadet-quali scraper should
+    check for proof attachments, e.g. "Blue Leadership"."""
+    __tablename__ = "Attachment_Check_Quals"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    qual_name = Column(Text, nullable=False, unique=True)
 
 
 class CadetMedical(Base):
@@ -84,6 +100,30 @@ class CadetDietary(Base):
     details  = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="dietary")
+
+
+class CadetTheoryProgress(Base):
+    """Marks that a cadet has completed the *theory* element of a lesson but not
+    necessarily the formal assessment/qualification yet — so part-finished
+    progress is visible before it lands in the scraped Bader qualifications.
+
+    ``lesson_key`` is one of ``core.theory_lessons.THEORY_LESSONS``. One row per
+    cadet+lesson (enforced by the unique constraint); its presence means the
+    theory is done.
+    """
+    __tablename__ = "Cadet_Theory_Progress"
+
+    id           = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id     = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    lesson_key   = Column(Text,       nullable=False)  # one of core.theory_lessons keys
+    completed_at = Column(DateTime,   nullable=False)
+    recorded_by  = Column(Text,       nullable=True)   # email of the staff member who marked it
+
+    cadet = relationship("Cadet", back_populates="theory_progress")
+
+    __table_args__ = (
+        UniqueConstraint("cadet_id", "lesson_key", name="uq_theory_cadet_lesson"),
+    )
 
 
 class Event317(Base):
