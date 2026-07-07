@@ -3,8 +3,8 @@
 Records when the 3-month pre-expiry alert email has been sent for a
 qualification, so each cadet+qualification is notified exactly once.
 
-Revision ID: k1l2m3n4o5p6
-Revises: j1k2l3m4n5o6
+Revision ID: k2l3m4n5o6p7
+Revises: k1l2m3n4o5p6
 Create Date: 2026-07-05 00:00:00.000000
 
 """
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 'k1l2m3n4o5p6'
-down_revision: Union[str, Sequence[str], None] = 'j1k2l3m4n5o6'
+revision: str = 'k2l3m4n5o6p7'
+down_revision: Union[str, Sequence[str], None] = 'k1l2m3n4o5p6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
