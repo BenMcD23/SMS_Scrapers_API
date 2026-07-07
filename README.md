@@ -165,6 +165,31 @@ docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"
 docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DELETE FROM \"Cadets\" WHERE cin = 9999999999;"
 ```
 
+## Wiping the dev database
+
+Drops the whole schema and rebuilds it empty.
+
+> **Not `alembic upgrade head`.** The migration history has no initial
+> create-tables migration — the base tables were originally made by
+> `create_all`, and Alembic only tracks deltas on top. So upgrading from an
+> empty DB dies on the first `add_column`. Rebuild the tables from the models,
+> then `stamp head` to mark Alembic as up to date.
+
+```bash
+# Local (Docker db + host venv)
+docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+PYTHONPATH=app:. python -c "from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)"
+alembic -c database/alembic.ini stamp head
+
+# Dev Docker stack (run the rebuild inside a one-off api container, then boot)
+docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+docker compose -p sms-dev run --rm --entrypoint sh api -c \
+  "PYTHONPATH=app:. python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)' && alembic -c database/alembic.ini stamp head"
+docker compose -p sms-dev restart api
+```
+
+Only ever run this against dev — it is irreversible and takes the whole schema with it.
+
 ## Database Migrations (Alembic)
 
 **Alembic is the single source of truth for the schema.** The app no longer
