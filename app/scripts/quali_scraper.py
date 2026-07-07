@@ -161,11 +161,14 @@ def get_all_classifications(page: Page):
     return result
 
 
-def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None):
+def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None, attachment_check_quals=None):
+    attachment_check_quals = attachment_check_quals or set()  # casefolded exact qual names to check for proof attachments
     cadet_data = []
     classifications_by_name = get_all_classifications(page)
 
     for i in range(numberOfCadets):
+        # if i == 2:
+        #     break
         if stop_event and stop_event.is_set():
             return cadet_data
 
@@ -260,9 +263,11 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         try:
             wait_for_aspx_load(page)
             tbody = page.wait_for_selector("tbody", timeout=10000)
-            rows = tbody.query_selector_all("tr")
+            rows = tbody.query_selector_all(":scope > tr")  # direct children only — skips nested attachment tables
 
             for row in rows:
+                if "sibling" in (row.get_attribute("class") or ""):
+                    continue  # hidden proof/attachment row, not a qualification
                 cols = row.query_selector_all("td")
                 if not cols or not cols[0].inner_text().strip():
                     continue
@@ -283,11 +288,23 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
                     except (ValueError, IndexError):
                         pass
 
+                has_attachment = None
+                if qual_type.casefold() in attachment_check_quals:
+                    # The proofs table for each qual is already rendered in the
+                    # hidden sibling row — a View link (hlAttachment) only exists
+                    # when at least one proof is attached. No clicking needed.
+                    has_attachment = bool(row.evaluate(
+                        "el => { const sib = el.nextElementSibling;"
+                        " return !!(sib && sib.classList.contains('sibling')"
+                        " && sib.querySelector(\"a[id*='hlAttachment']\")); }"
+                    ))
+
                 cadetQualifications.append({
                     "qual_type": qual_type,
                     "status": "true",
                     "date_achieved": date_achieved,
                     "date_expires": date_expires,
+                    "has_attachment": has_attachment,
                 })
 
         except Exception as e:
