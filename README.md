@@ -114,6 +114,23 @@ PYTHONPATH=app:. uvicorn api:app --reload
 
 The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
 
+## Dev fake auth (local UI testing)
+
+Real auth needs a Google login plus a Workspace service account, which can't be
+automated (e.g. for Playwright UI sweeps). A flag-gated bypass sidesteps it:
+
+```bash
+DEV_FAKE_AUTH=1 PYTHONPATH=app:. uvicorn api:app --reload
+```
+
+When `DEV_FAKE_AUTH=1`, `verify_token` accepts the literal `Bearer dev-fake-token`
+as the owner account (`OWNER_EMAIL`, role `staff`) — no Google round-trip. It's
+inert unless the flag is set, so production is unaffected (see `app/core/security.py`).
+
+The frontend has the matching flag: set `AUTH_DEV_BYPASS=1` in the UI's
+`.env.local` to expose a dev credentials login that issues `dev-fake-token`.
+**Both flags must be off in production.**
+
 ## Seeding a test cadet
 
 To test the cadet portal locally, insert a fake cadet row whose email matches your Google account (`ci.mcdonald@317atc.co.uk`).
