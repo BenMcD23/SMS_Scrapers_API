@@ -86,6 +86,21 @@ async def list_cadets(
 
 # ─── Audit helpers ────────────────────────────────────────────────────────────
 
+def _award_date(badge, level, qual_objs):
+    """ISO date the cadet gained ``badge`` at its held ``level`` — the
+    date_achieved of the qual record matching that level's patterns, or None."""
+    if level is None:
+        return None
+    lv = next((L for L in badge.levels if L.level == level), None)
+    if lv is None:
+        return None
+    for q in qual_objs:
+        name = q.qual_type.casefold()
+        if any(p.casefold() in name for p in lv.patterns):
+            return q.date_achieved.date().isoformat() if q.date_achieved else None
+    return None
+
+
 def _build_audit_result(cadets, qualifications, include_medical, include_dietary,
                         include_missing_attachments=False):
     # `qualifications` is a list of badge-type keys from the catalog. Unknown
@@ -107,6 +122,7 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
                     "kind": b.kind,
                     "level": (lvl := held_level(b, qual_names)),
                     "has": lvl is not None,
+                    "date_achieved": _award_date(b, lvl, c.qualifications),
                 }
                 for b in badges
             ]
