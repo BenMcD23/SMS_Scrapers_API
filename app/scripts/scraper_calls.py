@@ -10,8 +10,10 @@ from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual
+from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual, BanNotification
 from google_admin_api.get_all_users import get_workspace_users
+from core.emailer import send_email, ban_alert_email_html
+from core.config import BAN_ALERT_EMAIL
 
 import os
 import tempfile
@@ -193,6 +195,50 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 pass
 
 
+def check_ban_notifications(db_session):
+    """Email staff about any banned cadet found signed up to an event. All new
+    (cadet, event) pairs from this run go in a single email; each pair is only
+    ever emailed once — already-notified pairs are recorded in Ban_Notifications
+    and skipped on future runs. Returns the number of new pairs alerted."""
+    banned = db_session.query(Cadet).filter(Cadet.banned == True).all()
+    if not banned:
+        return 0
+
+    already = {
+        (n.cadet_id, n.event_title)
+        for n in db_session.query(BanNotification).all()
+    }
+
+    new_pairs = []  # (cadet, event_title)
+    for c in banned:
+        seen = set()
+        for ce in c.cadet_events:
+            if not ce.event:
+                continue
+            key = (c.cin, ce.event.title)
+            if key in already or key in seen:
+                continue
+            seen.add(key)
+            new_pairs.append((c, ce.event.title))
+
+    if not new_pairs:
+        return 0
+
+    rows = [(f"{c.first_name} {c.last_name}", title) for c, title in new_pairs]
+    send_email(
+        BAN_ALERT_EMAIL,
+        f"Banned cadet(s) on events ({len(rows)})",
+        ban_alert_email_html(rows),
+    )
+    # Only record as notified once the send has been attempted, so a pair is
+    # never marked without an email having gone out for it.
+    now = datetime.now()
+    for c, title in new_pairs:
+        db_session.add(BanNotification(cadet_id=c.cin, event_title=title, notified_at=now))
+    db_session.commit()
+    return len(new_pairs)
+
+
 def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
     context = None
     try:
@@ -297,6 +343,25 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     + (f"{unmatched_cadets} attendee(s) could not be matched to a cadet." if unmatched_cadets else "All attendees matched successfully.")
                 ),
             }))
+
+        # Alert staff about any banned cadet on an event — never fatal to the scrape.
+        try:
+            alerted = check_ban_notifications(db_session)
+            if alerted:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"Emailed staff about {alerted} banned cadet/event sign-up(s).",
+                    }))
+        except Exception as e:
+            db_session.rollback()
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "warning",
+                    "value": f"Ban-notification check failed: {str(e)}",
+                }))
+
+        with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
     except PlaywrightTimeoutError:
