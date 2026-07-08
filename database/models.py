@@ -427,6 +427,7 @@ class StoresOrder(Base):
     user_id    = Column(Integer,  ForeignKey("Users.id"),     nullable=True)
     created_at = Column(DateTime, nullable=False)
     completed  = Column(Boolean,  nullable=False, default=False, server_default="0")
+    kitting    = Column(Boolean,  nullable=False, default=False, server_default="0")
 
     cadet       = relationship("Cadet",           back_populates="stores_orders")
     user        = relationship("User",            back_populates="stores_orders")
