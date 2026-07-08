@@ -92,6 +92,7 @@ def order_to_dict(order: StoresOrder) -> dict:
         "subjectType": subject_type,
         "timestamp":   order.created_at.isoformat(),
         "completed":   bool(getattr(order, "completed", False)),
+        "kitting":     bool(getattr(order, "kitting", False)),
         "items": [
             {
                 "id":             str(oi.id),
@@ -508,7 +509,8 @@ def stores_create_order(
     if not cadet:
         raise HTTPException(status_code=404, detail="Cadet not found")
 
-    order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now())
+    order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now(),
+                        kitting=bool(body.get("kitting", False)))
     db.add(order)
     db.flush()
     add_order_items(db, order, items)
