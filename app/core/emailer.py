@@ -101,6 +101,32 @@ def quali_expiry_email_html(rows: list[tuple[str, str, str, int]]) -> str:
     """
 
 
+def ban_alert_email_html(rows: list[tuple[str, str]]) -> str:
+    """rows: (cadet_name, event_title) — a banned cadet found signed up to an event."""
+    trs = "".join(
+        f'<tr>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:bold">{name}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{event}</td>'
+        f'</tr>'
+        for name, event in rows
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Banned Cadet(s) On Events</h2>
+      <hr style="border:none;border-top:2px solid #c62828;margin:0 0 20px">
+      <p>The following banned cadet(s) are signed up to events on Bader:</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Cadet</th>
+          <th style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc">Event</th>
+        </tr>
+        {trs}
+      </table>
+      {FOOTER}
+    </div>
+    """
+
+
 def ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str, size: str = "") -> str:
     size_line = f'<p style="font-size:14px;color:#555;margin:0 0 16px">Size: {size}</p>' if size else ""
     return f"""

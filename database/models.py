@@ -178,17 +178,23 @@ class CadetEvent(Base):
 
     cadet = relationship("Cadet", back_populates="cadet_events")
     event = relationship("AllEvent", back_populates="cadet_events")
-    ban_notifications = relationship("BanNotification", back_populates="cadet_event")
 
 
 class BanNotification(Base):
+    """One row per (banned cadet, event) we've already emailed staff about, so
+    the same pairing is never alerted twice. Keyed on the event *title* rather
+    than a Cadet_Events FK because those rows are wiped and recreated on every
+    event scrape — the title is the only stable identity across runs."""
     __tablename__ = "Ban_Notifications"
 
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    cadet_event_id = Column(Integer, ForeignKey("Cadet_Events.id"), nullable=False)
-    email_sent     = Column(Boolean, nullable=False)
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    cadet_id    = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    event_title = Column(Text, nullable=False)
+    notified_at = Column(DateTime, nullable=False)
 
-    cadet_event = relationship("CadetEvent", back_populates="ban_notifications")
+    __table_args__ = (
+        UniqueConstraint("cadet_id", "event_title", name="uq_ban_notif_cadet_event"),
+    )
 
 
 # ─── Assessment ───────────────────────────────────────────────────────────────
