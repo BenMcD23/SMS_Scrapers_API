@@ -566,6 +566,37 @@ def stores_update_order(
     return order_to_dict(order)
 
 
+# C Flight initial kitting: both gendered variants added — QM deletes what doesn't apply.
+KIT_FLIGHT_ITEMS = [
+    "Beret", "Brassard", "Jumper", "Tie", "Belt",
+    "Wedgewood Male", "Wedgewood Female", "Working Blue Male", "Working Blue Female",
+    "Trousers", "Slacks", "Skirts",
+]
+
+
+@router.post("/stores/orders/kit-flight", status_code=201)
+def stores_kit_flight(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Create a kitting order for every C Flight cadet who doesn't already have one."""
+    already = {o.cadet_id for o in db.query(StoresOrder).filter(StoresOrder.kitting == True).all()}
+    cadets = db.query(Cadet).filter(Cadet.flight == "C", Cadet.banned == False).all()
+    created = []
+    for cadet in cadets:
+        if cadet.cin in already:
+            continue
+        order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now(), kitting=True)
+        db.add(order)
+        db.flush()
+        add_order_items(db, order, [{"itemType": t} for t in KIT_FLIGHT_ITEMS])
+        created.append(order)
+    db.commit()
+    for o in created:
+        db.refresh(o)
+    return [order_to_dict(o) for o in created]
+
+
 @router.post("/stores/orders/form-import", status_code=201)
 def stores_form_import(
     body: dict,
