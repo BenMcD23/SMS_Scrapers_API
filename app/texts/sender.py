@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from database.database import SessionLocal
 from database.models import ParadeNightMessage, SmsRecipient
 
-from core.config import NOTIFY_API_KEY, NOTIFY_SMS_TEMPLATE_ID, TEXTS_ALERT_EMAIL
+from core.config import NOTIFY_API_KEY, NOTIFY_SMS_TEMPLATE_ID, ALERT_EMAIL
 from core.emailer import send_email, FOOTER
 
 LONDON = ZoneInfo("Europe/London")
@@ -80,7 +80,7 @@ def send_parade_message(db: Session, message: ParadeNightMessage) -> list[dict]:
 def _alert_staff(parade_date, detail: str) -> None:
     date_str = parade_date.strftime("%A %d %B %Y")
     send_email(
-        TEXTS_ALERT_EMAIL,
+        ALERT_EMAIL,
         f"Parade night text problem — {date_str}",
         f"""
         <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
