@@ -3,6 +3,7 @@ from scripts.quali_scraper import *
 from scripts.event_scraper import *
 from scripts.alergies import *
 from scripts.add_quali import add_qualification_with_attachment
+from scripts.absence_scraper import get_absences
 from assessment_builders.pdf_utils import merge_pdfs
 
 import json
@@ -10,7 +11,7 @@ from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual, BanNotification
+from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual, BanNotification, CadetAbsence
 from google_admin_api.get_all_users import get_workspace_users
 from core.emailer import send_email, ban_alert_email_html
 from core.config import BAN_ALERT_EMAIL
@@ -176,6 +177,91 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         push_to_google_apps_script({"cadet_quali": apps_script_payload}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
 
         with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
+
+    except PlaywrightTimeoutError:
+        if not stop_event.is_set():
+            with scraper_lock:
+                scraper_messages.append(json.dumps({"type": "error", "value": "A page took too long to load (Timeout)."}))
+    except Exception as e:
+        if not stop_event.is_set():
+            db_session.rollback()
+            with scraper_lock:
+                scraper_messages.append(json.dumps({"type": "error", "value": f"Scraper Error: {str(e)}"}))
+    finally:
+        if context:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+
+def absence_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
+    """Scrape booked absences from Bader and full-replace Cadet_Absences.
+
+    Absences are matched to cadets by name; unmatched rows are logged and
+    skipped (nothing to attach them to).
+    """
+    context = None
+    try:
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Initializing scraper..."}))
+
+        page, context, credentials = init_scraper(user_id, db_session)
+        if on_context_ready:
+            on_context_ready(context)
+
+        if stop_event.is_set(): return
+
+        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
+
+        if stop_event.is_set(): return
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": "info", "value": "Fetching absences..."}))
+
+        absences = get_absences(page)
+
+        if stop_event.is_set(): return
+
+        # {(FIRST_UPPER, LAST_UPPER): cin} for name matching (reuses match_email tiers).
+        cin_map = {
+            (c.first_name.strip().upper(), c.last_name.strip().upper()): c.cin
+            for c in db_session.query(Cadet).all()
+            if c.first_name and c.last_name
+        }
+
+        scraped_at = datetime.now()
+        db_session.query(CadetAbsence).delete()  # full replace — Bader only shows current + future
+
+        matched = 0
+        unmatched = 0
+        for a in absences:
+            cin = match_email(a["first_name"].upper(), a["last_name"].upper(), cin_map)
+            if not cin:
+                unmatched += 1
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"[NO MATCH] Absence for {a['first_name']} {a['last_name']} — no cadet found",
+                    }))
+                continue
+            db_session.add(CadetAbsence(
+                cadet_id=cin,
+                date_from=a["date_from"],
+                date_to=a["date_to"],
+                reason=a["reason"] or None,
+                scraped_at=scraped_at,
+            ))
+            matched += 1
+
+        db_session.commit()
+
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Absences saved — {matched} attached, {unmatched} unmatched, {len(absences)} total.",
+            }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
     except PlaywrightTimeoutError:

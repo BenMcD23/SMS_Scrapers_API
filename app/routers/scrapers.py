@@ -24,7 +24,7 @@ from database.models import ScraperRun, ScraperSchedule, StatsSnapshot, Attachme
 
 from scripts.scraper_calls import (
     info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
-    upload_qualifications_scraper,
+    upload_qualifications_scraper, absence_scraper,
 )
 from scripts.staff_scraper import staff_scraper
 
@@ -41,7 +41,7 @@ RUN_LOG_RETENTION_DAYS = 7
 
 # ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
 
-NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff"]
+NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff", "absences"]
 
 SCRAPER_FUNCS = {
     "cadet-quali": info_and_quali_scraper,
@@ -49,6 +49,7 @@ SCRAPER_FUNCS = {
     "317-event":   event_317_scraper,
     "medical":     medical_scraper,
     "staff":       staff_scraper,
+    "absences":    absence_scraper,
 }
 
 named_scraper_states: dict = {
