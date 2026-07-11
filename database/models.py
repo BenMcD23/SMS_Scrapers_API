@@ -29,6 +29,7 @@ class Cadet(Base):
     medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
     dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
     theory_progress   = relationship("CadetTheoryProgress", back_populates="cadet", cascade="all, delete-orphan")
+    absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -124,6 +125,35 @@ class CadetTheoryProgress(Base):
     __table_args__ = (
         UniqueConstraint("cadet_id", "lesson_key", name="uq_theory_cadet_lesson"),
     )
+
+
+class CadetAbsence(Base):
+    """A booked absence scraped from Bader's unit absences page. The scraper
+    full-replaces this table each run, so it only ever holds current + future
+    absences (the ones Bader still shows). A cadet is "absent" for an inspection
+    date D when some row has date_from <= D <= date_to."""
+    __tablename__ = "Cadet_Absences"
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    date_from  = Column(DateTime,   nullable=False)
+    date_to    = Column(DateTime,   nullable=False)
+    reason     = Column(Text,       nullable=True)
+    scraped_at = Column(DateTime,   nullable=False)
+
+    cadet = relationship("Cadet", back_populates="absences")
+
+
+class InspectionSheet(Base):
+    """A submitted inspection marking sheet. ``data`` is the full per-cadet JSON
+    (score, comments, absent flag, awol flag) as sent by the inspection page."""
+    __tablename__ = "Inspection_Sheets"
+
+    id           = Column(Integer,  primary_key=True, autoincrement=True)
+    date         = Column(DateTime, nullable=False)  # the parade/inspection date
+    submitted_by = Column(Text,     nullable=True)
+    submitted_at = Column(DateTime, nullable=False)
+    data         = Column(JSON,     nullable=False)
 
 
 class Event317(Base):
