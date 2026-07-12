@@ -249,7 +249,7 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
 # ── Endpoints ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/run-scraper/{name}")
-async def start_scraper(
+def start_scraper(
     name: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -291,7 +291,7 @@ async def start_scraper(
 
 
 @router.post("/stop-scraper/{name}")
-async def stop_scraper(name: str, idinfo: dict = Depends(require_staff)):
+def stop_scraper(name: str, idinfo: dict = Depends(require_staff)):
     if name not in named_scraper_states:
         raise HTTPException(status_code=404, detail="Unknown scraper")
     state = named_scraper_states[name]
@@ -407,7 +407,7 @@ async def upload_stream(
 
 
 @router.get("/upload-jobs")
-async def get_upload_jobs(idinfo: dict = Depends(require_staff)):
+def get_upload_jobs(idinfo: dict = Depends(require_staff)):
     with upload_jobs_lock:
         jobs = list(upload_jobs.values())
     return [
@@ -423,7 +423,7 @@ async def get_upload_jobs(idinfo: dict = Depends(require_staff)):
 
 
 @router.post("/stop-upload/{job_id}")
-async def stop_upload_job(job_id: str, idinfo: dict = Depends(require_staff)):
+def stop_upload_job(job_id: str, idinfo: dict = Depends(require_staff)):
     with upload_jobs_lock:
         state = upload_jobs.get(job_id)
     if not state:
@@ -436,7 +436,7 @@ async def stop_upload_job(job_id: str, idinfo: dict = Depends(require_staff)):
 
 
 @router.get("/scrapers-running")
-async def scrapers_running(idinfo: dict = Depends(require_staff)):
+def scrapers_running(idinfo: dict = Depends(require_staff)):
     with upload_jobs_lock:
         jobs_snapshot = list(upload_jobs.values())
     return {
@@ -456,7 +456,7 @@ async def scrapers_running(idinfo: dict = Depends(require_staff)):
 
 
 @router.get("/scraper-last-runs")
-async def scraper_last_runs(
+def scraper_last_runs(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -478,7 +478,7 @@ async def scraper_last_runs(
 
 
 @router.get("/scraper-runs")
-async def scraper_runs(
+def scraper_runs(
     limit: int = 30,
     scraper_id: str | None = None,
     db: Session = Depends(get_db),
@@ -501,7 +501,7 @@ async def scraper_runs(
 
 
 @router.get("/scraper-runs/{run_id}")
-async def scraper_run_detail(
+def scraper_run_detail(
     run_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -520,7 +520,7 @@ async def scraper_run_detail(
 
 
 @router.get("/api-logs")
-async def api_logs(
+def api_logs(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_owner),
 ):
@@ -645,7 +645,7 @@ def _schedule_json(name: str, sched: ScraperSchedule | None) -> dict:
 
 
 @router.get("/scraper-schedules")
-async def get_scraper_schedules(
+def get_scraper_schedules(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -661,7 +661,7 @@ class SchedulePut(BaseModel):
 
 
 @router.put("/scraper-schedules/{name}")
-async def put_scraper_schedule(
+def put_scraper_schedule(
     name: str,
     body: SchedulePut,
     db: Session = Depends(get_db),
@@ -707,7 +707,7 @@ async def put_scraper_schedule(
 # proof attachment and flags cadets missing one.
 
 @router.get("/attachment-check-quals")
-async def get_attachment_check_quals(
+def get_attachment_check_quals(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -719,7 +719,7 @@ class AttachmentCheckQualsPut(BaseModel):
 
 
 @router.put("/attachment-check-quals")
-async def put_attachment_check_quals(
+def put_attachment_check_quals(
     body: AttachmentCheckQualsPut,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),

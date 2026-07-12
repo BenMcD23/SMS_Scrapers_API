@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database.models import (
     Cadet, BadgeGridConfig, BadgeGridCell, BadgeItem, BadgeOrder, BadgeOrderItem,
@@ -32,7 +32,12 @@ def _cell_to_dict(cell: BadgeGridCell) -> dict:
 
 def _badge_full_response(db: Session) -> dict:
     cfg = _get_or_create_badge_config(db)
-    cells = db.query(BadgeGridCell).order_by(BadgeGridCell.row, BadgeGridCell.col).all()
+    cells = (
+        db.query(BadgeGridCell)
+        .options(selectinload(BadgeGridCell.items))
+        .order_by(BadgeGridCell.row, BadgeGridCell.col)
+        .all()
+    )
     return {
         "config": {"numRows": cfg.num_rows, "numCols": cfg.num_cols},
         "cells": [_cell_to_dict(c) for c in cells],
@@ -276,7 +281,12 @@ def badge_orders_list(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    orders = db.query(BadgeOrder).order_by(BadgeOrder.created_at.desc()).all()
+    orders = (
+        db.query(BadgeOrder)
+        .options(joinedload(BadgeOrder.cadet), selectinload(BadgeOrder.order_items))
+        .order_by(BadgeOrder.created_at.desc())
+        .all()
+    )
     return [badge_order_to_dict(o) for o in orders]
 
 

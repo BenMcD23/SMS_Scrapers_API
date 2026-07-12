@@ -120,7 +120,7 @@ def generate_messages(  # sync on purpose — slow AI calls run in the threadpoo
 
 
 @router.get("/messages")
-async def list_messages(
+def list_messages(
     month: int = None,
     year: int = None,
     db: Session = Depends(get_db),
@@ -151,7 +151,7 @@ class MessagePatch(BaseModel):
 
 
 @router.patch("/messages/{message_id}")
-async def update_message(
+def update_message(
     message_id: int,
     data: MessagePatch,
     db: Session = Depends(get_db),
@@ -199,7 +199,7 @@ def regenerate_message(  # sync on purpose — slow AI call runs in the threadpo
 
 
 @router.post("/messages/{message_id}/send")
-async def send_message(
+def send_message(
     message_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -227,7 +227,7 @@ class TestSendBody(BaseModel):
 
 
 @router.post("/messages/{message_id}/test-send")
-async def test_send_message(
+def test_send_message(
     message_id: int,
     data: TestSendBody,
     db: Session = Depends(get_db),
@@ -260,7 +260,7 @@ def _recipient_json(r: SmsRecipient) -> dict:
 
 
 @router.get("/recipients")
-async def list_recipients(
+def list_recipients(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -269,7 +269,7 @@ async def list_recipients(
 
 
 @router.post("/recipients")
-async def create_recipient(
+def create_recipient(
     data: RecipientBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -286,7 +286,7 @@ async def create_recipient(
 
 
 @router.patch("/recipients/{recipient_id}")
-async def update_recipient(
+def update_recipient(
     recipient_id: int,
     data: RecipientPatch,
     db: Session = Depends(get_db),
@@ -401,7 +401,7 @@ async def import_recipients(
 
 
 @router.delete("/recipients/{recipient_id}")
-async def delete_recipient(
+def delete_recipient(
     recipient_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
