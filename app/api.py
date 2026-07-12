@@ -177,6 +177,13 @@ app.add_middleware(
 )
 
 
+@app.get("/ping")
+def ping():
+    """Unauthenticated liveness probe — polled by the frontend's API-down
+    overlay. Returns nothing sensitive, just proof the API is reachable."""
+    return {"ok": True}
+
+
 @app.get("/health")
 def health_check(idinfo: dict = Depends(require_user)):
     return {"ok": True, "email": idinfo["email"]}
