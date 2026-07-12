@@ -8,7 +8,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database.models import (
     Cadet, User, ITEM_GENDER_MAP, ISSUANCE_ITEM_TYPE_MAP,
@@ -68,6 +68,7 @@ def _box_to_dict(box: StoresBox) -> dict:
 def _full_structure(db: Session) -> dict:
     boxes = (
         db.query(StoresBox)
+        .options(selectinload(StoresBox.sections))
         .order_by(StoresBox.shelf_level, StoresBox.shelf_position, StoresBox.label)
         .all()
     )
@@ -362,7 +363,13 @@ def stores_get_stock(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    items = db.query(StoresItem).all()
+    # _item_to_dict reads item.box/item.section — join them up front instead of
+    # two lazy queries per stock row.
+    items = (
+        db.query(StoresItem)
+        .options(joinedload(StoresItem.box), joinedload(StoresItem.section))
+        .all()
+    )
     return [_item_to_dict(i) for i in items]
 
 
@@ -489,7 +496,16 @@ def stores_get_orders(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    orders = db.query(StoresOrder).order_by(StoresOrder.created_at.desc()).all()
+    orders = (
+        db.query(StoresOrder)
+        .options(
+            joinedload(StoresOrder.cadet),
+            joinedload(StoresOrder.user),
+            selectinload(StoresOrder.order_items),
+        )
+        .order_by(StoresOrder.created_at.desc())
+        .all()
+    )
     return [order_to_dict(o) for o in orders]
 
 
@@ -580,7 +596,7 @@ def stores_kit_flight(
     idinfo: dict = Depends(require_staff),
 ):
     """Create a kitting order for every C Flight cadet who doesn't already have one."""
-    already = {o.cadet_id for o in db.query(StoresOrder).filter(StoresOrder.kitting == True).all()}
+    already = {cadet_id for (cadet_id,) in db.query(StoresOrder.cadet_id).filter(StoresOrder.kitting == True).all()}
     cadets = db.query(Cadet).filter(Cadet.flight == "C", Cadet.banned == False).all()
     created = []
     for cadet in cadets:
@@ -875,7 +891,12 @@ def logs_forms_list(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    forms = db.query(LogsForm).order_by(LogsForm.created_at.desc()).all()
+    forms = (
+        db.query(LogsForm)
+        .options(selectinload(LogsForm.entries))
+        .order_by(LogsForm.created_at.desc())
+        .all()
+    )
     return [_logs_form_to_dict(f) for f in forms]
 
 

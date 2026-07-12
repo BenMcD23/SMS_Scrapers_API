@@ -39,7 +39,7 @@ class AssessorNamePatch(BaseModel):
 
 
 @router.post("/save-credentials")
-async def save_credentials(
+def save_credentials(
     data: dict,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -88,7 +88,7 @@ async def save_signature(
 
 
 @router.get("/get-signature")
-async def get_signature(
+def get_signature(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -104,7 +104,7 @@ async def get_signature(
 
 
 @router.delete("/delete-signature")
-async def delete_signature(
+def delete_signature(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -118,7 +118,7 @@ async def delete_signature(
 
 
 @router.get("/settings/user-profile")
-async def get_user_profile(
+def get_user_profile(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -140,7 +140,7 @@ async def get_user_profile(
 
 
 @router.patch("/settings/user-profile")
-async def update_user_profile(
+def update_user_profile(
     data: UserProfilePatch,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -168,7 +168,7 @@ async def update_user_profile(
 
 
 @router.get("/settings/assessor-name")
-async def get_assessor_name(
+def get_assessor_name(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -178,7 +178,7 @@ async def get_assessor_name(
 
 
 @router.patch("/settings/assessor-name")
-async def update_assessor_name(
+def update_assessor_name(
     data: AssessorNamePatch,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),

@@ -7,7 +7,7 @@ import io
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, joinedload
 
 from database.models import AssessmentSheet, Cadet, User
 
@@ -201,7 +201,7 @@ def _validate_moi(data: dict) -> None:
 # ── Creating assessments ────────────────────────────────────────────────────
 
 @router.post("/assessments/leadership/add-assessment")
-async def generate_leadership_assessment(
+def generate_leadership_assessment(
     data: dict,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -217,7 +217,7 @@ async def generate_leadership_assessment(
 
 
 @router.post("/assessments/radio/add-assessment")
-async def generate_radio_assessment(
+def generate_radio_assessment(
     data: dict,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -239,7 +239,7 @@ async def generate_radio_assessment(
 
 
 @router.post("/assessments/moi/add-assessment")
-async def generate_moi_assessment(
+def generate_moi_assessment(
     data: dict,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -263,13 +263,19 @@ async def generate_moi_assessment(
 # ── Overview and per-sheet endpoints ───────────────────────────────────────────
 
 @router.get("/assessments/overview")
-async def assessments_overview(
+def assessments_overview(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     sheets = (
         db.query(AssessmentSheet)
         .join(Cadet, AssessmentSheet.cadet_id == Cadet.cin)
+        .options(
+            joinedload(AssessmentSheet.cadet),
+            # The overview only reads `fields`/flags — leave the PDF blobs in the DB.
+            defer(AssessmentSheet.pdf_data),
+            defer(AssessmentSheet.lesson_plan_pdf),
+        )
         .order_by(Cadet.last_name, Cadet.first_name, AssessmentSheet.created_at)
         .all()
     )
@@ -334,7 +340,7 @@ async def assessments_overview(
 
 
 @router.get("/assessments/{assessment_id}/detail")
-async def get_assessment_detail(
+def get_assessment_detail(
     assessment_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -366,7 +372,7 @@ async def get_assessment_detail(
 
 
 @router.put("/assessments/{assessment_id}")
-async def edit_assessment(
+def edit_assessment(
     assessment_id: int,
     data: dict,
     db: Session = Depends(get_db),
@@ -432,18 +438,22 @@ async def edit_assessment(
 
 
 @router.post("/assessments/{cin}/{assessment_type}/mark-complete")
-async def mark_assessment_complete(
+def mark_assessment_complete(
     cin: int,
     assessment_type: str,
     body: MarkCompleteRequest,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
-    if not cadet:
+    if not db.query(Cadet.cin).filter(Cadet.cin == cin).first():
         raise HTTPException(status_code=404, detail=f"Cadet {cin} not found.")
 
-    sheets = [s for s in cadet.assessment_sheets if s.assessment_type == assessment_type]
+    sheets = (
+        db.query(AssessmentSheet)
+        .filter(AssessmentSheet.cadet_id == cin, AssessmentSheet.assessment_type == assessment_type)
+        .options(defer(AssessmentSheet.pdf_data), defer(AssessmentSheet.lesson_plan_pdf))
+        .all()
+    )
     if not sheets:
         raise HTTPException(status_code=404, detail=f"No {assessment_type} assessments found for cadet {cin}.")
 
@@ -458,7 +468,7 @@ async def mark_assessment_complete(
 
 
 @router.get("/assessments/{assessment_id}/pdf")
-async def get_assessment_pdf(
+def get_assessment_pdf(
     assessment_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -480,7 +490,7 @@ async def get_assessment_pdf(
 
 
 @router.get("/assessments/group/{cin}/{assessment_type}/combined-pdf")
-async def get_combined_group_pdf(
+def get_combined_group_pdf(
     cin: int,
     assessment_type: str,
     db: Session = Depends(get_db),
@@ -518,7 +528,7 @@ async def get_combined_group_pdf(
 
 
 @router.delete("/assessments/{assessment_id}")
-async def delete_assessment(
+def delete_assessment(
     assessment_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -535,7 +545,7 @@ async def delete_assessment(
 # ── Upload to Bader ─────────────────────────────────────────────────────────
 
 @router.post("/assessments/upload-to-bader")
-async def upload_qualifications_to_bader(
+def upload_qualifications_to_bader(
     data: UploadQualificationsRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
