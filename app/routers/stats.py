@@ -77,7 +77,7 @@ def compute_stats(db: Session) -> dict:
 
 
 @router.get("/stats/current")
-async def get_current_stats(
+def get_current_stats(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -90,7 +90,7 @@ async def get_current_stats(
 
 
 @router.get("/stats/history")
-async def get_stats_history(
+def get_stats_history(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -105,7 +105,7 @@ async def get_stats_history(
 
 
 @router.post("/stats/snapshot")
-async def create_stats_snapshot(
+def create_stats_snapshot(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):

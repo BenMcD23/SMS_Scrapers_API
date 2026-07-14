@@ -117,6 +117,61 @@ def _fetch_user_role(email: str) -> str | None:
         return None
 
 
+def _fetch_group_members(admin, group: str) -> set[str]:
+    """All member emails of a Workspace group, lower-cased, following pagination."""
+    members: set[str] = set()
+    page_token = None
+    while True:
+        resp = admin.members().list(
+            groupKey=group, maxResults=200, pageToken=page_token
+        ).execute()
+        members.update(
+            m["email"].lower() for m in resp.get("members", []) if m.get("email")
+        )
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return members
+
+
+def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
+    """Role for each email in one pass — two group listings instead of one
+    admin-API round-trip per user. Results are written into the same per-email
+    cache used by get_user_role, so both paths stay consistent."""
+    now = time.time()
+    with _role_cache_lock:
+        cached = {
+            e: _role_cache[e][0]
+            for e in emails
+            if e in _role_cache and now < _role_cache[e][1]
+        }
+    missing = [e for e in emails if e not in cached]
+    if not missing:
+        return cached
+
+    if not SA_EMAIL or not SA_PRIVATE_KEY:
+        return {**cached, **{e: None for e in missing}}
+    try:
+        creds = _service_account_creds(
+            ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"]
+        ).with_subject(IMPERSONATE_EMAIL)
+        admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
+        staff = _fetch_group_members(admin, STAFF_GROUP)
+        nco = _fetch_group_members(admin, NCO_GROUP)
+    except Exception as e:
+        print(f"[get_roles_for_emails] error: {e}")
+        return {**cached, **{e: None for e in missing}}
+
+    resolved = {}
+    expiry = time.time() + 300
+    with _role_cache_lock:
+        for email in missing:
+            key = email.lower()
+            role = "staff" if key in staff else "nco" if key in nco else None
+            resolved[email] = role
+            _role_cache[email] = (role, expiry)
+    return {**cached, **resolved}
+
+
 def get_user_role(email: str) -> str | None:
     # ponytail: pairs with the dev-fake-token bypass above
     if os.environ.get("DEV_FAKE_AUTH") == "1" and email.lower() == OWNER_EMAIL.lower():

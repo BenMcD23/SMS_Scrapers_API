@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from database.models import AllEvent, Cadet, Event317
+from database.models import AllEvent, Cadet, CadetEvent, Event317
 
 from scripts.ji_ao_generator import generate_ji, generate_ao
 
@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/events")
-async def get_events(
+def get_events(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -23,11 +23,23 @@ async def get_events(
 
 
 @router.get("/cadet-events")
-async def get_cadet_events(
+def get_cadet_events(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    parent_events = db.query(AllEvent).filter(AllEvent.parent_id == None).all()
+    # Eager-load the full tree in a handful of queries — lazy loading here was
+    # one query per event, per sub-app, and per attending cadet.
+    parent_events = (
+        db.query(AllEvent)
+        .filter(AllEvent.parent_id == None)
+        .options(
+            selectinload(AllEvent.cadet_events).selectinload(CadetEvent.cadet),
+            selectinload(AllEvent.sub_apps)
+            .selectinload(AllEvent.cadet_events)
+            .selectinload(CadetEvent.cadet),
+        )
+        .all()
+    )
 
     def cadet_list(event):
         return [
@@ -63,11 +75,16 @@ async def get_cadet_events(
 
 
 @router.get("/bans")
-async def get_bans(
+def get_bans(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    banned = db.query(Cadet).filter(Cadet.banned == True).all()
+    banned = (
+        db.query(Cadet)
+        .filter(Cadet.banned == True)
+        .options(selectinload(Cadet.cadet_events).selectinload(CadetEvent.event))
+        .all()
+    )
     return [
         {
             "cin":        c.cin,
@@ -85,7 +102,7 @@ async def get_bans(
 
 
 @router.get("/generate-doc/{event_id}/{action}")
-async def generate_doc_endpoint(
+def generate_doc_endpoint(
     event_id: int,
     action: str,
     ai: bool = False,
