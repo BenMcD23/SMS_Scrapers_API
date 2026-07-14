@@ -9,12 +9,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from database.models import Cadet, Staff, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
 
 from core.db import get_db, get_current_cadet, get_current_user
-from core.security import require_staff, get_user_role
+from core.security import require_staff, get_roles_for_emails
 from routers.stores import order_to_dict, issuance_to_dict
 from routers.badges import badge_order_to_dict
 
@@ -100,6 +100,7 @@ def cadet_get_orders(
     orders = (
         db.query(StoresOrder)
         .filter(StoresOrder.cadet_id == cadet.cin)
+        .options(selectinload(StoresOrder.order_items))
         .order_by(StoresOrder.created_at.desc())
         .all()
     )
@@ -179,6 +180,7 @@ def cadet_get_badge_orders(
     orders = (
         db.query(BadgeOrder)
         .filter(BadgeOrder.cadet_id == cadet.cin)
+        .options(selectinload(BadgeOrder.order_items))
         .order_by(BadgeOrder.created_at.desc())
         .all()
     )
@@ -253,6 +255,7 @@ def user_get_orders(
     orders = (
         db.query(StoresOrder)
         .filter(StoresOrder.user_id == user.id)
+        .options(selectinload(StoresOrder.order_items))
         .order_by(StoresOrder.created_at.desc())
         .all()
     )
@@ -330,13 +333,16 @@ def list_users(
     idinfo: dict = Depends(require_staff),
 ):
     users = db.query(User).all()
+    # Resolve every role in one batched group lookup — get_user_role per user
+    # was a sequential admin-API round-trip each.
+    roles = get_roles_for_emails([u.email for u in users])
     return [
         {
             "id":        u.id,
             "email":     u.email,
             "firstName": u.first_name,
             "lastName":  u.last_name,
-            "role":      get_user_role(u.email),
+            "role":      roles.get(u.email),
         }
         for u in users
     ]

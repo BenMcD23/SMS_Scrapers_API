@@ -7,11 +7,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import or_, exists
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from database.models import (
-    Cadet, CadetMedical, CadetDietary, CadetQualification, CadetEvent,
-    CadetTheoryProgress,
+    AssessmentSheet, Cadet, CadetMedical, CadetDietary, CadetQualification,
+    CadetEvent, CadetTheoryProgress,
 )
 
 from core import cache
@@ -50,7 +50,7 @@ def _cadet_summary(c: Cadet) -> dict:
 
 
 @router.get("/cadets/search")
-async def search_cadets(
+def search_cadets(
     q: str = "",
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -71,7 +71,7 @@ async def search_cadets(
 
 
 @router.get("/cadets")
-async def list_cadets(
+def list_cadets(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -148,7 +148,7 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
 # ─── Audit routes (must be before /cadets/{cin}) ──────────────────────────────
 
 @router.get("/cadets/audit/badge-types")
-async def audit_badge_types(idinfo: dict = Depends(require_staff)):
+def audit_badge_types(idinfo: dict = Depends(require_staff)):
     """The qualification catalog — badge types, their kind, and ordered levels
     (highest first) — so the frontend can build the audit UI dynamically."""
     return [
@@ -163,7 +163,7 @@ async def audit_badge_types(idinfo: dict = Depends(require_staff)):
 
 
 @router.get("/cadets/audit/medical")
-async def audit_medical(
+def audit_medical(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -175,6 +175,7 @@ async def audit_medical(
                 exists().where(CadetDietary.cadet_id == Cadet.cin),
             )
         )
+        .options(selectinload(Cadet.medical), selectinload(Cadet.dietary))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
     )
@@ -208,22 +209,29 @@ class AuditCheckBody(BaseModel):
     include_missing_attachments: bool = False
 
 
+def _audit_load_options(body) -> list:
+    """Eager-load only the relationships this audit will actually serialise,
+    so the result is built in a fixed number of queries however many cadets
+    are checked."""
+    opts = [selectinload(Cadet.qualifications)]
+    if body.include_medical:
+        opts.append(selectinload(Cadet.medical))
+    if body.include_dietary:
+        opts.append(selectinload(Cadet.dietary))
+    return opts
+
+
 @router.post("/cadets/audit/check")
-async def audit_check_cadets(
+def audit_check_cadets(
     body: AuditCheckBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    query = db.query(Cadet).options(*_audit_load_options(body))
     if body.cadet_cins:
-        cadets = (
-            db.query(Cadet)
-            .filter(Cadet.cin.in_(body.cadet_cins))
-            .order_by(Cadet.last_name, Cadet.first_name)
-            .all()
-        )
-    else:
-        # Empty list means check all cadets
-        cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
+        query = query.filter(Cadet.cin.in_(body.cadet_cins))
+    # Empty list means check all cadets
+    cadets = query.order_by(Cadet.last_name, Cadet.first_name).all()
     return _build_audit_result(cadets, body.qualifications, body.include_medical,
                                body.include_dietary, body.include_missing_attachments)
 
@@ -237,18 +245,21 @@ class EventAuditBody(BaseModel):
 
 
 @router.post("/cadets/audit/event-check")
-async def audit_event_cadets(
+def audit_event_cadets(
     body: EventAuditBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
     cadet_cins = [
-        ce.cadet_id
-        for ce in db.query(CadetEvent).filter(CadetEvent.event_id == body.event_id).all()
+        cadet_id
+        for (cadet_id,) in db.query(CadetEvent.cadet_id)
+        .filter(CadetEvent.event_id == body.event_id)
+        .all()
     ]
     cadets = (
         db.query(Cadet)
         .filter(Cadet.cin.in_(cadet_cins))
+        .options(*_audit_load_options(body))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
     )
@@ -262,7 +273,7 @@ async def audit_event_cadets(
 # part-finished progress is visible (see core/theory_lessons.py).
 
 @router.get("/cadets/theory/lessons")
-async def theory_lessons(idinfo: dict = Depends(require_staff)):
+def theory_lessons(idinfo: dict = Depends(require_staff)):
     """The theory-lesson catalog — key, label and grouping category — so the
     frontend can build the record/progress UI dynamically."""
     return [
@@ -278,7 +289,7 @@ class TheoryMarkBody(BaseModel):
 
 
 @router.post("/cadets/theory/mark")
-async def theory_mark(
+def theory_mark(
     body: TheoryMarkBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -342,7 +353,7 @@ class TheoryCheckBody(BaseModel):
 
 
 @router.post("/cadets/theory/check")
-async def theory_check(
+def theory_check(
     body: TheoryCheckBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -366,6 +377,7 @@ async def theory_check(
     cadets = (
         db.query(Cadet)
         .filter(Cadet.cin.in_(progress.keys()))
+        .options(selectinload(Cadet.qualifications))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
     )
@@ -398,12 +410,26 @@ async def theory_check(
 # ─── Individual cadet routes ──────────────────────────────────────────────────
 
 @router.get("/cadets/{cin}")
-async def get_cadet(
+def get_cadet(
     cin: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    cadet = (
+        db.query(Cadet)
+        .filter(Cadet.cin == cin)
+        .options(
+            selectinload(Cadet.qualifications),
+            selectinload(Cadet.cadet_events).selectinload(CadetEvent.event),
+            # Sheet metadata only — the stored PDF blobs stay in the DB.
+            selectinload(Cadet.assessment_sheets)
+            .defer(AssessmentSheet.pdf_data)
+            .defer(AssessmentSheet.lesson_plan_pdf),
+            selectinload(Cadet.medical),
+            selectinload(Cadet.dietary),
+        )
+        .first()
+    )
     if not cadet:
         raise HTTPException(status_code=404, detail=f"Cadet with CIN {cin} not found.")
 
@@ -467,7 +493,7 @@ async def get_cadet(
 
 
 @router.patch("/cadets/{cin}")
-async def patch_cadet(
+def patch_cadet(
     cin: int,
     data: CadetPatch,
     db: Session = Depends(get_db),

@@ -106,7 +106,7 @@ async def calculate_mileage(
 
 
 @router.post("/form-generators/f1771e")
-async def generate_f1771e(
+def generate_f1771e(
     data: F1771eRequest,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -175,7 +175,7 @@ async def generate_f1771e(
 
 
 @router.post("/form-generators/htd")
-async def generate_htd(
+def generate_htd(
     data: HTDRequest,
     idinfo: dict = Depends(require_staff),
 ):
