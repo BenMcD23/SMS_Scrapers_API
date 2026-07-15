@@ -81,16 +81,6 @@ class InspectionSubmit(BaseModel):
 AWOL_PENALTY = 5
 
 
-def _recompute_awol(marks: list[dict], absent_with_log: set[int]) -> set[int]:
-    """Cins that are AWOL: marked absent with no matching absence log scraped
-    from SMS for the date. Recomputed over the whole sheet since the absence log
-    is per-date and applies to every mark."""
-    return {
-        m["cin"] for m in marks
-        if m.get("absent") and m["cin"] not in absent_with_log
-    }
-
-
 def _flight_scores(marks: list[dict], awol: set[int],
                    flight_by_cin: dict[int, str | None]) -> dict[str, dict]:
     """Per-flight totals: present cadets' scores summed, minus AWOL_PENALTY for
@@ -121,14 +111,18 @@ async def submit_inspection(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    """Persist a submitted sheet and flag AWOLs — cadets marked absent with no
-    matching absence log for the date.
+    """Persist a submitted sheet and score each flight.
 
     Submissions are merged by date: if a sheet already exists for the parade date
     (e.g. another staff member inspected a different flight), the incoming marks
     are appended to it. When two submitters overlap on the same cadet the incoming
-    (latest) submission wins. AWOL flags and per-flight scores are recomputed over
-    the merged set."""
+    (latest) submission wins.
+
+    Once a flight has been inspected (any cadet recorded), its whole roster is
+    resolved: cadets not inspected and with no scraped absence for the date are
+    marked **AWOL** (−5 to the flight), while those with a scraped absence are
+    marked absent/excused (no penalty). These are materialised onto the sheet so
+    every reader (history, per-date view, PDF) sees the full flight."""
     d = _parse_date(body.date)
     absent_with_log = _absent_cins_on(db, d)
 
@@ -139,25 +133,54 @@ async def submit_inspection(
         .first()
     )
 
-    # Merge existing marks with the incoming ones, keyed by cin — incoming wins.
-    merged: dict[int, dict] = {}
+    # Real (staff-recorded) marks keyed by cin — incoming wins. Previously
+    # materialised roster marks (``auto``) are dropped and regenerated below.
+    real: dict[int, dict] = {}
     if existing:
         for m in (existing.data or {}).get("marks", []):
-            if m.get("cin") is not None:
-                merged[m["cin"]] = dict(m)
+            if m.get("cin") is not None and not m.get("auto"):
+                real[m["cin"]] = dict(m)
     for m in body.marks:
-        merged[m.cin] = m.model_dump()
+        real[m.cin] = m.model_dump()
 
-    marks = list(merged.values())
-    awol = _recompute_awol(marks, absent_with_log)
-    for m in marks:
-        m["awol"] = m["cin"] in awol
-
+    # Flights in scope = those with at least one recorded cadet.
     flight_by_cin = dict(
         db.query(Cadet.cin, Cadet.flight)
-        .filter(Cadet.cin.in_(list(merged.keys())))
+        .filter(Cadet.cin.in_(list(real.keys())))
         .all()
     )
+    in_scope = {f for f in flight_by_cin.values() if f}
+    roster = (
+        db.query(Cadet)
+        .filter(Cadet.flight.in_(in_scope), Cadet.banned.is_(False))
+        .all()
+        if in_scope else []
+    )
+    for c in roster:
+        flight_by_cin.setdefault(c.cin, c.flight)
+
+    # AWOL = absent with no scraped absence log for the date.
+    awol: set[int] = set()
+    for cin, m in real.items():
+        m.pop("auto", None)
+        m["awol"] = bool(m.get("absent")) and cin not in absent_with_log
+        if m["awol"]:
+            awol.add(cin)
+
+    # Materialise roster cadets nobody recorded: excused (has a log) or AWOL.
+    auto_marks: list[dict] = []
+    for c in roster:
+        if c.cin in real:
+            continue
+        is_awol = c.cin not in absent_with_log
+        if is_awol:
+            awol.add(c.cin)
+        auto_marks.append({
+            "cin": c.cin, "score": None, "absent": True,
+            "comments": [], "awol": is_awol, "auto": True,
+        })
+
+    marks = list(real.values()) + auto_marks
     flight_scores = _flight_scores(marks, awol, flight_by_cin)
     data = {"marks": marks, "flight_scores": flight_scores}
 
@@ -183,10 +206,11 @@ async def submit_inspection(
         db.add(sheet)
     db.commit()
 
-    # Report only the AWOLs from this submission, so the toast reflects the cadets
-    # this staff member just flagged rather than the whole sheet.
+    # Report AWOLs in the flights this submission touched, so the toast reflects
+    # this staff member's own flight(s) rather than the whole sheet.
+    incoming_flights = {flight_by_cin.get(m.cin) for m in body.marks}
     incoming_awol = sorted(
-        m.cin for m in body.marks if m.absent and m.cin not in absent_with_log
+        cin for cin in awol if flight_by_cin.get(cin) in incoming_flights
     )
     return {"id": sheet.id, "awol": incoming_awol, "flight_scores": flight_scores}
 
@@ -239,7 +263,8 @@ async def inspection_history(
     """Per-cadet inspection history across every submitted sheet, with score and
     attendance averages plus squadron rankings.
 
-    Attendance average is present sheets over the total number of inspections;
+    Attendance average is the nights a cadet was present over the nights their
+    flight was actually inspected (absent — excused or AWOL — counts against it);
     overall = attendance fraction × score average (the squadron's own metric).
     All three columns are competition-ranked highest-first."""
     sheets = db.query(InspectionSheet).order_by(InspectionSheet.date).all()
@@ -279,7 +304,9 @@ async def inspection_history(
         tl = timelines[c.cin]
         present = [e for e in tl if not e["absent"]]
         scored = [e["score"] for e in present if e["score"] is not None]
-        attendance = (len(present) / total) if total else 0.0
+        # Denominator is the nights this cadet's flight was inspected — i.e. the
+        # sheets they appear on — not every parade night.
+        attendance = (len(present) / len(tl)) if tl else 0.0
         score_avg = (sum(scored) / len(scored)) if scored else 0.0
         overall = attendance * score_avg
         rows.append({
@@ -311,7 +338,8 @@ async def inspection_history(
 
 def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
     """Group a sheet's marks by flight, resolving cadet names, ready for display
-    or PDF. Each flight carries its own present count, score total and average."""
+    or PDF. Each flight carries its present count, AWOL count and penalty, and a
+    score total (present cadets' scores minus the AWOL penalty)."""
     marks = (sheet.data or {}).get("marks", [])
     cins = [m.get("cin") for m in marks if m.get("cin") is not None]
     cadet_by_cin = {
@@ -325,14 +353,18 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
         flight = (cadet.flight if cadet else None) or "Unassigned"
         faults, positives = _split_comments(m.get("comments") or [])
         fl = flights.setdefault(
-            flight, {"flight": flight, "cadets": [], "present": 0, "total": 0.0}
+            flight,
+            {"flight": flight, "cadets": [], "present": 0, "awol": 0, "score_total": 0.0},
         )
         absent = bool(m.get("absent"))
+        is_awol = bool(m.get("awol"))
         score = m.get("score")
-        if not absent:
+        if is_awol:
+            fl["awol"] += 1
+        elif not absent:
             fl["present"] += 1
             if score is not None:
-                fl["total"] += score
+                fl["score_total"] += score
         fl["cadets"].append({
             "cin":        cin,
             "first_name": cadet.first_name if cadet else "Unknown",
@@ -341,7 +373,7 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
             "flight":     flight,
             "score":      score,
             "absent":     absent,
-            "awol":       bool(m.get("awol")),
+            "awol":       is_awol,
             "faults":     faults,
             "positives":  positives,
         })
@@ -349,8 +381,10 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
     out = []
     for fl in flights.values():
         fl["cadets"].sort(key=lambda c: (c["last_name"], c["first_name"]))
-        fl["total"] = round(fl["total"], 2)
-        fl["average"] = round(fl["total"] / fl["present"], 2) if fl["present"] else 0.0
+        fl["penalty"] = fl["awol"] * AWOL_PENALTY
+        fl["average"] = round(fl["score_total"] / fl["present"], 2) if fl["present"] else 0.0
+        fl["total"] = round(fl["score_total"] - fl["penalty"], 2)
+        del fl["score_total"]
         out.append(fl)
     out.sort(key=lambda f: _flight_order(f["flight"]))
     return out
