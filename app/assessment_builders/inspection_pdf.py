@@ -150,7 +150,7 @@ def _draw_page_frame(c, flight, date_str, summary, page_idx, page_count):
     c.drawString(MARGIN, PAGE_H - 46, label)
 
     # Summary box top-right
-    box_w, box_h = 210, 40
+    box_w, box_h = 340, 40
     bx = PAGE_W - MARGIN - box_w
     by = PAGE_H - 52
     c.setStrokeColor(BORDER)
@@ -158,8 +158,11 @@ def _draw_page_frame(c, flight, date_str, summary, page_idx, page_count):
     c.roundRect(bx, by, box_w, box_h, 5, stroke=1, fill=0)
     c.setFont("Helvetica", 8)
     c.setFillColor(MUTED)
+    penalty = summary.get("penalty", 0)
     cells = [
         ("Present", str(summary["present"])),
+        ("AWOL", str(summary.get("awol", 0))),
+        ("Penalty", f"−{penalty:g}" if penalty else "0"),
         ("Total", f"{summary['total']:g}"),
         ("Average", f"{summary['average']:g}"),
     ]
@@ -177,30 +180,108 @@ def _draw_page_frame(c, flight, date_str, summary, page_idx, page_count):
     c.line(MARGIN, PAGE_H - 54, PAGE_W - MARGIN, PAGE_H - 54)
 
 
+LIST_LINE_H = 11
+LIST_HEADER_H = 24
+
+
+def _absence_lists_height(awol: list, absent: list) -> float:
+    """Height the AWOL / absent roll-call block needs."""
+    rows = max(len(awol), len(absent), 1)
+    return LIST_HEADER_H + rows * LIST_LINE_H + 8
+
+
+def _person_name(p: dict) -> str:
+    rank = f"{p['rank']} " if p.get("rank") else ""
+    return f"{rank}{p['last_name']}, {p['first_name']}"[:60]
+
+
+def _draw_absence_lists(c, awol: list, absent: list, x: float, y_top: float, width: float):
+    """Two side-by-side lists — AWOL (with penalty) on the left, excused absent on
+    the right — of just names, shown beneath the present cadets."""
+    col_gap = 24
+    col_w = (width - col_gap) / 2
+    columns = [
+        (f"AWOL ({len(awol)})  ·  −{len(awol) * 5:g}", FAULT_COLOR, awol),
+        (f"Absent — excused ({len(absent)})", MUTED, absent),
+    ]
+    for ci, (title, color, people) in enumerate(columns):
+        cx = x + ci * (col_w + col_gap)
+        c.setFillColor(color)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(cx, y_top, title)
+        c.setStrokeColor(BORDER)
+        c.setLineWidth(0.5)
+        c.line(cx, y_top - 5, cx + col_w, y_top - 5)
+        ty = y_top - LIST_HEADER_H + 6
+        if not people:
+            c.setFillColor(MUTED)
+            c.setFont("Helvetica-Oblique", 8.5)
+            c.drawString(cx, ty, "None")
+            continue
+        c.setFillColor(black)
+        c.setFont("Helvetica", 8.5)
+        for p in people:
+            c.drawString(cx, ty, _person_name(p))
+            ty -= LIST_LINE_H
+
+
+def _draw_list_page_header(c, flight: str, date_str: str):
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(MARGIN, PAGE_H - 30, "Flight Inspection Sheet")
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 10)
+    c.drawString(MARGIN, PAGE_H - 46, f"{flight} Flight  ·  {date_str}  ·  absentees")
+    c.setStrokeColor(BORDER)
+    c.setLineWidth(0.5)
+    c.line(MARGIN, PAGE_H - 54, PAGE_W - MARGIN, PAGE_H - 54)
+
+
 def build_inspection_pdf(date_str: str, flights: list[dict]) -> bytes:
     """`flights` is the grouped sheet detail: a list of
-    {flight, present, total, average, cadets:[...]} in display order."""
+    {flight, present, awol, penalty, total, average, cadets:[...]} in display
+    order. Present cadets are drawn as full cells; AWOL and excused-absent cadets
+    are listed compactly beneath them."""
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
 
     for fl in sorted(flights, key=lambda f: _flight_order(f["flight"])):
-        cadets = fl["cadets"]
-        page_count = max(1, (len(cadets) + PER_PAGE - 1) // PER_PAGE)
-        summary = {"present": fl["present"], "total": fl["total"], "average": fl["average"]}
-        for page_idx in range(page_count):
-            _draw_page_frame(c, fl["flight"], date_str, summary, page_idx, page_count)
-            page_cadets = cadets[page_idx * PER_PAGE : (page_idx + 1) * PER_PAGE]
+        present = [c2 for c2 in fl["cadets"] if not c2["absent"]]
+        awol = [c2 for c2 in fl["cadets"] if c2["awol"]]
+        absent = [c2 for c2 in fl["cadets"] if c2["absent"] and not c2["awol"]]
+        summary = {
+            "present": fl["present"],
+            "awol":    fl.get("awol", 0),
+            "penalty": fl.get("penalty", 0),
+            "total":   fl["total"],
+            "average": fl["average"],
+        }
+        pages = [present[i : i + PER_PAGE] for i in range(0, len(present), PER_PAGE)] or [[]]
+        for page_idx, page_cadets in enumerate(pages):
+            _draw_page_frame(c, fl["flight"], date_str, summary, page_idx, len(pages))
             for i, cadet in enumerate(page_cadets):
                 col = i % COLS
                 row = i // COLS
                 ox = MARGIN + col * CELL_W
                 oy_top = PAGE_H - TITLE_H - row * CELL_H
                 _draw_cadet(c, cadet, ox, oy_top)
+
+            # On the last present page, append the AWOL / absent roll-call — below
+            # the grid if it fits, otherwise on a fresh page.
+            if page_idx == len(pages) - 1 and (awol or absent):
+                rows_used = -(-len(page_cadets) // COLS)  # ceil
+                y_top = PAGE_H - TITLE_H - rows_used * CELL_H - 14
+                if y_top - _absence_lists_height(awol, absent) < MARGIN:
+                    c.showPage()
+                    _draw_list_page_header(c, fl["flight"], date_str)
+                    y_top = PAGE_H - 72
+                _draw_absence_lists(c, awol, absent, MARGIN, y_top, PAGE_W - 2 * MARGIN)
             c.showPage()
 
     if not flights:
         _draw_page_frame(c, "—", date_str,
-                         {"present": 0, "total": 0, "average": 0}, 0, 1)
+                         {"present": 0, "awol": 0, "penalty": 0, "total": 0, "average": 0},
+                         0, 1)
         c.showPage()
 
     c.save()
