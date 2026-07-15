@@ -25,7 +25,7 @@ from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
     assessments, backups, badges, cadets, events, form_generators,
-    newsletters, portal, programme, scrapers, settings, stats, stores, texts,
+    inspections, newsletters, portal, programme, scrapers, settings, stats, stores, texts,
 )
 
 
@@ -192,6 +192,7 @@ def health_check(idinfo: dict = Depends(require_user)):
 # portal must come before cadets so /cadets/me isn't swallowed by /cadets/{cin}
 app.include_router(portal.router)
 app.include_router(cadets.router)
+app.include_router(inspections.router)
 app.include_router(scrapers.router)
 app.include_router(settings.router)
 app.include_router(form_generators.router)
