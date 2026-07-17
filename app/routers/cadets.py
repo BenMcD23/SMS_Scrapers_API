@@ -1,7 +1,7 @@
 """Cadet records — search, list, detail, audit, theory progress, and staff edits."""
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -86,6 +86,13 @@ def list_cadets(
 
 # ─── Audit helpers ────────────────────────────────────────────────────────────
 
+def _is_expired(q, today) -> bool:
+    """True if the qualification has an expiry date that has already passed.
+    Quals with no expiry (``date_expires is None``) never expire. Compared on
+    the date (not datetime) so a qual is only expired the day *after* it lapses."""
+    return q.date_expires is not None and q.date_expires.date() < today
+
+
 def _award_date(badge, level, qual_objs):
     """ISO date the cadet gained ``badge`` at its held ``level`` — the
     date_achieved of the qual record matching that level's patterns, or None."""
@@ -106,15 +113,19 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
     # `qualifications` is a list of badge-type keys from the catalog. Unknown
     # keys are ignored so the frontend can't crash the audit.
     badges = [BADGE_TYPE_BY_KEY[k] for k in qualifications if k in BADGE_TYPE_BY_KEY]
+    today = date.today()
     results = []
     for c in cadets:
         entry = {**_cadet_summary(c)}
+        # Expired qualifications are ignored everywhere in the audit — a lapsed
+        # qual must never report the cadet as still holding it.
+        active_quals = [q for q in c.qualifications if not _is_expired(q, today)]
         if include_missing_attachments:
             entry["missing_attachments"] = [
-                q.qual_type for q in c.qualifications if q.has_attachment is False
+                q.qual_type for q in active_quals if q.has_attachment is False
             ]
         if badges:
-            qual_names = [q.qual_type for q in c.qualifications]
+            qual_names = [q.qual_type for q in active_quals]
             entry["qualifications_check"] = [
                 {
                     "qual_type": b.key,
@@ -122,7 +133,7 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
                     "kind": b.kind,
                     "level": (lvl := held_level(b, qual_names)),
                     "has": lvl is not None,
-                    "date_achieved": _award_date(b, lvl, c.qualifications),
+                    "date_achieved": _award_date(b, lvl, active_quals),
                 }
                 for b in badges
             ]
