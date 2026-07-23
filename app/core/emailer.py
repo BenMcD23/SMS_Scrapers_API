@@ -1,6 +1,7 @@
 """Outbound email via the Gmail API, plus the HTML templates we send."""
 
 import base64
+import html
 import os
 import email.mime.multipart
 import email.mime.text
@@ -122,6 +123,70 @@ def ban_alert_email_html(rows: list[tuple[str, str]]) -> str:
         </tr>
         {trs}
       </table>
+      {FOOTER}
+    </div>
+    """
+
+
+def suggestion_email_html(
+    submitter_name: str,
+    submitter_email: str,
+    message: str,
+    page_title: str | None,
+    page_url: str | None,
+    about_current_page: bool,
+    tagged: list[tuple[str, str | None]],
+    submitted_at: str,
+) -> str:
+    """A site suggestion/bug report. `tagged` is (label, css-selector) pairs for
+    elements the submitter clicked to point at. All free text is user-entered,
+    so everything going into the HTML is escaped here."""
+    safe_message = html.escape(message).replace("\n", "<br>")
+
+    if page_title or page_url:
+        label = html.escape(page_title or page_url)
+        page_cell = (
+            f'<a href="{html.escape(page_url)}" style="color:#1565c0">{label}</a>'
+            if page_url
+            else label
+        )
+    else:
+        page_cell = "—"
+
+    scope = "On the page they were viewing" if about_current_page else "About a different page"
+
+    tagged_row = ""
+    if tagged:
+        items = "".join(
+            f'<li style="margin:4px 0"><strong>{html.escape(lbl)}</strong>'
+            + (
+                f'<br><span style="color:#888;font-size:12px;font-family:monospace">{html.escape(sel)}</span>'
+                if sel
+                else ""
+            )
+            + "</li>"
+            for lbl, sel in tagged
+        )
+        tagged_row = (
+            '<tr><td style="padding:6px 0;color:#555;vertical-align:top">Tagged</td>'
+            f'<td style="padding:6px 0"><ul style="margin:0;padding-left:18px">{items}</ul></td></tr>'
+        )
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">New Site Suggestion</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:120px">From</td><td style="padding:6px 0;font-weight:bold">{html.escape(submitter_name)} &lt;{html.escape(submitter_email)}&gt;</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Page</td><td style="padding:6px 0">{page_cell}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Scope</td><td style="padding:6px 0">{scope}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Submitted</td><td style="padding:6px 0">{html.escape(submitted_at)}</td></tr>
+        {tagged_row}
+      </table>
+      <div style="margin:20px 0 0;padding:16px;background:#f6f8fa;border-radius:6px;border:1px solid #eee">
+        <div style="color:#555;font-size:13px;margin-bottom:6px">Suggestion</div>
+        <div style="font-size:15px;line-height:1.5">{safe_message}</div>
+      </div>
       {FOOTER}
     </div>
     """
