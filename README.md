@@ -53,6 +53,31 @@ cd ~/sms-api/prod && docker compose -p sms-prod down
 cd ~/sms-api/dev && docker compose -p sms-dev down
 ```
 
+## Updating environment variables
+
+The `api` service reads its config from `.env` via `env_file`, and that file is
+loaded only when the container is **created** — a plain `docker compose restart
+api` keeps the old values. After editing `.env` on the server, recreate the api
+container so it picks up the new values:
+
+```bash
+# Prod
+cd ~/sms-api/prod
+nano .env   # e.g. set OC_EMAIL / COMMITTEE_EMAIL
+docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --force-recreate --wait api
+
+# Dev
+cd ~/sms-api/dev
+nano .env
+docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate --wait api
+```
+
+`--force-recreate` is required — a change to the *contents* of `.env` doesn't
+reliably trigger a recreate on its own. `.env` is not in git, so a code deploy
+alone never adds new vars; edit it on the server first. (`NEXT_PUBLIC_*` vars like
+`NEXT_PUBLIC_OC_EMAIL` live with the frontend host and are baked in at build time
+— set them there and redeploy the UI.)
+
 ## Authorising Tailscale (first run)
 
 After starting, the Tailscale containers need to be logged in once:
