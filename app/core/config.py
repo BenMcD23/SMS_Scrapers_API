@@ -19,6 +19,13 @@ NCO_GROUP = "ncoteam@317atc.co.uk"
 # Sole owner/maintainer — has access to developer-only views (e.g. API logs)
 OWNER_EMAIL = "ci.mcdonald@317atc.co.uk"
 
+# Officer Commanding — gates the OC dashboard and the committee-request approval
+# actions (send-to-committee / approve / reject / mark-paid). Identified by email
+# rather than a Google group since there is only ever one OC.
+OC_EMAIL = os.getenv("OC_EMAIL", "")
+# Where committee purchase requests and payment requests are emailed.
+COMMITTEE_EMAIL = os.getenv("COMMITTEE_EMAIL", "")
+
 # Service account used for the admin directory lookups and sending email
 SA_EMAIL = os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\n", "\n").strip('"')

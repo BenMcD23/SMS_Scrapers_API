@@ -21,7 +21,7 @@ from googleapiclient.discovery import build as google_build
 
 from core.config import (
     GOOGLE_CLIENT_ID, GOOGLE_DOMAIN, STAFF_GROUP, NCO_GROUP,
-    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL,
+    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL, OC_EMAIL,
 )
 
 _role_cache: dict = {}
@@ -42,7 +42,11 @@ def verify_token(authorization: str) -> dict:
     # ponytail: dev-only fake token for local UI testing, pairs with the
     # frontend's AUTH_DEV_BYPASS. Inert unless DEV_FAKE_AUTH=1 (never in prod).
     if os.environ.get("DEV_FAKE_AUTH") == "1" and authorization == "Bearer dev-fake-token":
-        return {"email": OWNER_EMAIL, "email_verified": True, "hd": GOOGLE_DOMAIN}
+        return {
+            "email": OWNER_EMAIL, "email_verified": True, "hd": GOOGLE_DOMAIN,
+            # A stable sub so get_or_create_user works under the dev bypass.
+            "sub": "dev-fake-sub", "given_name": "Dev", "family_name": "Owner",
+        }
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -211,4 +215,21 @@ def require_owner(authorization: str = Header(None)) -> dict:
     idinfo = verify_token(authorization)
     if idinfo.get("email", "").lower() != OWNER_EMAIL.lower():
         raise HTTPException(status_code=403, detail="Owner access required")
+    return idinfo
+
+
+def is_oc(email: str) -> bool:
+    """True only if this email matches the configured OC_EMAIL (case-insensitive).
+    False when OC_EMAIL is unset — no owner backdoor, so only the OC can approve.
+    To drive the committee flow with DEV_FAKE_AUTH locally, set OC_EMAIL to the
+    owner email."""
+    e = (email or "").lower()
+    return bool(e) and bool(OC_EMAIL) and e == OC_EMAIL.lower()
+
+
+def require_oc(authorization: str = Header(None)) -> dict:
+    """OC-only access — committee-request approvals and the OC dashboard."""
+    idinfo = verify_token(authorization)
+    if not is_oc(idinfo.get("email", "")):
+        raise HTTPException(status_code=403, detail="OC access required")
     return idinfo

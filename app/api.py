@@ -3,7 +3,6 @@
 Endpoint logic lives in routers/, shared helpers in core/.
 """
 
-import calendar
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -19,13 +18,14 @@ from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOr
 
 from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import send_email, quali_expiry_email_html
+from core.qualifications import quali_expiry_cutoff
 from core.scheduler import scheduler
 from core.security import require_user
 from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
-    assessments, backups, badges, cadets, events, form_generators,
-    inspections, newsletters, portal, programme, scrapers, settings, stats, stores, texts,
+    assessments, backups, badges, cadets, committee, events, form_generators,
+    inspections, newsletters, oc, portal, programme, scrapers, settings, stats, stores, texts,
 )
 
 
@@ -68,13 +68,6 @@ def _cleanup_old_completed_assessments():
         db.close()
 
 
-def _quali_expiry_cutoff(today: datetime) -> datetime:
-    """Same day 3 calendar months ahead, clamped to the target month's last day."""
-    m = today.month + 3
-    y, m = today.year + (m - 1) // 12, (m - 1) % 12 + 1
-    return datetime(y, m, min(today.day, calendar.monthrange(y, m)[1]))
-
-
 def _quali_expiry_alert():
     """Weekly (Friday) email of cadet qualifications now within 3 months of expiry.
 
@@ -91,7 +84,7 @@ def _quali_expiry_alert():
             .filter(
                 CadetQualification.expiry_alert_sent_at.is_(None),
                 CadetQualification.date_expires >= today,
-                CadetQualification.date_expires <= _quali_expiry_cutoff(today),
+                CadetQualification.date_expires <= quali_expiry_cutoff(today),
             )
             .order_by(CadetQualification.date_expires)
             .all()
@@ -205,3 +198,5 @@ app.include_router(stores.router)
 app.include_router(badges.router)
 app.include_router(texts.router)
 app.include_router(backups.router)
+app.include_router(committee.router)
+app.include_router(oc.router)

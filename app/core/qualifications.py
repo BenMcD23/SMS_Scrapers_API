@@ -31,7 +31,20 @@ dropdown before the uploader can select them (marked ``# TODO``).
 
 from __future__ import annotations
 
+import calendar
+from datetime import datetime
 from typing import NamedTuple, Optional
+
+
+def quali_expiry_cutoff(today: datetime) -> datetime:
+    """Same day 3 calendar months ahead, clamped to the target month's last day.
+
+    The upper bound of the "expiring soon" window shared by the weekly alert
+    email and the OC dashboard.
+    """
+    m = today.month + 3
+    y, m = today.year + (m - 1) // 12, (m - 1) % 12 + 1
+    return datetime(y, m, min(today.day, calendar.monthrange(y, m)[1]))
 
 
 # ─── Level labels ─────────────────────────────────────────────────────────────

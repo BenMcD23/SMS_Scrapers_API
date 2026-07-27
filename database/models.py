@@ -287,6 +287,7 @@ class User(Base):
                                        uselist=False, cascade="all, delete-orphan")
     stores_orders      = relationship("StoresOrder",        back_populates="user")
     item_issuances     = relationship("StoresItemIssuance", back_populates="user", cascade="all, delete-orphan")
+    committee_requests = relationship("CommitteeRequest",   back_populates="requester")
 
 
 class BaderCredentials(Base):
@@ -335,7 +336,89 @@ class UserProfile(Base):
     car_reg       = Column(Text, nullable=True)
     assessor_name = Column(Text, nullable=True)
 
+    # Bank details for committee-request reimbursements. Fernet-encrypted at rest
+    # (see utils.crypto), like Bader_Credentials — never returned outside the
+    # owner's own /settings/user-profile response or the payment email body.
+    bank_account_name   = Column(Text, nullable=True)
+    bank_sort_code      = Column(Text, nullable=True)
+    bank_account_number = Column(Text, nullable=True)
+
     user = relationship("User", back_populates="profile")
+
+
+# ─── Committee purchase requests ──────────────────────────────────────────────
+
+# submitted ─(OC approves)→ sent_to_committee ─(committee approves)→ approved
+#     │                            │                                    │
+#     └─(OC rejects)→ rejected ←───┘(committee rejects)                 │
+#                                                                       ▼
+#                                              sent_for_payment ─(OC)→ paid
+# The requester may withdraw from any non-terminal state → withdrawn.
+# "Receipts uploaded" is not a status: it's derived from receipt count while the
+# request sits in `approved`.
+COMMITTEE_REQUEST_STATUSES = (
+    "submitted", "sent_to_committee", "approved", "rejected",
+    "sent_for_payment", "paid", "withdrawn",
+)
+
+
+class CommitteeRequest(Base):
+    __tablename__ = "Committee_Requests"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    year          = Column(Integer, nullable=False)          # e.g. 2026
+    seq           = Column(Integer, nullable=False)          # per-year running number
+    reference     = Column(Text, nullable=False, unique=True)  # "CR-2026-003"
+
+    title         = Column(Text, nullable=False)
+    justification = Column(Text, nullable=False, default="")
+    items         = Column(JSON, nullable=False, default=list)  # [{"description", "cost"}]
+    total         = Column(Float, nullable=False, default=0.0)
+
+    status           = Column(Text, nullable=False, default="submitted")
+    rejection_reason = Column(Text, nullable=True)
+
+    # Generated once at submission and reused for every email + download.
+    pdf_data      = Column(LargeBinary, nullable=True)
+
+    requester_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+
+    # Audit trail — who did what, when (emails, since the actor may not be a User row).
+    created_at           = Column(DateTime, nullable=False)
+    sent_to_committee_at = Column(DateTime, nullable=True)
+    sent_to_committee_by = Column(Text, nullable=True)
+    decided_at           = Column(DateTime, nullable=True)
+    decided_by           = Column(Text, nullable=True)
+    sent_for_payment_at  = Column(DateTime, nullable=True)
+    paid_at              = Column(DateTime, nullable=True)
+    paid_marked_by       = Column(Text, nullable=True)
+    withdrawn_at         = Column(DateTime, nullable=True)
+    withdrawn_by         = Column(Text, nullable=True)
+
+    requester = relationship("User", back_populates="committee_requests")
+    receipts  = relationship(
+        "CommitteeRequestReceipt", back_populates="request",
+        cascade="all, delete-orphan", order_by="CommitteeRequestReceipt.uploaded_at",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("year", "seq", name="uq_committee_request_year_seq"),
+    )
+
+
+class CommitteeRequestReceipt(Base):
+    __tablename__ = "Committee_Request_Receipts"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    request_id  = Column(Integer, ForeignKey("Committee_Requests.id", ondelete="CASCADE"),
+                         nullable=False)
+    filename    = Column(Text, nullable=False)
+    mime_type   = Column(Text, nullable=False)
+    data        = Column(LargeBinary, nullable=False)
+    uploaded_at = Column(DateTime, nullable=False)
+    uploaded_by = Column(Text, nullable=True)
+
+    request = relationship("CommitteeRequest", back_populates="receipts")
 
 
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────
