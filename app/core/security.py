@@ -164,15 +164,12 @@ def require_owner(authorization: str = Header(None)) -> dict:
 
 
 def is_oc(email: str) -> bool:
-    """True if this email is the OC (or the owner, so DEV_FAKE_AUTH can drive the
-    full committee flow locally). False when OC_EMAIL is unset and it isn't owner."""
+    """True only if this email matches the configured OC_EMAIL (case-insensitive).
+    False when OC_EMAIL is unset — no owner backdoor, so only the OC can approve.
+    To drive the committee flow with DEV_FAKE_AUTH locally, set OC_EMAIL to the
+    owner email."""
     e = (email or "").lower()
-    if not e:
-        return False
-    allowed = {OWNER_EMAIL.lower()}
-    if OC_EMAIL:
-        allowed.add(OC_EMAIL.lower())
-    return e in allowed
+    return bool(e) and bool(OC_EMAIL) and e == OC_EMAIL.lower()
 
 
 def require_oc(authorization: str = Header(None)) -> dict:
