@@ -12,7 +12,7 @@ from database.models import BaderCredentials, User, UserProfile, UserSignature
 
 from core.db import get_db, get_or_create_user
 from core.security import require_staff, require_staff_or_nco
-from utils.crypto import encrypt_password
+from utils.crypto import encrypt_password, decrypt_password
 
 router = APIRouter()
 
@@ -29,6 +29,10 @@ class UserProfilePatch(BaseModel):
     # Editable fields
     home_address: Optional[str] = None
     car_reg:      Optional[str] = None
+    # Bank details for committee-request reimbursements (encrypted at rest)
+    bank_account_name:   Optional[str] = None
+    bank_sort_code:      Optional[str] = None
+    bank_account_number: Optional[str] = None
     # User table fields
     first_name: Optional[str] = None
     last_name:  Optional[str] = None
@@ -136,6 +140,10 @@ def get_user_profile(
         "wing_ccf":     p.wing_ccf    if p else "",
         "home_address": p.home_address if p else "",
         "car_reg":      p.car_reg      if p else "",
+        # Decrypted for the owner's own view only — never surfaced elsewhere.
+        "bank_account_name":   (decrypt_password(p.bank_account_name)   if p and p.bank_account_name   else "") or "",
+        "bank_sort_code":      (decrypt_password(p.bank_sort_code)      if p and p.bank_sort_code      else "") or "",
+        "bank_account_number": (decrypt_password(p.bank_account_number) if p and p.bank_account_number else "") or "",
     }
 
 
@@ -162,6 +170,13 @@ def update_user_profile(
         val = getattr(data, field)
         if val is not None:
             setattr(p, field, val.strip())
+
+    # Bank details are encrypted at rest; an empty string clears the field.
+    for field in ("bank_account_name", "bank_sort_code", "bank_account_number"):
+        val = getattr(data, field)
+        if val is not None:
+            cleaned = val.strip()
+            setattr(p, field, encrypt_password(cleaned) if cleaned else None)
 
     db.commit()
     return {"status": "success"}
