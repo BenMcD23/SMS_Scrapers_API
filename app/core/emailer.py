@@ -19,13 +19,26 @@ FOOTER = (
 
 
 def send_email(to: str, subject: str, html_body: str, attachment: bytes | None = None,
-               attachment_filename: str = "attachment.pdf") -> None:
+               attachment_filename: str = "attachment.pdf",
+               attachments: list[tuple[str, bytes, str]] | None = None) -> None:
+    """Send an HTML email, optionally with attachments.
+
+    ``attachment``/``attachment_filename`` are the legacy single-PDF params (kept
+    for existing callers). ``attachments`` is a list of ``(filename, data,
+    mime_type)`` tuples for multiple/mixed files; both may be combined.
+    """
     if os.getenv("EMAIL_DISABLED", "").lower() in ("1", "true", "yes"):
         print(f"[send_email] skipped (EMAIL_DISABLED): would send to {to}: {subject}")
         return
     if not SA_EMAIL or not SA_PRIVATE_KEY or not NOREPLY_EMAIL:
         print("[send_email] skipped: service account or noreply email not configured")
         return
+
+    # Normalise the legacy single attachment into the list form.
+    all_attachments: list[tuple[str, bytes, str]] = list(attachments or [])
+    if attachment:
+        all_attachments.insert(0, (attachment_filename, attachment, "application/pdf"))
+
     try:
         creds = _service_account_creds(
             ["https://www.googleapis.com/auth/gmail.send"]
@@ -37,11 +50,12 @@ def send_email(to: str, subject: str, html_body: str, attachment: bytes | None =
         msg["To"] = to
         msg["Subject"] = subject
         msg.attach(email.mime.text.MIMEText(html_body, "html"))
-        if attachment:
-            att = email.mime.base.MIMEBase("application", "pdf")
-            att.set_payload(attachment)
+        for filename, data, mime_type in all_attachments:
+            maintype, _, subtype = (mime_type or "application/octet-stream").partition("/")
+            att = email.mime.base.MIMEBase(maintype, subtype or "octet-stream")
+            att.set_payload(data)
             email.encoders.encode_base64(att)
-            att.add_header("Content-Disposition", "attachment", filename=attachment_filename)
+            att.add_header("Content-Disposition", "attachment", filename=filename)
             msg.attach(att)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -138,6 +152,126 @@ def ready_to_collect_email_html(cadet_name: str, item_name: str, item_kind: str,
       <p style="font-size:18px;font-weight:bold;margin:16px 0 4px">{item_name}</p>
       {size_line}
       <p>If you have any questions, speak to a member of staff.</p>
+      {FOOTER}
+    </div>
+    """
+
+
+def _gbp(amount: float) -> str:
+    return f"£{amount:,.2f}"
+
+
+def committee_request_submitted_html(reference: str, title: str, total: float,
+                                     requester_name: str) -> str:
+    """To the OC when a staff member submits a new committee request."""
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">New Committee Request</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>A new committee purchase request has been submitted for your review.</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Reference</td><td style="padding:6px 0;font-weight:bold">{reference}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Title</td><td style="padding:6px 0">{title}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Requested by</td><td style="padding:6px 0">{requester_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Total</td><td style="padding:6px 0;font-weight:bold">{_gbp(total)}</td></tr>
+      </table>
+      <p style="font-size:14px;color:#555">The full request is attached as a PDF. Log in to 317 SMS to send it to the committee.</p>
+      {FOOTER}
+    </div>
+    """
+
+
+def committee_request_to_committee_html(reference: str, title: str, total: float,
+                                        requester_name: str) -> str:
+    """To the committee when the OC forwards a request for approval."""
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Committee Purchase Request</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>The OC has forwarded the following purchase request for the committee's approval.</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Reference</td><td style="padding:6px 0;font-weight:bold">{reference}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Title</td><td style="padding:6px 0">{title}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Requested by</td><td style="padding:6px 0">{requester_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Total</td><td style="padding:6px 0;font-weight:bold">{_gbp(total)}</td></tr>
+      </table>
+      <p style="font-size:14px;color:#555">Full details are attached as a PDF.</p>
+      {FOOTER}
+    </div>
+    """
+
+
+def committee_request_decision_html(reference: str, title: str, approved: bool,
+                                    reason: str | None = None) -> str:
+    """To the requester when the OC approves or rejects a request."""
+    colour = "#2e7d32" if approved else "#c62828"
+    heading = "Committee Request Approved" if approved else "Committee Request Rejected"
+    if approved:
+        body = ("<p>Your committee request has been approved. You can go ahead and "
+                "purchase the goods, then upload your receipts in 317 SMS and send "
+                "them off for payment.</p>")
+    else:
+        reason_html = (f'<p style="margin:12px 0 0"><strong>Reason:</strong> {reason}</p>'
+                       if reason else "")
+        body = ("<p>Your committee request has been rejected. Speak to the OC if you "
+                f"have any questions.</p>{reason_html}")
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px;color:{colour}">{heading}</h2>
+      <hr style="border:none;border-top:2px solid {colour};margin:0 0 20px">
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Reference</td><td style="padding:6px 0;font-weight:bold">{reference}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Title</td><td style="padding:6px 0">{title}</td></tr>
+      </table>
+      {body}
+      {FOOTER}
+    </div>
+    """
+
+
+def committee_request_withdrawn_html(reference: str, title: str,
+                                     requester_name: str) -> str:
+    """To the OC when the requester withdraws a request."""
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Committee Request Withdrawn</h2>
+      <hr style="border:none;border-top:2px solid #6b7280;margin:0 0 20px">
+      <p>{requester_name} has withdrawn a committee request.</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Reference</td><td style="padding:6px 0;font-weight:bold">{reference}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Title</td><td style="padding:6px 0">{title}</td></tr>
+      </table>
+      <p style="font-size:14px;color:#555">No further action is needed.</p>
+      {FOOTER}
+    </div>
+    """
+
+
+def committee_request_payment_html(reference: str, title: str, total: float,
+                                   requester_name: str, account_name: str,
+                                   sort_code: str, account_number: str,
+                                   receipt_count: int) -> str:
+    """To the committee when the requester sends receipts off for payment."""
+    receipts_line = f"{receipt_count} receipt{'s' if receipt_count != 1 else ''}"
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Payment Request</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>{requester_name} has uploaded receipts for an approved committee request
+         and is requesting reimbursement.</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:150px">Reference</td><td style="padding:6px 0;font-weight:bold">{reference}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Title</td><td style="padding:6px 0">{title}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Amount</td><td style="padding:6px 0;font-weight:bold">{_gbp(total)}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Receipts attached</td><td style="padding:6px 0">{receipts_line}</td></tr>
+      </table>
+      <h3 style="margin:20px 0 4px;font-size:15px">Payment Details</h3>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:150px">Account name</td><td style="padding:6px 0;font-weight:bold">{account_name}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Sort code</td><td style="padding:6px 0;font-weight:bold">{sort_code}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Account number</td><td style="padding:6px 0;font-weight:bold">{account_number}</td></tr>
+      </table>
+      <p style="font-size:14px;color:#555">The receipts and the original request are attached.</p>
       {FOOTER}
     </div>
     """
