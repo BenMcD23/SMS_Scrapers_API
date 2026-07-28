@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-authenticate Tailscale if the node has dropped off the tailnet
+After=tailscaled.service
+Wants=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tailscale-watchdog.sh
+# The script exits non-zero when it genuinely cannot recover (missing key,
+# revoked OAuth client, node awaiting manual approval). Surfacing that as a
+# failed unit makes `systemctl list-units --failed` a useful health check.

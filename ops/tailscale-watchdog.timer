@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Tailscale re-auth watchdog every 2 minutes
+
+[Timer]
+# Run shortly after boot too — if the box reboots while logged out, tailscaled
+# comes up in NeedsLogin and would otherwise sit there forever.
+OnBootSec=30s
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
