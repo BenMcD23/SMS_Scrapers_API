@@ -11,7 +11,12 @@ from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from database.models import Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary, AttachmentCheckQual, BanNotification, CadetAbsence
+from database.models import (
+    Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary,
+    AttachmentCheckQual, BanNotification, CadetAbsence, CadetTheoryProgress,
+    AssessmentSheet, StoresOrder, StoresOrderItem, StoresItemIssuance,
+    BadgeOrder, BadgeOrderItem,
+)
 from google_admin_api.get_all_users import get_workspace_users
 from core.emailer import send_email, ban_alert_email_html
 from core.config import BAN_ALERT_EMAIL
@@ -20,6 +25,41 @@ import os
 import tempfile
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
+
+
+def remove_departed_cadets(db_session, scraped_cins):
+    """Hard-delete cadets in the DB whose CIN wasn't pulled this run (they've left SMS).
+
+    Deletes child rows explicitly, bottom-up, because SQLite (local) doesn't enforce
+    ondelete=CASCADE and several FKs to Cadets.cin have no cascade at all.
+    Returns the number of cadets removed.
+    """
+    scraped_cins = set(scraped_cins)
+    if not scraped_cins:
+        return 0  # safety: never wipe everyone if a run somehow produced no CINs
+
+    departed = [c for (c,) in db_session.query(Cadet.cin).all() if c not in scraped_cins]
+    if not departed:
+        return 0
+
+    # order/badge line-items first (FK to their order, not the cadet)
+    order_ids = [i for (i,) in db_session.query(StoresOrder.id).filter(StoresOrder.cadet_id.in_(departed)).all()]
+    if order_ids:
+        db_session.query(StoresOrderItem).filter(StoresOrderItem.order_id.in_(order_ids)).delete(synchronize_session=False)
+    badge_order_ids = [i for (i,) in db_session.query(BadgeOrder.id).filter(BadgeOrder.cadet_id.in_(departed)).all()]
+    if badge_order_ids:
+        db_session.query(BadgeOrderItem).filter(BadgeOrderItem.order_id.in_(badge_order_ids)).delete(synchronize_session=False)
+
+    for model in (
+        StoresOrder, BadgeOrder, StoresItemIssuance, AssessmentSheet,
+        CadetQualification, CadetEvent, CadetMedical, CadetDietary,
+        CadetTheoryProgress, CadetAbsence, BanNotification,
+    ):
+        db_session.query(model).filter(model.cadet_id.in_(departed)).delete(synchronize_session=False)
+
+    db_session.query(Cadet).filter(Cadet.cin.in_(departed)).delete(synchronize_session=False)
+    db_session.commit()
+    return len(departed)
 
 
 def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
@@ -74,6 +114,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         skipped = 0
         emails_matched = 0
         missing_attachments = 0
+        scraped_cins = set()
 
         for entry in cadet_data:
             cin = entry.get("cin")
@@ -95,6 +136,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
             if email:
                 emails_matched += 1
+
+            scraped_cins.add(cin)
 
             cadet = db_session.query(Cadet).filter(Cadet.cin == cin).first()
             if not cadet:
@@ -157,10 +200,14 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         db_session.commit()
 
+        # Run completed successfully (stop_event was checked before the save loop),
+        # so any cadet in the DB but not pulled this run has left SMS — hard-delete them.
+        removed = remove_departed_cadets(db_session, scraped_cins)
+
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing_attachments} missing attachment(s)."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {missing_attachments} missing attachment(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
