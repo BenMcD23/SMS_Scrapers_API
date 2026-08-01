@@ -14,6 +14,8 @@ GOOGLE_DOMAIN = os.getenv("GOOGLE_DOMAIN", "317atc.co.uk")
 
 # Google Workspace groups that decide roles
 STAFF_GROUP = "staff@317atc.co.uk"
+NOTIFY_GROUP = "notifications@317atc.co.uk"
+SNCO_GROUP = "snco@317atc.co.uk"
 NCO_GROUP = "ncoteam@317atc.co.uk"
 
 # Sole owner/maintainer — has access to developer-only views (e.g. API logs)
@@ -63,6 +65,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFY_API_KEY = os.getenv("NOTIFY_API_KEY")
 NOTIFY_SMS_TEMPLATE_ID = os.getenv("NOTIFY_SMS_TEMPLATE_ID")
-ALERT_EMAIL = os.getenv("ALERT_EMAIL", STAFF_GROUP)
-QUALI_EXPIRY_ALERT_EMAIL = os.getenv("QUALI_EXPIRY_ALERT_EMAIL", STAFF_GROUP)
-BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", STAFF_GROUP)
+ALERT_EMAIL = os.getenv("ALERT_EMAIL", NOTIFY_GROUP)
+QUALI_EXPIRY_ALERT_EMAIL = os.getenv("QUALI_EXPIRY_ALERT_EMAIL", NOTIFY_GROUP)
+BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)

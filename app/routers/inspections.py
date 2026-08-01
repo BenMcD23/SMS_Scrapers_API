@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from database.models import Cadet, CadetAbsence, InspectionSheet
 from core.config import GROQ_API_KEY
 from core.db import get_db
-from core.security import require_staff
+from core.security import require_staff_or_snco
 
 router = APIRouter()
 
@@ -43,7 +43,7 @@ def _absent_cins_on(db: Session, date: datetime) -> set[int]:
 async def absences_on_date(
     date: str | None = None,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Absences covering the given date (defaults to today). One entry per
     absent cadet — the inspection page crosses these out."""
@@ -109,7 +109,7 @@ def _flight_scores(marks: list[dict], awol: set[int],
 async def submit_inspection(
     body: InspectionSubmit,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Persist a submitted sheet and score each flight.
 
@@ -258,7 +258,7 @@ def _split_comments(comments: list[dict]) -> tuple[list[dict], list[dict]]:
 @router.get("/inspections/history")
 async def inspection_history(
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Per-cadet inspection history across every submitted sheet, with score and
     attendance averages plus squadron rankings.
@@ -398,7 +398,7 @@ def _flight_order(flight: str) -> tuple:
 @router.get("/inspections/sheets")
 async def list_sheets(
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Submitted inspection sheets, newest first — for the date picker."""
     sheets = db.query(InspectionSheet).order_by(InspectionSheet.date.desc()).all()
@@ -421,7 +421,7 @@ async def list_sheets(
 async def sheet_detail(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Full sheet grouped by flight, with cadet names and comments resolved."""
     sheet = db.query(InspectionSheet).filter(InspectionSheet.id == sheet_id).first()
@@ -440,7 +440,7 @@ async def sheet_detail(
 async def delete_sheet(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Permanently delete a submitted inspection sheet."""
     sheet = db.query(InspectionSheet).filter(InspectionSheet.id == sheet_id).first()
@@ -455,7 +455,7 @@ async def delete_sheet(
 async def sheet_pdf(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Export a whole inspection (all flights) as a printable PDF."""
     from fastapi.responses import StreamingResponse
@@ -541,7 +541,7 @@ def _call_groq(system: str, user: str) -> str:
 async def analyse_cadet(
     body: AnalyseRequest,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     """Groq-powered reasoning over a single cadet's inspection history, focused
     on recurring uniform faults and score trends."""
