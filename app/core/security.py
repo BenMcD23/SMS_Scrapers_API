@@ -3,7 +3,8 @@
 There are three access tiers, used as FastAPI dependencies:
 
   require_user          — any valid Google ID token (cadets included)
-  require_staff_or_nco  — staff or NCO group members
+  require_staff_or_nco  — staff, SNCO or NCO group members
+  require_staff_or_snco — staff or SNCO group members (inspections)
   require_staff         — staff group members only
 
 Roles come from Google Workspace group membership and are cached for
@@ -20,7 +21,7 @@ from google.auth.transport import requests
 from googleapiclient.discovery import build as google_build
 
 from core.config import (
-    GOOGLE_CLIENT_ID, GOOGLE_DOMAIN, STAFF_GROUP, NCO_GROUP,
+    GOOGLE_CLIENT_ID, GOOGLE_DOMAIN, STAFF_GROUP, SNCO_GROUP, NCO_GROUP,
     SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL, OC_EMAIL,
 )
 
@@ -109,7 +110,7 @@ def _fetch_user_role(email: str) -> str | None:
             ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"]
         ).with_subject(IMPERSONATE_EMAIL)
         admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
-        for group, role in [(STAFF_GROUP, "staff"), (NCO_GROUP, "nco")]:
+        for group, role in [(STAFF_GROUP, "staff"), (SNCO_GROUP, "snco"), (NCO_GROUP, "nco")]:
             try:
                 admin.members().get(groupKey=group, memberKey=email).execute()
                 return role
@@ -160,6 +161,7 @@ def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
         ).with_subject(IMPERSONATE_EMAIL)
         admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
         staff = _fetch_group_members(admin, STAFF_GROUP)
+        snco = _fetch_group_members(admin, SNCO_GROUP)
         nco = _fetch_group_members(admin, NCO_GROUP)
     except Exception as e:
         print(f"[get_roles_for_emails] error: {e}")
@@ -170,7 +172,12 @@ def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
     with _role_cache_lock:
         for email in missing:
             key = email.lower()
-            role = "staff" if key in staff else "nco" if key in nco else None
+            role = (
+                "staff" if key in staff
+                else "snco" if key in snco
+                else "nco" if key in nco
+                else None
+            )
             resolved[email] = role
             _role_cache[email] = (role, expiry)
     return {**cached, **resolved}
@@ -203,9 +210,17 @@ def require_staff(authorization: str = Header(None)) -> dict:
     return idinfo
 
 
+def require_staff_or_snco(authorization: str = Header(None)) -> dict:
+    """Inspections — SNCOs run them, so they get the same access as staff there."""
+    idinfo = verify_token(authorization)
+    if get_user_role(idinfo["email"]) not in ("staff", "snco"):
+        raise HTTPException(status_code=403, detail="Staff or SNCO access required")
+    return idinfo
+
+
 def require_staff_or_nco(authorization: str = Header(None)) -> dict:
     idinfo = verify_token(authorization)
-    if get_user_role(idinfo["email"]) not in ("staff", "nco"):
+    if get_user_role(idinfo["email"]) not in ("staff", "snco", "nco"):
         raise HTTPException(status_code=403, detail="Staff or NCO access required")
     return idinfo
 
