@@ -18,7 +18,16 @@ services:
     build: .
     env_file:
       - .env
-    command: sh -c "alembic -c database/alembic.ini upgrade head && uvicorn api:app --host 0.0.0.0 --port 8000"
+    # Migrations deliberately do NOT run here — a failed one used to kill the
+    # whole container via `&&`. The deploy script runs them as a separate step.
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/ping')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     shm_size: 768mb
     deploy:
       resources:

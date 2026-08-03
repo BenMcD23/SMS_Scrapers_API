@@ -45,8 +45,14 @@ jobs:
             # that the old `docker rm -f tailscale` workaround existed to paper over.
             # ponytail: if tailscale itself ever needs updating, run a full `up -d` by hand.
             if [[ "$ENV" == "prod" ]]; then
-              docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait db api
+              DC="docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml"
             else
-              docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --build --wait db api
+              DC="docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml"
             fi
+            # db first, then migrate, then swap the api. `set -e` means a failed
+            # migration aborts the deploy with the old api still serving.
+            $DC build api
+            $DC up -d --wait db
+            $DC run --rm api alembic -c database/alembic.ini upgrade head
+            $DC up -d --wait api
             docker image prune -f
