@@ -14,9 +14,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import func
 
 from database.database import SessionLocal
-from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
+from database.models import AssessmentSheet, AuditEvent, Cadet, CadetQualification, StoresOrder
 
-from core.config import DB_BACKUP_ENABLED, IS_PROD, QUALI_EXPIRY_ALERT_EMAIL
+from core.config import (
+    AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, IS_PROD, QUALI_EXPIRY_ALERT_EMAIL,
+)
 from core.emailer import send_email, quali_expiry_email_html
 from core.qualifications import quali_expiry_cutoff
 from core.scheduler import scheduler
@@ -61,6 +63,26 @@ def _cleanup_old_completed_assessments():
         )
         for sheet in sheets:
             db.delete(sheet)
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _cleanup_old_audit_events():
+    """Drop audit rows past the retention window.
+
+    Kept far longer than the 182-day order/assessment cleanups: this is a
+    safeguarding trail, so it should outlive the records it describes rather
+    than expire alongside them.
+    """
+    cutoff = datetime.now() - timedelta(days=AUDIT_RETENTION_DAYS)
+    db = SessionLocal()
+    try:
+        db.query(AuditEvent).filter(AuditEvent.occurred_at < cutoff).delete(
+            synchronize_session=False
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -121,6 +143,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
+    scheduler.add_job(_cleanup_old_audit_events, "interval", hours=24)
     # Friday alert for qualifications now within 3 months of expiry — each
     # cadet+qualification is emailed once (deduped via expiry_alert_sent_at).
     scheduler.add_job(

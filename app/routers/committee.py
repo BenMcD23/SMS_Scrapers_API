@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from database.models import CommitteeRequest, CommitteeRequestReceipt, User
 
+from core.audit import record_audit
 from core.config import COMMITTEE_EMAIL, OC_EMAIL
 from core.db import get_db, get_or_create_user
 from core.emailer import (
@@ -353,6 +354,13 @@ async def get_receipt(
     )
     if not rec:
         raise HTTPException(status_code=404, detail="Receipt not found")
+    # Receipts are any-staff readable rather than requester-scoped, so record
+    # who pulled someone else's.
+    record_audit(
+        db, idinfo,
+        action="read", resource="committee_receipt", resource_id=receipt_id,
+        detail={"request_id": request_id},
+    )
     return StreamingResponse(
         io.BytesIO(rec.data),
         media_type=rec.mime_type,
