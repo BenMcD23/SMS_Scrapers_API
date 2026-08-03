@@ -68,6 +68,11 @@ DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
 )
 DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
 
+# How long audit rows are kept. Deliberately much longer than the 182-day
+# order/assessment cleanups — a safeguarding trail should outlive the records it
+# describes. Squadron policy call, so it's overridable.
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFY_API_KEY = os.getenv("NOTIFY_API_KEY")

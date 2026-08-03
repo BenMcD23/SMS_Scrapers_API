@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from database.models import ParadeNightMessage, SmsRecipient
 
+from core.audit import record_audit
 from core.db import get_db
 from core.security import require_staff
 from texts.ai import PRIMARY_MODEL, format_uniform, generate_message, model_label
@@ -214,6 +215,13 @@ def send_message(
         raise HTTPException(status_code=400, detail=str(e))
 
     failed = [r for r in results if r["status"] == "failed"]
+    # An SMS send is irreversible and goes to parents' phones, so who triggered
+    # it needs to be answerable independently of the message row.
+    record_audit(
+        db, idinfo,
+        action="send", resource="parade_message", resource_id=message_id,
+        detail={"sent": len(results) - len(failed), "failed": len(failed)},
+    )
     return {
         "status": "success",
         "sent": len(results) - len(failed),
@@ -412,4 +420,5 @@ def delete_recipient(
 
     db.delete(recipient)
     db.commit()
+    record_audit(db, idinfo, action="delete", resource="sms_recipient", resource_id=recipient_id)
     return {"status": "success"}

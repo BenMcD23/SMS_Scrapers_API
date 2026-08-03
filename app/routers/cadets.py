@@ -15,6 +15,7 @@ from database.models import (
 )
 
 from core import cache
+from core.audit import record_audit
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
@@ -189,6 +190,13 @@ def audit_medical(
         .options(selectinload(Cadet.medical), selectinload(Cadet.dietary))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
+    )
+    # Special-category data on minors — the read itself is the thing worth
+    # answering for, and nothing on the record can show who merely looked.
+    record_audit(
+        db, idinfo,
+        action="read", resource="cadet_medical",
+        detail={"cadet_count": len(cadets)},
     )
     return [
         {
