@@ -145,6 +145,12 @@ async def upload_newsletter(
         raise HTTPException(status_code=400, detail="File must be a PDF")
 
     pdf_bytes = await file.read()
+    # The other upload paths cap their payloads (2 MB signatures, 5 MB
+    # receipts); this one didn't, and it commits the bytes straight into a
+    # GitHub repo. 25 MB is comfortably above a real newsletter.
+    if len(pdf_bytes) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Newsletter PDF must be under 25 MB")
+
     newsletter_id = f"issue-{issue}"
 
     entry = {

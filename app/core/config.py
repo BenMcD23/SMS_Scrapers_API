@@ -12,6 +12,17 @@ ENV = os.getenv("ENV", "prod").lower()
 IS_DEV = ENV == "dev"
 IS_PROD = not IS_DEV
 
+# The fake-token bypass in core.security accepts the literal string
+# "Bearer dev-fake-token" as the owner account. On a Funnel-published API that
+# is a full authentication bypass for anyone who reads the source, so refuse to
+# start rather than serve with it live. Raised at import so it catches every
+# entrypoint — uvicorn, alembic and the standalone scripts alike.
+if IS_PROD and os.getenv("DEV_FAKE_AUTH") == "1":
+    raise RuntimeError(
+        "DEV_FAKE_AUTH=1 with ENV=" + ENV + ". The dev auth bypass must never be "
+        "enabled outside ENV=dev. Refusing to start."
+    )
+
 # Google OAuth client used by both the SMS site and the cadet portal
 GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
 
