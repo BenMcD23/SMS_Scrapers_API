@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import or_, exists
 from sqlalchemy.orm import Session, selectinload
@@ -18,6 +18,7 @@ from core import cache
 from core.audit import record_audit
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
+from core.ratelimit import limiter
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
 from core.security import require_staff, require_staff_or_nco
 
@@ -51,7 +52,12 @@ def _cadet_summary(c: Cadet) -> dict:
 
 
 @router.get("/cadets/search")
+# Free-text roster lookup available to every NCO, so it's the cheapest way to
+# enumerate cadet names. Generous enough for type-ahead, tight enough to make
+# scraping the roster slow.
+@limiter.limit("60/minute")
 def search_cadets(
+    request: Request,
     q: str = "",
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),

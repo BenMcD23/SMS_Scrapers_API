@@ -11,6 +11,9 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi import _rate_limit_exceeded_handler
 from sqlalchemy import func
 
 from database.database import SessionLocal
@@ -21,6 +24,7 @@ from core.config import (
 )
 from core.emailer import send_email, quali_expiry_email_html
 from core.qualifications import quali_expiry_cutoff
+from core.ratelimit import limiter
 from core.scheduler import scheduler
 from core.security import require_user
 from scripts.db_backup import run_db_backup
@@ -177,6 +181,12 @@ app = FastAPI(
     redoc_url=None if IS_PROD else "/redoc",
     openapi_url=None if IS_PROD else "/openapi.json",
 )
+
+# Per-caller rate limiting. SlowAPIMiddleware applies the default limit to every
+# route; the tight per-endpoint limits live on the handlers themselves.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Compress larger JSON payloads (cadet lists, stats, stores) — the home link is
 # the bottleneck, so shrinking the body cuts transfer time noticeably.
