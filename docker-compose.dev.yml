@@ -12,6 +12,10 @@ services:
   tailscale:
     container_name: tailscale-dev
     hostname: 317-sms-api-dev
+    # TS_HOSTNAME is what actually registers with the tailnet — without this it
+    # inherited the prod name and got auto-suffixed to 317-sms-api-1.
+    environment:
+      - TS_HOSTNAME=317-sms-api-dev
 
 volumes:
   postgres_data_dev:
