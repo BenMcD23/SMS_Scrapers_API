@@ -16,7 +16,7 @@ from sqlalchemy import func
 from database.database import SessionLocal
 from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
 
-from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
+from core.config import DB_BACKUP_ENABLED, IS_PROD, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import send_email, quali_expiry_email_html
 from core.qualifications import quali_expiry_cutoff
 from core.scheduler import scheduler
@@ -145,7 +145,15 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(lifespan=lifespan)
+# The API is published to the public internet over Tailscale Funnel, so in prod
+# the interactive docs would hand any passer-by a full route and schema
+# inventory. They stay on in dev, where they're genuinely useful.
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
+    openapi_url=None if IS_PROD else "/openapi.json",
+)
 
 # Compress larger JSON payloads (cadet lists, stats, stores) — the home link is
 # the bottleneck, so shrinking the body cuts transfer time noticeably.

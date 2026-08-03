@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Which deployment this is. Only an explicit ENV=dev unlocks the dev-only
+# surfaces (the interactive API docs); an unset, misspelt or unexpected value
+# is treated as production, so a config slip can never publish them.
+ENV = os.getenv("ENV", "prod").lower()
+IS_DEV = ENV == "dev"
+IS_PROD = not IS_DEV
+
 # Google OAuth client used by both the SMS site and the cadet portal
 GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
 
