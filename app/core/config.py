@@ -5,6 +5,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Which deployment this is. Only an explicit ENV=dev unlocks the dev-only
+# surfaces (the interactive API docs); an unset, misspelt or unexpected value
+# is treated as production, so a config slip can never publish them.
+ENV = os.getenv("ENV", "prod").lower()
+IS_DEV = ENV == "dev"
+IS_PROD = not IS_DEV
+
+# The fake-token bypass in core.security accepts the literal string
+# "Bearer dev-fake-token" as the owner account. On a Funnel-published API that
+# is a full authentication bypass for anyone who reads the source, so refuse to
+# start rather than serve with it live. Raised at import so it catches every
+# entrypoint — uvicorn, alembic and the standalone scripts alike.
+if IS_PROD and os.getenv("DEV_FAKE_AUTH") == "1":
+    raise RuntimeError(
+        "DEV_FAKE_AUTH=1 with ENV=" + ENV + ". The dev auth bypass must never be "
+        "enabled outside ENV=dev. Refusing to start."
+    )
+
 # Google OAuth client used by both the SMS site and the cadet portal
 GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
 
@@ -60,6 +78,11 @@ DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
     "DB_BACKUP_DRIVE_FOLDER_ID", "1Bi5CmjUVObZfarx2FUqECNJvBg3R1MeQ"
 )
 DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
+
+# How long audit rows are kept. Deliberately much longer than the 182-day
+# order/assessment cleanups — a safeguarding trail should outlive the records it
+# describes. Squadron policy call, so it's overridable.
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")

@@ -6,6 +6,8 @@ services:
       - postgres_data_dev:/var/lib/postgresql/data
 
   api:
+    environment:
+      - ENV=dev
     ports:
       - "8001:8000"
 

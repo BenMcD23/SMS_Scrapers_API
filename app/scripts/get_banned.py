@@ -3,7 +3,14 @@ import json
 import os
 
 APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbxCZG-4ZudtBRL-TGRIsxD2QDWBa1rxZuZVZ_1L8YwI3Yb2hlkkuZNnof0y-Y7f_2S9/exec"
-NOTIFIED_FILE = "notifications.json"
+
+# Runtime state — which cadet/event pairs we've already alerted on, so a repeat
+# run doesn't re-notify. It holds cadet names, so it lives in the gitignored
+# data/ dir rather than next to the source. Absolute, because the old
+# CWD-relative path resolved inside the image (wiping the ledger on every
+# deploy) instead of in the mounted data volume.
+_DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data"))
+NOTIFIED_FILE = os.path.join(_DATA_DIR, "notifications.json")
 
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
@@ -12,6 +19,7 @@ def load_notified():
     return set()
 
 def save_notified(notified_set):
+    os.makedirs(_DATA_DIR, exist_ok=True)
     with open(NOTIFIED_FILE, "w") as f:
         json.dump(sorted(list(notified_set)), f)
 

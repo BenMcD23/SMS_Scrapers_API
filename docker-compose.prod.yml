@@ -1,4 +1,6 @@
 services:
   api:
+    environment:
+      - ENV=prod
     ports:
       - "8000:8000"

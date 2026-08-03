@@ -8,14 +8,16 @@ from datetime import datetime
 from typing import Optional
 
 import openpyxl
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
 from database.models import ParadeNightMessage, SmsRecipient
 
+from core.audit import record_audit
 from core.db import get_db
+from core.ratelimit import limiter
 from core.security import require_staff
 from texts.ai import PRIMARY_MODEL, format_uniform, generate_message, model_label
 from texts.programme_parser import parse_programme
@@ -199,7 +201,12 @@ def regenerate_message(  # sync on purpose — slow AI call runs in the threadpo
 
 
 @router.post("/messages/{message_id}/send")
+# Every call fans out to the whole recipient list via GOV.UK Notify, so this is
+# the endpoint with a direct financial cost. A real parade send happens twice a
+# week; anything beyond a few a minute is a mistake or abuse.
+@limiter.limit("5/minute")
 def send_message(
+    request: Request,
     message_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -214,6 +221,13 @@ def send_message(
         raise HTTPException(status_code=400, detail=str(e))
 
     failed = [r for r in results if r["status"] == "failed"]
+    # An SMS send is irreversible and goes to parents' phones, so who triggered
+    # it needs to be answerable independently of the message row.
+    record_audit(
+        db, idinfo,
+        action="send", resource="parade_message", resource_id=message_id,
+        detail={"sent": len(results) - len(failed), "failed": len(failed)},
+    )
     return {
         "status": "success",
         "sent": len(results) - len(failed),
@@ -227,7 +241,11 @@ class TestSendBody(BaseModel):
 
 
 @router.post("/messages/{message_id}/test-send")
+# Sends to a caller-supplied number, so without a limit this is an open SMS
+# relay to anyone holding a staff token.
+@limiter.limit("10/minute")
 def test_send_message(
+    request: Request,
     message_id: int,
     data: TestSendBody,
     db: Session = Depends(get_db),
@@ -412,4 +430,5 @@ def delete_recipient(
 
     db.delete(recipient)
     db.commit()
+    record_audit(db, idinfo, action="delete", resource="sms_recipient", resource_id=recipient_id)
     return {"status": "success"}
