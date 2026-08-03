@@ -36,7 +36,10 @@ jobs:
           script: |
             set -e
             cd ~/sms-api/$ENV
-            git pull origin ${{ github.ref_name }}
+            # Force-pushes make `git pull` diverge; the server is a deploy target,
+            # not a workspace, so just match the remote exactly.
+            git fetch origin ${{ github.ref_name }}
+            git reset --hard FETCH_HEAD
             # Only rebuild/recreate db+api. Leaving tailscale untouched keeps the
             # ingress up during deploys and avoids the fixed-container_name conflict
             # that the old `docker rm -f tailscale` workaround existed to paper over.
