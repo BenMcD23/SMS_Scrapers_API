@@ -31,6 +31,7 @@ from scripts.staff_scraper import staff_scraper
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
 from core.security import require_staff, require_owner
+from core.stream_ticket import TTL_SECONDS, issue_ticket, redeem_ticket
 from routers.cadets import invalidate_cadet_caches
 from routers.stats import compute_stats
 
@@ -326,18 +327,37 @@ def _format_run_logs(messages: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _staff_from_header_or_query(authorization: str, token: str):
-    auth = authorization or (f"Bearer {token}" if token else None)
-    return require_staff(auth)
+@router.post("/stream-ticket")
+def create_stream_ticket(idinfo: dict = Depends(require_staff)):
+    """Mint a short-lived ticket for an EventSource connection.
+
+    Called over a normal authenticated request; the ticket is what goes in the
+    stream URL, so the ID token never reaches a query string.
+    """
+    return {"ticket": issue_ticket(idinfo["email"]), "expires_in": TTL_SECONDS}
+
+
+def _staff_from_header_or_ticket(authorization: str, ticket: str):
+    """Authorise a stream from either a normal header or a stream ticket.
+
+    Tickets are only issued behind require_staff and live 30 seconds, so
+    redeeming one is proof of a recent staff check; no second role lookup.
+    """
+    if authorization:
+        return require_staff(authorization)
+    email = redeem_ticket(ticket)
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired stream ticket")
+    return {"email": email}
 
 
 @router.get("/scraper-stream/{name}")
 async def named_scraper_stream(
     name: str,
     authorization: str = Header(None),
-    token: str = Query(None),
+    ticket: str = Query(None),
 ):
-    _staff_from_header_or_query(authorization, token)
+    _staff_from_header_or_ticket(authorization, ticket)
 
     if name not in named_scraper_states:
         raise HTTPException(status_code=404, detail="Unknown scraper")
@@ -374,9 +394,9 @@ async def named_scraper_stream(
 async def upload_stream(
     job_id: str,
     authorization: str = Header(None),
-    token: str = Query(None),
+    ticket: str = Query(None),
 ):
-    _staff_from_header_or_query(authorization, token)
+    _staff_from_header_or_ticket(authorization, ticket)
 
     with upload_jobs_lock:
         state = upload_jobs.get(job_id)
