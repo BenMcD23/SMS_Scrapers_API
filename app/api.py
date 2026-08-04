@@ -25,7 +25,8 @@ from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
     assessments, backups, badges, cadets, committee, events, form_generators,
-    inspections, newsletters, oc, portal, programme, scrapers, settings, stats, stores, texts,
+    inspections, newsletters, oc, portal, programme, scrapers, session_plans, settings,
+    stats, stores, texts,
 )
 
 
@@ -200,3 +201,4 @@ app.include_router(texts.router)
 app.include_router(backups.router)
 app.include_router(committee.router)
 app.include_router(oc.router)
+app.include_router(session_plans.router)

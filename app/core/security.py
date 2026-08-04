@@ -184,9 +184,10 @@ def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
 
 
 def get_user_role(email: str) -> str | None:
-    # ponytail: pairs with the dev-fake-token bypass above
+    # ponytail: pairs with the dev-fake-token bypass above. Set DEV_FAKE_ROLE to
+    # nco/snco to see the app as that role locally.
     if os.environ.get("DEV_FAKE_AUTH") == "1" and email.lower() == OWNER_EMAIL.lower():
-        return "staff"
+        return os.environ.get("DEV_FAKE_ROLE") or "staff"
     with _role_cache_lock:
         cached = _role_cache.get(email)
         if cached and time.time() < cached[1]:
