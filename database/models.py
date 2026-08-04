@@ -288,6 +288,8 @@ class User(Base):
     stores_orders      = relationship("StoresOrder",        back_populates="user")
     item_issuances     = relationship("StoresItemIssuance", back_populates="user", cascade="all, delete-orphan")
     committee_requests = relationship("CommitteeRequest",   back_populates="requester")
+    session_plans      = relationship("SessionPlan",        back_populates="author",
+                                       cascade="all, delete-orphan")
 
 
 class BaderCredentials(Base):
@@ -419,6 +421,89 @@ class CommitteeRequestReceipt(Base):
     uploaded_by = Column(Text, nullable=True)
 
     request = relationship("CommitteeRequest", back_populates="receipts")
+
+
+# ─── NCO session plans ────────────────────────────────────────────────────────
+
+# draft ─(NCO submits)→ submitted ─(staff approves)→ approved
+#   ▲                        │
+#   │                        └─(staff requests changes)→ amendments_requested
+#   └──────────────────────────────────(NCO edits and resubmits)──────┘
+# `approved` is terminal — the plan is locked once staff sign it off.
+SESSION_PLAN_STATUSES = ("draft", "submitted", "amendments_requested", "approved")
+
+# The five parts of the "Section Plan" table on the paper session plan. Staff
+# leave a comment against each one (the sheet's "Staff Check & Feedback" column),
+# so the keys are shared between the model, the API and the review UI.
+SESSION_PLAN_SECTIONS = (
+    "situation", "mission", "execution", "any_questions", "check_understanding",
+)
+
+
+class SessionPlan(Base):
+    """An NCO's plan for a session they're running, submitted to staff for
+    approval. Mirrors the squadron's paper session plan: a header block, the
+    five-part section plan, and an optional timetable/map."""
+    __tablename__ = "Session_Plans"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Header block
+    session_name = Column(Text,     nullable=False)
+    session_ic   = Column(Text,     nullable=False, default="", server_default="")
+    session_date = Column(DateTime, nullable=True)
+    aim          = Column(Text,     nullable=False, default="", server_default="")
+    participants = Column(Text,     nullable=False, default="", server_default="")  # rough numbers, free text
+    rooming      = Column(Text,     nullable=False, default="", server_default="")
+    equipment    = Column(Text,     nullable=False, default="", server_default="")
+
+    # Section plan — one column per SESSION_PLAN_SECTIONS key
+    situation           = Column(Text, nullable=False, default="", server_default="")
+    mission             = Column(Text, nullable=False, default="", server_default="")
+    execution           = Column(Text, nullable=False, default="", server_default="")
+    any_questions       = Column(Text, nullable=False, default="", server_default="")
+    check_understanding = Column(Text, nullable=False, default="", server_default="")
+
+    # Extras
+    timetable = Column(JSON, nullable=False, default=list)  # [{"timing", "event", "location"}]
+    notes     = Column(Text, nullable=False, default="", server_default="")
+
+    status = Column(Text, nullable=False, default="draft", server_default="draft")
+
+    # Staff review. `feedback` is keyed by SESSION_PLAN_SECTIONS so a comment
+    # sits next to the section it's about; `amendment_note` is the overall
+    # "what to change" message sent back to the NCO.
+    feedback       = Column(JSON, nullable=False, default=dict)
+    amendment_note = Column(Text, nullable=True)
+
+    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+
+    created_at   = Column(DateTime, nullable=False)
+    updated_at   = Column(DateTime, nullable=False)
+    submitted_at = Column(DateTime, nullable=True)
+    reviewed_at  = Column(DateTime, nullable=True)
+    reviewed_by  = Column(Text,     nullable=True)  # email of the staff member who decided
+
+    author      = relationship("User", back_populates="session_plans")
+    attachments = relationship(
+        "SessionPlanAttachment", back_populates="plan",
+        cascade="all, delete-orphan", order_by="SessionPlanAttachment.uploaded_at",
+    )
+
+
+class SessionPlanAttachment(Base):
+    """A supporting file on a session plan — usually the map the paper sheet
+    leaves space for, but any image or PDF the NCO wants staff to see."""
+    __tablename__ = "Session_Plan_Attachments"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id     = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False)
+    filename    = Column(Text,       nullable=False)
+    mime_type   = Column(Text,       nullable=False)
+    data        = Column(LargeBinary, nullable=False)
+    uploaded_at = Column(DateTime,   nullable=False)
+
+    plan = relationship("SessionPlan", back_populates="attachments")
 
 
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────

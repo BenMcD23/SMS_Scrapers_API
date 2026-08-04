@@ -61,6 +61,10 @@ DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
 )
 DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
 
+# Where the SMS site is served from — used to link straight to a page from an
+# email (e.g. the session plan awaiting review) instead of "log in and find it".
+SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://sms.317atc.co.uk").rstrip("/")
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NOTIFY_API_KEY = os.getenv("NOTIFY_API_KEY")
@@ -68,3 +72,7 @@ NOTIFY_SMS_TEMPLATE_ID = os.getenv("NOTIFY_SMS_TEMPLATE_ID")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", NOTIFY_GROUP)
 QUALI_EXPIRY_ALERT_EMAIL = os.getenv("QUALI_EXPIRY_ALERT_EMAIL", NOTIFY_GROUP)
 BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)
+# Who gets told when an NCO submits a session plan for approval. Any staff
+# member can then review it, so this defaults to the shared notifications group
+# rather than one person.
+SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
