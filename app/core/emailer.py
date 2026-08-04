@@ -1,6 +1,7 @@
 """Outbound email via the Gmail API, plus the HTML templates we send."""
 
 import base64
+import html
 import os
 import email.mime.multipart
 import email.mime.text
@@ -9,7 +10,7 @@ import email.encoders
 
 from googleapiclient.discovery import build as google_build
 
-from core.config import SA_EMAIL, SA_PRIVATE_KEY, NOREPLY_EMAIL
+from core.config import SA_EMAIL, SA_PRIVATE_KEY, NOREPLY_EMAIL, SITE_BASE_URL
 from core.security import _service_account_creds
 
 FOOTER = (
@@ -272,6 +273,126 @@ def committee_request_payment_html(reference: str, title: str, total: float,
         <tr><td style="padding:6px 0;color:#555">Account number</td><td style="padding:6px 0;font-weight:bold">{account_number}</td></tr>
       </table>
       <p style="font-size:14px;color:#555">The receipts and the original request are attached.</p>
+      {FOOTER}
+    </div>
+    """
+
+
+# ── NCO session plans ────────────────────────────────────────────────────────
+# Unlike the committee templates above, these interpolate free-text a cadet NCO
+# typed into a form, so every value goes through _esc before reaching the HTML.
+
+def _esc(text: str | None) -> str:
+    return html.escape(text or "")
+
+
+def _plan_button(plan_id: int, label: str, colour: str = "#1565c0") -> str:
+    return (
+        f'<p style="margin:20px 0 0">'
+        f'<a href="{SITE_BASE_URL}/session-plans/{plan_id}" '
+        f'style="display:inline-block;background:{colour};color:#fff;text-decoration:none;'
+        f'padding:10px 18px;border-radius:6px;font-size:14px">{label}</a></p>'
+    )
+
+
+def _plan_details_table(session_name: str, session_ic: str, session_date: str) -> str:
+    return f"""
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:6px 0;color:#555;width:140px">Session</td><td style="padding:6px 0;font-weight:bold">{_esc(session_name)}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Session I/C</td><td style="padding:6px 0">{_esc(session_ic) or "—"}</td></tr>
+        <tr><td style="padding:6px 0;color:#555">Date</td><td style="padding:6px 0">{_esc(session_date) or "—"}</td></tr>
+      </table>
+    """
+
+
+def session_plan_submitted_html(plan_id: int, session_name: str, session_ic: str,
+                                session_date: str, author_name: str,
+                                resubmission: bool) -> str:
+    """To staff when an NCO submits (or resubmits) a session plan for approval."""
+    heading = "Session Plan Resubmitted" if resubmission else "Session Plan Submitted"
+    lead = (
+        f"{_esc(author_name)} has updated their session plan after the requested "
+        "amendments and sent it back for approval."
+        if resubmission else
+        f"{_esc(author_name)} has submitted a session plan for staff approval."
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">{heading}</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>{lead}</p>
+      {_plan_details_table(session_name, session_ic, session_date)}
+      <p style="font-size:14px;color:#555">Review it in 317 SMS to approve it or send it back with
+         the changes you want.</p>
+      {_plan_button(plan_id, "Review session plan")}
+      {FOOTER}
+    </div>
+    """
+
+
+def session_plan_amendments_html(plan_id: int, session_name: str, session_ic: str,
+                                 session_date: str, reviewer_name: str,
+                                 amendment_note: str | None,
+                                 section_feedback: list[tuple[str, str]]) -> str:
+    """To the NCO when staff send a plan back for amendment.
+
+    ``section_feedback`` is ``(section label, comment)`` for the sections the
+    reviewer actually commented on — the paper sheet's "Staff Check & Feedback"
+    column, so the NCO sees exactly which part needs work.
+    """
+    note_html = (
+        f'<div style="margin:16px 0 0;padding:12px 14px;background:#fff4e5;'
+        f'border-left:4px solid #e65100;border-radius:4px">'
+        f'<p style="margin:0;white-space:pre-wrap">{_esc(amendment_note)}</p></div>'
+        if amendment_note else ""
+    )
+    feedback_rows = "".join(
+        f'<tr>'
+        f'<td style="padding:8px;border-bottom:1px solid #eee;font-weight:bold;'
+        f'width:170px;vertical-align:top">{_esc(label)}</td>'
+        f'<td style="padding:8px;border-bottom:1px solid #eee;white-space:pre-wrap">{_esc(comment)}</td>'
+        f'</tr>'
+        for label, comment in section_feedback
+    )
+    feedback_html = (
+        f'<h3 style="margin:24px 0 6px;font-size:15px">Staff Feedback</h3>'
+        f'<table style="width:100%;border-collapse:collapse;font-size:14px">{feedback_rows}</table>'
+        if feedback_rows else ""
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px;color:#e65100">Session Plan Needs Amending</h2>
+      <hr style="border:none;border-top:2px solid #e65100;margin:0 0 20px">
+      <p>{_esc(reviewer_name)} has reviewed your session plan and would like some changes
+         before it can be approved.</p>
+      {_plan_details_table(session_name, session_ic, session_date)}
+      {note_html}
+      {feedback_html}
+      <p style="font-size:14px;color:#555">Make the changes in 317 SMS and submit it again —
+         staff will be told automatically.</p>
+      {_plan_button(plan_id, "Open session plan", "#e65100")}
+      {FOOTER}
+    </div>
+    """
+
+
+def session_plan_approved_html(plan_id: int, session_name: str, session_ic: str,
+                               session_date: str, reviewer_name: str,
+                               amendment_note: str | None) -> str:
+    """To the NCO when staff approve their session plan."""
+    note_html = (
+        f'<p style="margin:16px 0 0"><strong>Note from staff:</strong><br>'
+        f'<span style="white-space:pre-wrap">{_esc(amendment_note)}</span></p>'
+        if amendment_note else ""
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px;color:#2e7d32">Session Plan Approved</h2>
+      <hr style="border:none;border-top:2px solid #2e7d32;margin:0 0 20px">
+      <p>{_esc(reviewer_name)} has approved your session plan — you're good to run it.</p>
+      {_plan_details_table(session_name, session_ic, session_date)}
+      {note_html}
+      {_plan_button(plan_id, "View session plan", "#2e7d32")}
       {FOOTER}
     </div>
     """
