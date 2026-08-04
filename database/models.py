@@ -489,6 +489,10 @@ class SessionPlan(Base):
         "SessionPlanAttachment", back_populates="plan",
         cascade="all, delete-orphan", order_by="SessionPlanAttachment.uploaded_at",
     )
+    comments = relationship(
+        "SessionPlanComment", back_populates="plan",
+        cascade="all, delete-orphan", order_by="SessionPlanComment.created_at",
+    )
 
 
 class SessionPlanAttachment(Base):
@@ -504,6 +508,22 @@ class SessionPlanAttachment(Base):
     uploaded_at = Column(DateTime,   nullable=False)
 
     plan = relationship("SessionPlan", back_populates="attachments")
+
+
+class SessionPlanComment(Base):
+    """A note anyone who can see the plan can leave on it. Distinct from the
+    staff `feedback`/`amendment_note`, which are the approval decision — these
+    are just NCOs and staff talking about the plan."""
+    __tablename__ = "Session_Plan_Comments"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id    = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False)
+    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    body       = Column(Text,     nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    plan   = relationship("SessionPlan", back_populates="comments")
+    author = relationship("User")
 
 
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────

@@ -5,7 +5,8 @@ Workflow: an NCO drafts a plan (the squadron's paper session plan, as a form)
 back with per-section feedback → the NCO is emailed either way, fixes it, and
 resubmits. Approved plans are locked.
 
-NCOs only ever see their own plans; staff see everyone's.
+Drafts are private to their author; once submitted, every NCO and staff member
+can read the plan and leave comments on it. Only staff can approve or send back.
 """
 
 import io
@@ -18,7 +19,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database.models import (
-    SESSION_PLAN_SECTIONS, SessionPlan, SessionPlanAttachment, User,
+    SESSION_PLAN_SECTIONS, SessionPlan, SessionPlanAttachment,
+    SessionPlanComment, User,
 )
 
 from core.config import SESSION_PLAN_ALERT_EMAIL
@@ -81,6 +83,10 @@ class SessionPlanBody(BaseModel):
     check_understanding: str = ""
     timetable: list[TimetableRow] = []
     notes: str = ""
+
+
+class CommentBody(BaseModel):
+    body: str = ""
 
 
 class ReviewBody(BaseModel):
@@ -153,6 +159,13 @@ def _detail(plan: SessionPlan, viewer: User, is_staff: bool) -> dict:
              "uploaded_at": _iso(a.uploaded_at)}
             for a in plan.attachments
         ],
+        "comments": [
+            {"id": c.id, "body": c.body, "author_name": _user_name(c.author),
+             "author_email": c.author.email if c.author else "",
+             "created_at": _iso(c.created_at),
+             "can_delete": c.author_id == viewer.id or is_staff}
+            for c in plan.comments
+        ],
         "is_author": is_author,
         "can_review": is_staff and plan.status == "submitted",
         "can_edit": is_author and plan.status in EDITABLE_STATUSES,
@@ -160,19 +173,12 @@ def _detail(plan: SessionPlan, viewer: User, is_staff: bool) -> dict:
     return data
 
 
-def _can_view(plan: SessionPlan, viewer: User, is_staff: bool) -> bool:
-    """Authors always see their own plans; staff see everyone's *except* drafts,
-    which are unfinished private work until the NCO chooses to submit them."""
-    if plan.author_id == viewer.id:
-        return True
-    return is_staff and plan.status != "draft"
-
-
-def _get_or_404(db: Session, plan_id: int, viewer: User, is_staff: bool) -> SessionPlan:
-    """Fetch a plan the viewer is allowed to see. A plan they can't see is a 404
-    rather than a 403 — there's no reason to confirm it exists."""
+def _get_or_404(db: Session, plan_id: int, viewer: User) -> SessionPlan:
+    """Fetch a plan the viewer is allowed to see: their own, or anyone's once
+    it's out of draft. A plan they can't see is a 404 rather than a 403 —
+    there's no reason to confirm it exists."""
     plan = db.query(SessionPlan).filter(SessionPlan.id == plan_id).first()
-    if not plan or not _can_view(plan, viewer, is_staff):
+    if not plan or not (plan.author_id == viewer.id or plan.status != "draft"):
         raise HTTPException(status_code=404, detail="Session plan not found")
     return plan
 
@@ -242,14 +248,13 @@ async def list_plans(
 ):
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    query = db.query(SessionPlan)
-    if is_staff:
-        # Everyone's plans, minus other people's unsubmitted drafts.
-        query = query.filter(or_(SessionPlan.status != "draft",
-                                 SessionPlan.author_id == user.id))
-    else:
-        query = query.filter(SessionPlan.author_id == user.id)
-    plans = query.order_by(SessionPlan.updated_at.desc()).all()
+    # Everyone's plans, minus other people's unsubmitted drafts.
+    plans = (
+        db.query(SessionPlan)
+        .filter(or_(SessionPlan.status != "draft", SessionPlan.author_id == user.id))
+        .order_by(SessionPlan.updated_at.desc())
+        .all()
+    )
     return {"plans": [_summary(p) for p in plans], "is_staff": is_staff}
 
 
@@ -261,7 +266,7 @@ async def get_plan(
 ):
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     return _detail(plan, user, is_staff)
 
 
@@ -274,7 +279,7 @@ async def update_plan(
 ):
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     if plan.author_id != user.id:
         raise HTTPException(status_code=403, detail="Only the author can edit this plan")
     if plan.status not in EDITABLE_STATUSES:
@@ -300,7 +305,7 @@ async def submit_plan(
     reviewer) can still see what was asked for."""
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     if plan.author_id != user.id:
         raise HTTPException(status_code=403, detail="Only the author can submit this plan")
     if plan.status not in EDITABLE_STATUSES:
@@ -344,7 +349,7 @@ async def approve_plan(
     idinfo: dict = Depends(require_staff),
 ):
     user = get_or_create_user(db, idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff=True)
+    plan = _get_or_404(db, plan_id, user)
     if plan.status != "submitted":
         raise HTTPException(status_code=409, detail="This plan isn't awaiting review")
 
@@ -379,7 +384,7 @@ async def request_amendments(
 ):
     """Send the plan back to the NCO with what needs changing."""
     user = get_or_create_user(db, idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff=True)
+    plan = _get_or_404(db, plan_id, user)
     if plan.status != "submitted":
         raise HTTPException(status_code=409, detail="This plan isn't awaiting review")
 
@@ -423,8 +428,7 @@ async def delete_plan(
 ):
     """The author can bin a plan that hasn't been approved yet."""
     user = get_or_create_user(db, idinfo)
-    is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     if plan.author_id != user.id:
         raise HTTPException(status_code=403, detail="Only the author can delete this plan")
     if plan.status == "approved":
@@ -432,6 +436,56 @@ async def delete_plan(
     db.delete(plan)
     db.commit()
     return {"ok": True}
+
+
+# ── comments ─────────────────────────────────────────────────────────────────
+
+@router.post("/session-plans/{plan_id}/comments")
+async def add_comment(
+    plan_id: int,
+    body: CommentBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Anyone who can see the plan can leave a note on it — NCOs included. This
+    is separate from the staff review, so commenting never changes the status."""
+    user = get_or_create_user(db, idinfo)
+    plan = _get_or_404(db, plan_id, user)
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Write something first")
+    db.add(SessionPlanComment(
+        plan_id=plan.id, author_id=user.id, body=text[:5000], created_at=datetime.now(),
+    ))
+    db.commit()
+    db.refresh(plan)
+    return _detail(plan, user, _is_staff(idinfo))
+
+
+@router.delete("/session-plans/{plan_id}/comments/{comment_id}")
+async def delete_comment(
+    plan_id: int,
+    comment_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    user = get_or_create_user(db, idinfo)
+    is_staff = _is_staff(idinfo)
+    plan = _get_or_404(db, plan_id, user)
+    comment = (
+        db.query(SessionPlanComment)
+        .filter(SessionPlanComment.id == comment_id,
+                SessionPlanComment.plan_id == plan_id)
+        .first()
+    )
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if comment.author_id != user.id and not is_staff:
+        raise HTTPException(status_code=403, detail="You can only delete your own comments")
+    db.delete(comment)
+    db.commit()
+    db.refresh(plan)
+    return _detail(plan, user, is_staff)
 
 
 # ── attachments (the sheet's "Map (if applicable)" box) ──────────────────────
@@ -445,7 +499,7 @@ async def upload_attachments(
 ):
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     if plan.author_id != user.id:
         raise HTTPException(status_code=403, detail="Only the author can add attachments")
     if plan.status not in EDITABLE_STATUSES:
@@ -479,9 +533,8 @@ async def get_attachment(
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     user = get_or_create_user(db, idinfo)
-    is_staff = _is_staff(idinfo)
-    # Resolve the plan first so the same author/staff gate covers the file.
-    _get_or_404(db, plan_id, user, is_staff)
+    # Resolve the plan first so the same visibility gate covers the file.
+    _get_or_404(db, plan_id, user)
     att = (
         db.query(SessionPlanAttachment)
         .filter(SessionPlanAttachment.id == attachment_id,
@@ -506,7 +559,7 @@ async def delete_attachment(
 ):
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
-    plan = _get_or_404(db, plan_id, user, is_staff)
+    plan = _get_or_404(db, plan_id, user)
     if plan.author_id != user.id:
         raise HTTPException(status_code=403, detail="Only the author can remove attachments")
     if plan.status not in EDITABLE_STATUSES:
