@@ -290,6 +290,8 @@ class User(Base):
     committee_requests = relationship("CommitteeRequest",   back_populates="requester")
     session_plans      = relationship("SessionPlan",        back_populates="author",
                                        cascade="all, delete-orphan")
+    nco_holidays       = relationship("NcoHoliday",         back_populates="user",
+                                       cascade="all, delete-orphan")
 
 
 class BaderCredentials(Base):
@@ -508,6 +510,42 @@ class SessionPlanAttachment(Base):
     uploaded_at = Column(DateTime,   nullable=False)
 
     plan = relationship("SessionPlan", back_populates="attachments")
+
+
+class NcoHoliday(Base):
+    """A holiday an NCO books for themselves, mirrored onto the squadron's
+    shared "NCO Holidays" Google Calendar as an all-day event.
+
+    This table is the audit trail, so nothing is ever deleted from it —
+    cancelling a holiday clears the calendar entry and stamps
+    ``cancelled_at``/``cancelled_by_*``, leaving the original booking (and the
+    date it was added) on record. Names and emails are snapshotted rather than
+    only joined through ``user_id`` so a cancelled row still reads correctly
+    once someone's account or name changes."""
+    __tablename__ = "NCO_Holidays"
+
+    id      = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+
+    # Inclusive whole-day range — a one-day holiday has date_from == date_to.
+    date_from = Column(DateTime, nullable=False)
+    date_to   = Column(DateTime, nullable=False)
+    reason    = Column(Text, nullable=False, default="", server_default="")
+
+    booked_by_name  = Column(Text, nullable=False)
+    booked_by_email = Column(Text, nullable=False)
+
+    # Null when the booking saved but Google Calendar couldn't be reached —
+    # the holiday is still real, it just isn't on the calendar yet.
+    google_event_id = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False)  # when the NCO added it
+
+    cancelled_at       = Column(DateTime, nullable=True)
+    cancelled_by_name  = Column(Text,     nullable=True)
+    cancelled_by_email = Column(Text,     nullable=True)
+
+    user = relationship("User", back_populates="nco_holidays")
 
 
 class SessionPlanComment(Base):
