@@ -9,8 +9,9 @@ An NCO can't book the same day twice. Booking a range that runs over one of
 their existing bookings extends that booking instead of creating a second row,
 since that's someone lengthening one absence rather than taking two.
 
-You can only book your own holiday. Everyone who can see this page (NCO, SNCO,
-staff) sees the whole squadron's list; staff can additionally edit or cancel
+You can only book your own holiday, and only NCOs book at all — this tracks NCO
+absence, and staff leave isn't the squadron's business to record here. Everyone
+who can see this page sees the whole list; staff can additionally edit or cancel
 someone else's booking, which is recorded against their name.
 """
 
@@ -193,6 +194,9 @@ async def list_holidays(
     return {
         "holidays": [_serialise(h, user, is_staff) for h in holidays],
         "is_staff": is_staff,
+        # Staff manage the list rather than appearing on it, so the UI drops the
+        # booking form and the "Mine" filter for them entirely.
+        "can_book": not is_staff,
         "calendar_configured": calendar_configured(),
         # The booking form reads these rather than hardcoding the rule, so the
         # date picker can't drift from what the API actually enforces.
@@ -212,6 +216,11 @@ async def create_holiday(
 ):
     """Book a holiday for yourself. There's deliberately no way to book one for
     someone else — the booking is the audit record of who asked for it."""
+    if _is_staff(idinfo):
+        raise HTTPException(
+            status_code=403,
+            detail="This calendar is for NCO absence — staff leave isn't booked here",
+        )
     user = get_or_create_user(db, idinfo)
 
     date_from = _parse_date(body.date_from, "start")
