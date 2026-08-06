@@ -78,6 +78,34 @@ alone never adds new vars; edit it on the server first. (`NEXT_PUBLIC_*` vars li
 `NEXT_PUBLIC_OC_EMAIL` live with the frontend host and are baked in at build time
 — set them there and redeploy the UI.)
 
+## NCO Holidays calendar (one-time setup)
+
+NCO holiday bookings are mirrored onto a shared Google Calendar as all-day
+events. Three things have to be in place, all outside this repo:
+
+1. **The calendar.** In Google Calendar, create a calendar called
+   *NCO Holidays* owned by a Workspace account (not a personal one). Copy its
+   calendar ID from *Settings → Integrate calendar*.
+2. **Share it with the service account.** Under *Share with specific people*,
+   add `GOOGLE_IMPERSONATE_EMAIL` — the account the service account acts as —
+   with **Make changes to events**. Without this, every write comes back 404.
+3. **Add the scope to domain-wide delegation.** In the Admin console under
+   *Security → API controls → Domain-wide delegation*, add
+   `https://www.googleapis.com/auth/calendar.events` to the service account's
+   existing scope list. This is a replace-the-whole-list field, so paste the
+   current scopes back alongside the new one.
+
+NCOs have to give at least two weeks' notice — the first day of a holiday must
+be 14 days or more after the day they book it. Staff are exempt (they can only
+ever book their own). The rule lives in `MIN_NOTICE_DAYS` in
+`app/routers/nco_holidays.py`; the booking form reads it off the API rather than
+hardcoding it, so changing that constant is enough.
+
+Then set `NCO_HOLIDAY_CALENDAR_ID` in `.env` and recreate the api container as
+above. Until it's set, holidays still save in the SMS and the page shows a
+"calendar not connected" banner — nothing is lost, and the **Retry** action on
+each row pushes the backlog once the calendar is wired up.
+
 ## Authorising Tailscale (first run)
 
 After starting, the Tailscale containers need to be logged in once:
