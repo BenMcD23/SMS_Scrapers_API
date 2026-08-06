@@ -10,7 +10,7 @@ staff) sees the whole squadron's list; staff can additionally cancel someone
 else's booking, which is recorded against their name.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -29,6 +29,12 @@ router = APIRouter()
 # A holiday longer than this is almost certainly a typo in the end date.
 MAX_HOLIDAY_DAYS = 120
 MAX_REASON_CHARS = 500
+
+# Notice an NCO has to give: the first day of the holiday must be at least this
+# many days after today, so booking on the 1st means the 15th is the earliest
+# day off. Staff are exempt — they're the ones who'd need to record something at
+# short notice, and they can only ever book their own anyway.
+MIN_NOTICE_DAYS = 14
 
 
 class HolidayBody(BaseModel):
@@ -50,6 +56,16 @@ def _is_staff(idinfo: dict) -> bool:
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _today() -> datetime:
+    """Midnight today, to compare against the midnight-normalised booking dates."""
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _min_notice_days(idinfo: dict) -> int:
+    """Notice this viewer has to give. 0 for staff, who are exempt."""
+    return 0 if _is_staff(idinfo) else MIN_NOTICE_DAYS
 
 
 def _parse_date(value: str, field: str) -> datetime:
@@ -107,10 +123,18 @@ async def list_holidays(
         .order_by(NcoHoliday.date_from.desc(), NcoHoliday.id.desc())
         .all()
     )
+    notice_days = _min_notice_days(idinfo)
     return {
         "holidays": [_serialise(h, user, is_staff) for h in holidays],
         "is_staff": is_staff,
         "calendar_configured": calendar_configured(),
+        # The booking form reads these rather than hardcoding the rule, so the
+        # date picker can't drift from what the API actually enforces.
+        "min_notice_days": notice_days,
+        "earliest_booking_date": (
+            (_today() + timedelta(days=notice_days)).date().isoformat()
+            if notice_days else None
+        ),
     }
 
 
@@ -128,6 +152,16 @@ async def create_holiday(
     date_to = _parse_date(body.date_to, "end")
     if date_to < date_from:
         raise HTTPException(status_code=400, detail="The end date is before the start date")
+
+    notice_days = _min_notice_days(idinfo)
+    if notice_days:
+        earliest = _today() + timedelta(days=notice_days)
+        if date_from < earliest:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Holidays need at least {notice_days} days' notice — the "
+                       f"earliest you can book from is {earliest:%-d %b %Y}",
+            )
     if (date_to - date_from).days + 1 > MAX_HOLIDAY_DAYS:
         raise HTTPException(
             status_code=400,
