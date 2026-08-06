@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - development
+  # Redeploy the branch you pick, without needing an empty commit. ENV still
+  # comes from github.ref_name, so dispatching on main deploys prod.
+  workflow_dispatch:
 
 jobs:
   deploy:
