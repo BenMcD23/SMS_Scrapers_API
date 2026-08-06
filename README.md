@@ -95,6 +95,12 @@ events. Three things have to be in place, all outside this repo:
    existing scope list. This is a replace-the-whole-list field, so paste the
    current scopes back alongside the new one.
 
+NCOs have to give at least two weeks' notice — the first day of a holiday must
+be 14 days or more after the day they book it. Staff are exempt (they can only
+ever book their own). The rule lives in `MIN_NOTICE_DAYS` in
+`app/routers/nco_holidays.py`; the booking form reads it off the API rather than
+hardcoding it, so changing that constant is enough.
+
 Then set `NCO_HOLIDAY_CALENDAR_ID` in `.env` and recreate the api container as
 above. Until it's set, holidays still save in the SMS and the page shows a
 "calendar not connected" banner — nothing is lost, and the **Retry** action on
