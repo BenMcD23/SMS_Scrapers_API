@@ -144,10 +144,17 @@ def test():
         date_from=_day(nh.MIN_NOTICE_DAYS), date_to=_day(nh.MIN_NOTICE_DAYS)), db, alice))
     assert on_boundary["on_calendar"] is True
 
-    # Staff are exempt — they can record their own at short notice.
-    short = run(nh.create_holiday(
-        nh.HolidayBody(date_from=_day(1), date_to=_day(1)), db, staff))
-    assert short["booked_by_email"] == "staff@x"
+    # Staff don't book here at all — this list is NCO absence, and they manage
+    # it rather than appearing on it.
+    calls_before = len(created)
+    try:
+        run(nh.create_holiday(nh.HolidayBody(date_from=_day(30), date_to=_day(31)), db, staff))
+        raise AssertionError("staff booked a holiday")
+    except HTTPException as e:
+        assert e.status_code == 403
+    assert len(created) == calls_before
+    assert run(nh.list_holidays(db, staff))["can_book"] is False
+    assert run(nh.list_holidays(db, alice))["can_book"] is True
 
     # The form reads the rule off the list response rather than hardcoding it.
     alice_view = run(nh.list_holidays(db, alice))

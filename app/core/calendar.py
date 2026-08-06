@@ -22,10 +22,6 @@ from core.security import _service_account_creds
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
-# Google's "Flamingo" — one fixed colour so NCO holidays read as one thing at a
-# glance on a calendar that's shared with other feeds.
-HOLIDAY_COLOUR_ID = "4"
-
 # Prefixes every event title, so the entries are still identifiable if someone
 # copies one onto another calendar or looks at a combined agenda view.
 EVENT_PREFIX = "NCO Holiday"
@@ -51,7 +47,6 @@ def _event_body(name: str, email: str, date_from: datetime, date_to: datetime,
         "description": description,
         "start": {"date": date_from.date().isoformat()},
         "end": {"date": (date_to.date() + timedelta(days=1)).isoformat()},
-        "colorId": HOLIDAY_COLOUR_ID,
         "transparency": "transparent",  # doesn't mark anyone busy
     }
 
