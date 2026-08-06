@@ -16,16 +16,36 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Merge main into development
+        id: merge
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin development
           git checkout development
+          before=$(git rev-parse HEAD)
           git merge origin/main --no-edit
-          git push origin development
+          if [ "$before" = "$(git rev-parse HEAD)" ]; then
+            echo "development already had main — nothing to deploy"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          else
+            git push origin development
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # This push was made with GITHUB_TOKEN, which deliberately doesn't trigger
+  # further workflows, so deploy has to be called rather than waited for.
+  deploy:
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      ref: development
+    secrets: inherit

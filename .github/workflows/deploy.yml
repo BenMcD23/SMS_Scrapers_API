@@ -5,9 +5,17 @@ on:
     branches:
       - main
       - development
-  # Redeploy the branch you pick, without needing an empty commit. ENV still
-  # comes from github.ref_name, so dispatching on main deploys prod.
+  # Redeploy the branch you pick, without needing an empty commit.
   workflow_dispatch:
+  # Called by sync-main-to-dev, whose own event is a push to *main* — so the
+  # branch to deploy has to be passed in rather than read off github.ref_name,
+  # or syncing dev would deploy prod.
+  workflow_call:
+    inputs:
+      ref:
+        description: Branch to deploy
+        type: string
+        required: true
 
 jobs:
   deploy:
@@ -16,7 +24,9 @@ jobs:
     steps:
       - name: Set environment
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
+          BRANCH="${{ inputs.ref || github.ref_name }}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          if [[ "$BRANCH" == "main" ]]; then
             echo "ENV=prod" >> $GITHUB_ENV
           else
             echo "ENV=dev" >> $GITHUB_ENV
@@ -35,13 +45,13 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: ENV
+          envs: ENV,BRANCH
           script: |
             set -e
             cd ~/sms-api/$ENV
             # Force-pushes make `git pull` diverge; the server is a deploy target,
             # not a workspace, so just match the remote exactly.
-            git fetch origin ${{ github.ref_name }}
+            git fetch origin $BRANCH
             git reset --hard FETCH_HEAD
             # Only rebuild/recreate db+api. Leaving tailscale untouched keeps the
             # ingress up during deploys and avoids the fixed-container_name conflict
