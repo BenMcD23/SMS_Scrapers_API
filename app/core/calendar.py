@@ -1,8 +1,10 @@
 """Google Calendar writes for the shared "NCO Holidays" calendar.
 
 The same service account that sends mail and reads the directory acts as
-IMPERSONATE_EMAIL here, so the calendar only needs to be shared with that
-account ("Make changes to events") for these calls to work.
+IMPERSONATE_EMAIL here, so the calendar must be shared with IMPERSONATE_EMAIL
+("Make changes to events") — sharing with the service account itself has no
+effect while with_subject is in play. Missing that share reads as a 404, not a
+403.
 
 Nothing in here raises: a Calendar outage must never lose a holiday the NCO has
 already booked, so every function reports success as a return value and the
@@ -42,9 +44,8 @@ def _event_body(name: str, email: str, date_from: datetime, date_to: datetime,
                 reason: str) -> dict:
     """All-day event over the inclusive date_from..date_to range. Google's
     all-day `end.date` is exclusive, hence the extra day."""
-    description = f"Booked by {name} ({email}) via 317 SMS."
-    if reason:
-        description += f"\n\nReason: {reason}"
+    # Empty rather than absent, so editing a reason away clears it on the event.
+    description = f"Reason: {reason}" if reason else ""
     return {
         "summary": f"{EVENT_PREFIX} — {name}",
         "description": description,
@@ -71,6 +72,25 @@ def create_holiday_event(name: str, email: str, date_from: datetime,
     except Exception as e:
         print(f"[calendar] create failed for {email}: {e}")
         return None
+
+
+def update_holiday_event(event_id: str, name: str, email: str, date_from: datetime,
+                         date_to: datetime, reason: str) -> bool:
+    """Move an existing event onto a new range. False if there's nothing to
+    update or the call failed — the caller treats that as "not on the calendar"
+    and lets the existing retry recreate it."""
+    if not event_id or not calendar_configured():
+        return False
+    try:
+        _service().events().patch(
+            calendarId=NCO_HOLIDAY_CALENDAR_ID,
+            eventId=event_id,
+            body=_event_body(name, email, date_from, date_to, reason),
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"[calendar] update failed for {event_id}: {e}")
+        return False
 
 
 def delete_holiday_event(event_id: str) -> bool:
