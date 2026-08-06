@@ -61,6 +61,13 @@ DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
 )
 DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
 
+# Shared "NCO Holidays" Google Calendar — booked NCO holidays are written here
+# as all-day events so staff can overlay them on the squadron's other calendars.
+# Share the calendar with the service account (or with IMPERSONATE_EMAIL, who it
+# acts as) with "Make changes to events" before setting this. Left unset, the
+# bookings still save; they just aren't pushed to Calendar.
+NCO_HOLIDAY_CALENDAR_ID = os.getenv("NCO_HOLIDAY_CALENDAR_ID", "")
+
 # Where the SMS site is served from — used to link straight to a page from an
 # email (e.g. the session plan awaiting review) instead of "log in and find it".
 SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://sms.317atc.co.uk").rstrip("/")
