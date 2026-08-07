@@ -31,6 +31,7 @@ class Cadet(Base):
     theory_progress   = relationship("CadetTheoryProgress", back_populates="cadet", cascade="all, delete-orphan")
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
+    leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -164,6 +165,27 @@ class CadetAttendance(Base):
     unit          = Column(Text,       nullable=True)  # unit attended
 
     cadet = relationship("Cadet", back_populates="attendance")
+
+
+class CadetLeavingProcess(Base):
+    """A leaving-process email that has been sent to a lapsed cadet.
+
+    One open row per cadet — the row's existence *is* the "email sent" state,
+    and deleting it is how staff cancel when a cadet comes back. The status the
+    UI shows (waiting / start leaving) is derived from ``sent_at``, never
+    stored, so a countdown can't go stale.
+    """
+    __tablename__ = "Cadet_Leaving_Process"
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
+                       nullable=False, unique=True)
+    sent_at   = Column(DateTime,   nullable=False)
+    sent_to   = Column(Text,       nullable=False)   # address staff typed at send time
+    reply_to  = Column(Text,       nullable=False)
+    sent_by   = Column(Text,       nullable=True)    # staff email, for the audit trail
+
+    cadet = relationship("Cadet", back_populates="leaving_process")
 
 
 class StaffAttendance(Base):

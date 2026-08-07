@@ -83,3 +83,7 @@ BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)
 # member can then review it, so this defaults to the shared notifications group
 # rather than one person.
 SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
+# Where replies to the leaving-process email land. It goes out from the
+# unmonitored noreply account, so this is the mailbox a cadet actually reaches.
+# Staff can override it per send.
+LEAVING_PROCESS_REPLY_TO = os.getenv("LEAVING_PROCESS_REPLY_TO", "ci.mcdonald@317atc.co.uk")

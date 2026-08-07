@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
-from database.models import Cadet, Staff, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
+from database.models import Cadet, Staff, StaffAttendance, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
 
 from core.db import get_db, get_current_cadet, get_current_user
 from core.security import require_staff, get_roles_for_emails
+from routers.cadets import attendance_to_dict
 from routers.stores import order_to_dict, issuance_to_dict
 from routers.badges import badge_order_to_dict
 
@@ -371,3 +372,20 @@ def list_staff(
         }
         for s in db.query(Staff).all()
     ]
+
+
+@router.get("/staff/{cin}/attendance")
+def staff_attendance(
+    cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Full scraped attendance register, newest first. Same shape as the cadet
+    endpoint so both feed the same UI."""
+    rows = (
+        db.query(StaffAttendance)
+        .filter(StaffAttendance.staff_id == cin)
+        .order_by(StaffAttendance.date.desc())
+        .all()
+    )
+    return [attendance_to_dict(r) for r in rows]
