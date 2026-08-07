@@ -10,11 +10,12 @@ from sqlalchemy import or_, exists
 from sqlalchemy.orm import Session, selectinload
 
 from database.models import (
-    AssessmentSheet, Cadet, CadetMedical, CadetDietary, CadetQualification,
-    CadetEvent, CadetTheoryProgress,
+    AssessmentSheet, Cadet, CadetAttendance, CadetMedical, CadetDietary,
+    CadetQualification, CadetEvent, CadetTheoryProgress,
 )
 
 from core import cache
+from core.attendance import attendance_state
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
@@ -501,6 +502,37 @@ def get_cadet(
             for d in cadet.dietary
         ],
     }
+
+
+def attendance_to_dict(record):
+    """Shared by the cadet and staff attendance endpoints — the two tables hold
+    the same scraped register columns."""
+    return {
+        "id": record.id,
+        "date": record.date.isoformat(),
+        "registerType": record.register_type,
+        "status": record.status,
+        # Classified here so the UI never re-implements the rule.
+        "state": attendance_state(record.status),
+        "unit": record.unit,
+    }
+
+
+@router.get("/cadets/{cin}/attendance")
+def cadet_attendance(
+    cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Full scraped attendance register, newest first. Returned whole — the
+    client filters and totals it, so changing the date range costs no request."""
+    rows = (
+        db.query(CadetAttendance)
+        .filter(CadetAttendance.cadet_id == cin)
+        .order_by(CadetAttendance.date.desc())
+        .all()
+    )
+    return [attendance_to_dict(r) for r in rows]
 
 
 @router.patch("/cadets/{cin}")

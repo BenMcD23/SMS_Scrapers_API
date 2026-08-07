@@ -5,6 +5,7 @@ import time
 import threading
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.attendance import get_attendance
 
 scraper_lock = threading.Lock()
 
@@ -310,6 +311,8 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         except Exception as e:
             print(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
 
+        cadetAttendance = get_attendance(page)
+
         cadet_data.append({
             "cin": cin,
             "first_name": first_name,
@@ -319,6 +322,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             "date_of_birth": date_of_birth,
             "classification": classification,
             "qualifications": cadetQualifications,
+            "attendance": cadetAttendance,
         })
 
     return cadet_data

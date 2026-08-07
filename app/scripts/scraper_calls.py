@@ -13,7 +13,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from database.models import (
     Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary,
-    AttachmentCheckQual, BanNotification, CadetAbsence, CadetTheoryProgress,
+    AttachmentCheckQual, BanNotification, CadetAbsence, CadetAttendance, CadetTheoryProgress,
     AssessmentSheet, StoresOrder, StoresOrderItem, StoresItemIssuance,
     BadgeOrder, BadgeOrderItem,
 )
@@ -114,6 +114,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         skipped = 0
         emails_matched = 0
         missing_attachments = 0
+        attendance_rows = 0
         scraped_cins = set()
 
         for entry in cadet_data:
@@ -196,6 +197,23 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                             "value": f"[MISSING ATTACHMENT] {entry.get('first_name', '')} {entry.get('last_name', '')} — {qt}".strip(),
                         }))
 
+            # Bader's register is append-only, so replacing a cadet's rows
+            # wholesale is always correct. Skipped when the scrape came back
+            # empty so a failed tab load can't wipe existing history.
+            attendance = entry.get("attendance") or []
+            if attendance:
+                db_session.query(CadetAttendance).filter(
+                    CadetAttendance.cadet_id == cin
+                ).delete(synchronize_session=False)
+                db_session.add_all([
+                    CadetAttendance(
+                        cadet_id=cin, date=a["date"], register_type=a["register_type"],
+                        status=a["status"], unit=a["unit"],
+                    )
+                    for a in attendance
+                ])
+                attendance_rows += len(attendance)
+
             saved += 1
 
         db_session.commit()
@@ -207,7 +225,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {missing_attachments} missing attachment(s)."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 

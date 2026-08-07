@@ -21,12 +21,17 @@ FOOTER = (
 
 def send_email(to: str, subject: str, html_body: str, attachment: bytes | None = None,
                attachment_filename: str = "attachment.pdf",
-               attachments: list[tuple[str, bytes, str]] | None = None) -> None:
+               attachments: list[tuple[str, bytes, str]] | None = None,
+               reply_to: str | None = None) -> None:
     """Send an HTML email, optionally with attachments.
 
     ``attachment``/``attachment_filename`` are the legacy single-PDF params (kept
     for existing callers). ``attachments`` is a list of ``(filename, data,
     mime_type)`` tuples for multiple/mixed files; both may be combined.
+
+    ``reply_to`` points replies at a real mailbox — everything still sends from
+    the unmonitored noreply account, so without it a reply goes nowhere. Any
+    template used with it must drop the standard "do not reply" FOOTER.
     """
     if os.getenv("EMAIL_DISABLED", "").lower() in ("1", "true", "yes"):
         print(f"[send_email] skipped (EMAIL_DISABLED): would send to {to}: {subject}")
@@ -50,6 +55,8 @@ def send_email(to: str, subject: str, html_body: str, attachment: bytes | None =
         msg["From"] = f"317 ATC <{NOREPLY_EMAIL}>"
         msg["To"] = to
         msg["Subject"] = subject
+        if reply_to:
+            msg["Reply-To"] = reply_to
         msg.attach(email.mime.text.MIMEText(html_body, "html"))
         for filename, data, mime_type in all_attachments:
             maintype, _, subtype = (mime_type or "application/octet-stream").partition("/")
@@ -394,5 +401,32 @@ def session_plan_approved_html(plan_id: int, session_name: str, session_ic: str,
       {note_html}
       {_plan_button(plan_id, "View session plan", "#2e7d32")}
       {FOOTER}
+    </div>
+    """
+
+
+def leaving_process_email_html(cadet_name: str, weeks_absent: int, reply_to: str) -> str:
+    """To a cadet who has stopped attending, asking whether they intend to stay.
+
+    Deliberately omits the shared FOOTER: this one is sent with a Reply-To
+    pointing at a real mailbox, so telling the reader not to reply would be
+    wrong — replying is the whole point.
+    """
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Are you still with us?</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>Hi {_esc(cadet_name)},</p>
+      <p>We've noticed you haven't been to parade for around {weeks_absent} weeks, and we
+         wanted to check in before doing anything else.</p>
+      <p>If you'd like to stay with 317 Squadron, just come along to the next parade
+         night &mdash; there's nothing you need to do here.</p>
+      <p>If you've decided to leave, or something is making it hard to attend, please
+         reply to this email and let us know. We'd rather hear from you than assume.</p>
+      <p><strong>If we don't hear from you within two weeks, we'll begin the process of
+         discharging you from the squadron.</strong></p>
+      <p style="margin-top:20px">Thanks,<br>317 (Failsworth) Squadron</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">
+        Replies to this email go to {_esc(reply_to)}.</p>
     </div>
     """
