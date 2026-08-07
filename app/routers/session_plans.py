@@ -32,6 +32,7 @@ from core.emailer import (
     session_plan_approved_html,
 )
 from core.security import get_user_role, require_staff, require_staff_or_nco
+from form_generators.session_plan_pdf import build_session_plan_pdf
 
 router = APIRouter()
 
@@ -268,6 +269,43 @@ async def get_plan(
     is_staff = _is_staff(idinfo)
     plan = _get_or_404(db, plan_id, user)
     return _detail(plan, user, is_staff)
+
+
+@router.get("/session-plans/{plan_id}/pdf")
+async def export_plan_pdf(
+    plan_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """The plan as a printable PDF. Same visibility gate as viewing it, so an
+    unsubmitted draft stays private to its author."""
+    user = get_or_create_user(db, idinfo)
+    plan = _get_or_404(db, plan_id, user)
+
+    pdf = build_session_plan_pdf({
+        "session_name": plan.session_name,
+        "session_ic": plan.session_ic,
+        "session_date": _date_str(plan),
+        "aim": plan.aim,
+        "participants": plan.participants,
+        "rooming": plan.rooming,
+        "equipment": plan.equipment,
+        **{key: getattr(plan, key) or "" for key in SESSION_PLAN_SECTIONS},
+        "timetable": plan.timetable or [],
+        "notes": plan.notes,
+        "author_name": _user_name(plan.author),
+        "approved_by": plan.reviewed_by if plan.status == "approved" else None,
+        "approved_at": plan.reviewed_at.strftime("%d/%m/%Y") if plan.reviewed_at else None,
+    })
+
+    safe_name = "".join(
+        c for c in (plan.session_name or "session-plan") if c.isalnum() or c in " -_"
+    ).strip() or "session-plan"
+    return StreamingResponse(
+        io.BytesIO(pdf),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
 
 
 @router.put("/session-plans/{plan_id}")
