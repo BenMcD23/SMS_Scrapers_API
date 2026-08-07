@@ -42,7 +42,7 @@ class BrowserPool:
         browser = getattr(self._local, "browser", None)
         if browser is None or not browser.is_connected():
             self._local.browser = pw.chromium.launch(
-                headless=True,
+                headless=False,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",

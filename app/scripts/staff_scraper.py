@@ -1,12 +1,13 @@
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from datetime import date
-import calendar
 import json
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 from scripts.scraper_utils import init_scraper, login, match_email
+from scripts.attendance import get_attendance
+from core.attendance import attendance_state, PRESENT
 
-from database.models import Staff
+from database.models import Staff, StaffAttendance
 from google_admin_api.get_all_users import get_workspace_users
 
 
@@ -61,8 +62,9 @@ def get_staff_address(page: Page):
         return None
 
 
-def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=None):
-    """Visit each staff member's profile (by row index) and set entry['address']."""
+def add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=None):
+    """Visit each staff member's profile (by row index) and set entry['address']
+    and entry['attendance']."""
     total = len(staff)
     for i, entry in enumerate(staff):
         if stop_event and stop_event.is_set():
@@ -71,7 +73,7 @@ def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"Fetching address {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
+                "value": f"Fetching profile {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
             }))
 
         page.goto("https://sms.bader.mod.uk/staff/default.aspx")
@@ -89,7 +91,7 @@ def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=
         wait_for_aspx_load(page)
 
         entry["address"] = get_staff_address(page)
-
+        entry["attendance"] = get_attendance(page)
 
 def attendance_periods(today):
     """(year, month) pairs to scrape: current year up to the current month, plus
@@ -101,76 +103,27 @@ def attendance_periods(today):
     return periods
 
 
-def get_staff_attendance(page, scraper_messages, scraper_lock, stop_event=None):
-    """Return {cin: {"YYYY-MM": PC+PI}} parade-night attendance per month.
+def monthly_attendance(records, today=None):
+    """{"YYYY-MM": nights attended} over the HTD window (see attendance_periods).
 
-    Covers a rolling two-half window (see attendance_periods), filtering the
-    staff attendance register one month at a time.
+    Derived from the profile's own attendance register, which replaced the
+    month-by-month unit report scrape. Counts parade nights the person turned up
+    to — dress state doesn't matter, so both "Present Correctly Dressed" and
+    "Present Incorrectly Dressed" count, matching the report's old PC+PI sum.
+    Every month in the window gets a key, at 0 if nothing was attended, so the
+    HTD form always has a half to offer.
     """
-    today = date.today()
-
-    page.goto("https://sms.bader.mod.uk/units/fields/attendance/staffAttendance.aspx")
-    wait_for_aspx_load(page)
-    wait_for_preloader(page)
-
-    result = {}  # cin -> {month_key: count}
-    for year, month in attendance_periods(today):
-        if stop_event and stop_event.is_set():
-            return result
-
-        last_day = calendar.monthrange(year, month)[1]
-        date_from = f"01/{month:02d}/{year}"
-        date_to = f"{last_day:02d}/{month:02d}/{year}"
-        month_key = f"{year}-{month:02d}"
-
-        with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Fetching attendance for {month_key}..."}))
-
-        # The Tempus Dominus pickers fight any value we set (a deferred linked
-        # handler reverts "to" to the from-date). The server only reads the posted
-        # text inputs, so bypass the widget: set both input values and click Filter
-        # in ONE synchronous block. A real .click() puts the submit button's name in
-        # the POST (so the server-side filter actually runs, unlike __doPostBack),
-        # while staying synchronous with no blur, so the dates don't revert.
-        try:
-            page.evaluate(
-                """([from, to]) => {
-                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_txtDateFrom').value = from;
-                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_txtDateTo').value = to;
-                    document.getElementById('ctl00_ctl00_cphBaseBody_cphBody_lbFilter').click();
-                }""",
-                [date_from, date_to],
-            )
-        except Exception:
-            pass  # the click navigates; the eval context gets torn down mid-call
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-
-        # Show all rows so DataTables client-side paging doesn't drop any from the DOM.
-        try:
-            page.locator("[name='staffAttendance_length']").select_option(value="100")
-        except Exception:
-            pass
-
-        tbody = page.query_selector("#staffAttendance tbody")
-        if not tbody:
+    counts = {f"{y}-{m:02d}": 0 for y, m in attendance_periods(today or date.today())}
+    for record in records:
+        key = f"{record['date'].year}-{record['date'].month:02d}"
+        if key not in counts:
+            continue  # outside the claim window
+        if (record.get("register_type") or "") != "Parade Night":
             continue
-        # Columns: 0 Personnel, 1 Service Number (CIN), 2 Register Type, 3 PC, 4 PI, ...
-        for row in tbody.query_selector_all("tr"):
-            cols = row.query_selector_all("td")
-            if len(cols) < 5:
-                continue
-            cin = cols[1].inner_text().strip()
-            if not cin:
-                continue
-            try:
-                pc = int(cols[3].inner_text().strip() or 0)
-                pi = int(cols[4].inner_text().strip() or 0)
-            except ValueError:
-                continue
-            result.setdefault(cin, {})[month_key] = pc + pi
-
-    return result
+        if attendance_state(record.get("status")) != PRESENT:
+            continue
+        counts[key] += 1
+    return counts
 
 
 def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
@@ -190,12 +143,9 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         staff = get_staff(page)
 
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching addresses..."}))
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching profiles..."}))
 
-        add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
-        if stop_event.is_set(): return
-
-        attendance_by_cin = get_staff_attendance(page, scraper_messages, scraper_lock, stop_event=stop_event)
+        add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
         if stop_event.is_set(): return
 
         with scraper_lock:
@@ -219,6 +169,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         saved = 0
         skipped = 0
         emails_matched = 0
+        attendance_rows = 0
 
         for entry in staff:
             cin = entry.get("cin")
@@ -244,11 +195,27 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
             member.rank = entry.get("rank") or member.rank
             member.email = email or member.email
             member.address = entry.get("address") or member.address
-            # Replace the whole map when the scrape produced data, so months we
-            # no longer scrape (last year's dropped half) prune out; skip on an
-            # empty scrape so a transient failure doesn't wipe everyone.
-            if attendance_by_cin:
-                member.attendance = attendance_by_cin.get(str(cin), {})
+
+            # Bader's register is append-only, so replacing this person's rows
+            # wholesale is always correct. Skipped on an empty scrape so a failed
+            # tab load can't wipe existing history — which is also why the
+            # monthly map is only rebuilt alongside the rows it's derived from.
+            records = entry.get("attendance") or []
+            if records:
+                db_session.query(StaffAttendance).filter(
+                    StaffAttendance.staff_id == cin
+                ).delete(synchronize_session=False)
+                db_session.add_all([
+                    StaffAttendance(
+                        staff_id=cin, date=a["date"], register_type=a["register_type"],
+                        status=a["status"], unit=a["unit"],
+                    )
+                    for a in records
+                ])
+                attendance_rows += len(records)
+                # Months outside the current window prune out, same as before.
+                member.attendance = monthly_attendance(records)
+
             saved += 1
 
         db_session.commit()
@@ -256,7 +223,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped."
+                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped, {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
