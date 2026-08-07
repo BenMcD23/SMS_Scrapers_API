@@ -75,22 +75,6 @@ THEORY_LESSON_BY_KEY: dict[str, TheoryLesson] = {l.key: l for l in THEORY_LESSON
 
 
 # ─── Has the cadet earned the qualification this theory leads to? ──────────────
-# Classification ladder, lowest → highest. Rank by index; unknown/None ranks below
-# all, so "has this classification or better" is a simple >= on the index.
-CLASSIFICATION_ORDER: tuple[str, ...] = (
-    "Second Class Cadet",
-    "First Class Cadet",
-    "Leading Cadet",
-    "Senior Cadet",
-    "Master Air Cadet",
-)
-
-
-def _class_rank(name: str | None) -> int:
-    try:
-        return CLASSIFICATION_ORDER.index(name)
-    except ValueError:
-        return -1
 
 
 def lesson_qual_held(lesson: TheoryLesson, qual_names, classification: str | None) -> bool:
@@ -105,5 +89,6 @@ def lesson_qual_held(lesson: TheoryLesson, qual_names, classification: str | Non
         badge = BADGE_TYPE_BY_KEY.get(target)
         return bool(badge and held_level(badge, qual_names))
     if kind == "classification":
-        return _class_rank(classification) >= _class_rank(target)
+        from core.qualifications import classification_rank
+        return classification_rank(classification) >= classification_rank(target)
     return False

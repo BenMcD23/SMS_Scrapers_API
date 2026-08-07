@@ -1,9 +1,11 @@
 """Central catalog mapping Bader SMS qualifications → squadron badge types.
 
-This is the single source of truth that two features consume:
+This is the single source of truth that three features consume:
 
 * **Audit** (`routers/cadets.py`) — group a cadet's scraped qualifications by
   badge type and report the highest level held.
+* **Badge orders** (`routers/cadets.py` → `/cadets/{cin}/badge-qualifications`)
+  — tell the QM whether the cadet actually holds the badge being ordered.
 * **Assessment-sheet uploader** (`scripts/scraper_calls.py`) — turn a
   ``(badge_type, level)`` into the exact Bader dropdown name(s) + option id so
   the scraper can select the right qualification when uploading proof.
@@ -246,20 +248,52 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
 )
 
 
+# ─── Classification ladder ────────────────────────────────────────────────────
+# Lowest → highest, matching the labels the qualifications scraper writes to
+# ``Cadet.classification``. Rank by index; unknown/None (a cadet who hasn't
+# passed anything yet) ranks below all, so "this classification or better" is a
+# simple ``>=`` on the index.
+
+CLASSIFICATION_ORDER: tuple[str, ...] = (
+    "Second Class Cadet",
+    "First Class Cadet",
+    "Leading Cadet",
+    "Senior Cadet",
+    "Master Air Cadet",
+)
+
+
+def classification_rank(name: Optional[str]) -> int:
+    """Index of ``name`` in the ladder, or -1 if it isn't a known rung."""
+    try:
+        return CLASSIFICATION_ORDER.index(name)
+    except ValueError:
+        return -1
+
+
 # ─── Lookups & helpers ────────────────────────────────────────────────────────
 
 BADGE_TYPE_BY_KEY: dict[str, BadgeType] = {b.key: b for b in BADGE_TYPES}
+
+
+def held_levels(badge: BadgeType, qual_names) -> tuple[str, ...]:
+    """Every level of ``badge`` the cadet has a matching qualification for,
+    highest first. Bader only records the rungs actually awarded, so a cadet who
+    jumped straight to silver has no blue entry — callers that need "silver or
+    better" should compare positions rather than look for an exact level."""
+    blob = "\n".join(qual_names).casefold()
+    return tuple(
+        lvl.level for lvl in badge.levels  # highest priority first
+        if any(p.casefold() in blob for p in lvl.patterns)
+    )
 
 
 def held_level(badge: BadgeType, qual_names) -> Optional[str]:
     """The level of ``badge`` held by a cadet, given an iterable of their raw
     ``qual_type`` strings. Returns the highest-priority level whose pattern
     matches (mirroring the spreadsheet cascade), or ``None`` if none match."""
-    blob = "\n".join(qual_names).casefold()
-    for lvl in badge.levels:  # highest priority first
-        if any(p.casefold() in blob for p in lvl.patterns):
-            return lvl.level
-    return None
+    levels = held_levels(badge, qual_names)
+    return levels[0] if levels else None
 
 
 def bader_quals_for(badge_key: str, level: str) -> tuple[BaderQual, ...]:
