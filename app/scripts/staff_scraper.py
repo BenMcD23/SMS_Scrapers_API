@@ -5,6 +5,7 @@ import json
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 from scripts.scraper_utils import init_scraper, login, match_email
 from scripts.attendance import get_attendance
+from core.attendance import attendance_state, PRESENT
 
 from database.models import Staff, StaffAttendance
 from google_admin_api.get_all_users import get_workspace_users
@@ -119,7 +120,7 @@ def monthly_attendance(records, today=None):
             continue  # outside the claim window
         if (record.get("register_type") or "") != "Parade Night":
             continue
-        if not (record.get("status") or "").startswith("Present"):
+        if attendance_state(record.get("status")) != PRESENT:
             continue
         counts[key] += 1
     return counts
