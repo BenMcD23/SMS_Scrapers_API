@@ -5,8 +5,9 @@ import json
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 from scripts.scraper_utils import init_scraper, login, match_email
+from scripts.attendance import get_attendance
 
-from database.models import Staff
+from database.models import Staff, StaffAttendance
 from google_admin_api.get_all_users import get_workspace_users
 
 
@@ -61,8 +62,9 @@ def get_staff_address(page: Page):
         return None
 
 
-def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=None):
-    """Visit each staff member's profile (by row index) and set entry['address']."""
+def add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=None):
+    """Visit each staff member's profile (by row index) and set entry['address']
+    and entry['attendance']."""
     total = len(staff)
     for i, entry in enumerate(staff):
         if stop_event and stop_event.is_set():
@@ -71,7 +73,7 @@ def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"Fetching address {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
+                "value": f"Fetching profile {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
             }))
 
         page.goto("https://sms.bader.mod.uk/staff/default.aspx")
@@ -89,7 +91,7 @@ def add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=
         wait_for_aspx_load(page)
 
         entry["address"] = get_staff_address(page)
-
+        entry["attendance"] = get_attendance(page)
 
 def attendance_periods(today):
     """(year, month) pairs to scrape: current year up to the current month, plus
@@ -190,9 +192,9 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         staff = get_staff(page)
 
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching addresses..."}))
+            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching profiles..."}))
 
-        add_staff_addresses(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
+        add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
         if stop_event.is_set(): return
 
         attendance_by_cin = get_staff_attendance(page, scraper_messages, scraper_lock, stop_event=stop_event)
@@ -219,6 +221,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         saved = 0
         skipped = 0
         emails_matched = 0
+        attendance_rows = 0
 
         for entry in staff:
             cin = entry.get("cin")
@@ -249,6 +252,24 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
             # empty scrape so a transient failure doesn't wipe everyone.
             if attendance_by_cin:
                 member.attendance = attendance_by_cin.get(str(cin), {})
+
+            # Bader's register is append-only, so replacing this person's rows
+            # wholesale is always correct. Skipped on an empty scrape so a failed
+            # tab load can't wipe existing history.
+            records = entry.get("attendance") or []
+            if records:
+                db_session.query(StaffAttendance).filter(
+                    StaffAttendance.staff_id == cin
+                ).delete(synchronize_session=False)
+                db_session.add_all([
+                    StaffAttendance(
+                        staff_id=cin, date=a["date"], register_type=a["register_type"],
+                        status=a["status"], unit=a["unit"],
+                    )
+                    for a in records
+                ])
+                attendance_rows += len(records)
+
             saved += 1
 
         db_session.commit()
@@ -256,7 +277,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped."
+                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped, {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
