@@ -17,7 +17,9 @@ from database.models import (
 from core import cache
 from core.attendance import attendance_state
 from core.db import get_db
-from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
+from core.qualifications import (
+    BADGE_TYPES, BADGE_TYPE_BY_KEY, CLASSIFICATION_ORDER, held_level, held_levels,
+)
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
 from core.security import require_staff, require_staff_or_nco
 
@@ -533,6 +535,73 @@ def cadet_attendance(
         .all()
     )
     return [attendance_to_dict(r) for r in rows]
+
+
+@router.get("/cadets/{cin}/badge-qualifications")
+def cadet_badge_qualifications(
+    cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """What the cadet has actually earned, in the shape the badge-order screen
+    needs: their classification (plus the ladder, so the client doesn't hardcode
+    it), every level held per badge type, and the raw qualification list.
+
+    Deliberately leaner than ``/cadets/{cin}`` — the QM screen fetches this per
+    cadet as orders are opened, so it must not drag in events, assessments and
+    medical records. Expired qualifications are dropped, matching the audit: a
+    lapsed qual must never read as still held."""
+    cadet = (
+        db.query(Cadet)
+        .filter(Cadet.cin == cin)
+        .options(selectinload(Cadet.qualifications))
+        .first()
+    )
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cin} not found.")
+
+    today = date.today()
+    active_quals = [q for q in cadet.qualifications if not _is_expired(q, today)]
+    qual_names = [q.qual_type for q in active_quals]
+
+    badges = []
+    for b in BADGE_TYPES:
+        levels = held_levels(b, qual_names)
+        badges.append({
+            "key": b.key,
+            "name": b.name,
+            "kind": b.kind,
+            # Full ladder, highest first, so the client can tell "this level
+            # isn't tracked for the badge" apart from "cadet doesn't hold it".
+            "levels": [lvl.level for lvl in b.levels],
+            "levels_held": [
+                {"level": lvl, "date_achieved": _award_date(b, lvl, active_quals)}
+                for lvl in levels
+            ],
+            "level": levels[0] if levels else None,
+            "date_achieved": _award_date(b, levels[0] if levels else None, active_quals),
+        })
+
+    # Newest award first, undated quals last.
+    ordered_quals = sorted(
+        active_quals,
+        key=lambda q: (q.date_achieved is not None, q.date_achieved or datetime.min),
+        reverse=True,
+    )
+
+    return {
+        "cin": cadet.cin,
+        "classification": cadet.classification,
+        "classification_order": list(CLASSIFICATION_ORDER),
+        "badges": badges,
+        "qualifications": [
+            {
+                "name": q.qual_type,
+                "date_achieved": q.date_achieved.date().isoformat() if q.date_achieved else None,
+            }
+            for q in ordered_quals
+        ],
+    }
 
 
 @router.patch("/cadets/{cin}")
