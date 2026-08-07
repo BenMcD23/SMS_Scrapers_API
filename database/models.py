@@ -30,6 +30,7 @@ class Cadet(Base):
     dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
     theory_progress   = relationship("CadetTheoryProgress", back_populates="cadet", cascade="all, delete-orphan")
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
+    attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -42,6 +43,10 @@ class Staff(Base):
     email      = Column(Text, nullable=True)
     address    = Column(Text, nullable=True)  # current address from SMS profile
     attendance = Column(JSON, nullable=True)  # {"YYYY-MM": PC+PI} per month this year
+
+    # Row-level register history, separate from the monthly `attendance` counts
+    # above (which come from the unit-wide staff attendance report).
+    attendance_records = relationship("StaffAttendance", back_populates="staff", cascade="all, delete-orphan")
 
 
 QUALIFICATION_TYPES = (
@@ -142,6 +147,38 @@ class CadetAbsence(Base):
     scraped_at = Column(DateTime,   nullable=False)
 
     cadet = relationship("Cadet", back_populates="absences")
+
+
+class CadetAttendance(Base):
+    """One row of a cadet's Bader attendance register (Service Record →
+    Attendance), scraped by the cadet-quali scraper. Bader's history is
+    append-only, so the scraper full-replaces a cadet's rows each run rather
+    than merging — no dedup or update logic needed."""
+    __tablename__ = "Cadet_Attendance"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    date          = Column(DateTime,   nullable=False)
+    register_type = Column(Text,       nullable=True)  # e.g. "Parade Night"
+    status        = Column(Text,       nullable=True)  # e.g. "Present Correctly Dressed", "Absent"
+    unit          = Column(Text,       nullable=True)  # unit attended
+
+    cadet = relationship("Cadet", back_populates="attendance")
+
+
+class StaffAttendance(Base):
+    """One row of a staff member's Bader attendance register (Service Record →
+    Attendance). Full-replaced per person each run, same as CadetAttendance."""
+    __tablename__ = "Staff_Attendance"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    staff_id      = Column(BigInteger, ForeignKey("Staff.cin", ondelete="CASCADE"), nullable=False, index=True)
+    date          = Column(DateTime,   nullable=False)
+    register_type = Column(Text,       nullable=True)
+    status        = Column(Text,       nullable=True)
+    unit          = Column(Text,       nullable=True)
+
+    staff = relationship("Staff", back_populates="attendance_records")
 
 
 class InspectionSheet(Base):
