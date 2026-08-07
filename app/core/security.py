@@ -16,6 +16,7 @@ import threading
 import time
 
 from fastapi import Header, HTTPException
+from google.auth import exceptions as google_auth_exceptions
 from google.oauth2 import id_token, service_account
 from google.auth.transport import requests
 from googleapiclient.discovery import build as google_build
@@ -37,6 +38,12 @@ _token_cache_lock = threading.Lock()
 # Reused across verifications so even cache misses share a single HTTP session
 # (and its cert cache) rather than building a fresh one each time.
 _google_request = requests.Request()
+
+# Tolerance for clock drift between this host and Google. Without it, an ID
+# token minted seconds ago fails with "Token used too early" whenever our clock
+# lags Google's — and because the frontend reads 401 as "expired, sign in
+# again", that turns into an endless bounce through the consent screen.
+CLOCK_SKEW_SECONDS = 60
 
 
 def verify_token(authorization: str) -> dict:
@@ -60,8 +67,21 @@ def verify_token(authorization: str) -> dict:
             return cached[0]
 
     try:
-        idinfo = id_token.verify_oauth2_token(token, _google_request, GOOGLE_CLIENT_ID)
-    except Exception:
+        idinfo = id_token.verify_oauth2_token(
+            token, _google_request, GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=CLOCK_SKEW_SECONDS,
+        )
+    except google_auth_exceptions.TransportError as e:
+        # We couldn't reach Google to fetch its signing certs — that says
+        # nothing about the token. Answering 401 here would tell the frontend
+        # the session is stale and send the user round the sign-in loop again,
+        # so surface it as what it is: this service is temporarily degraded.
+        print(f"[verify_token] cert fetch failed: {e}")
+        raise HTTPException(status_code=503, detail="Auth check unavailable")
+    except Exception as e:
+        # Log the real reason — "Invalid Token" alone makes an expired token,
+        # a client-ID mismatch and clock skew look identical from the outside.
+        print(f"[verify_token] rejected: {type(e).__name__}: {e}")
         raise HTTPException(status_code=401, detail="Invalid Token")
     if not idinfo.get("email_verified"):
         raise HTTPException(status_code=401, detail="Email not verified")
