@@ -6,7 +6,6 @@ Reply-To that actually reaches someone), which starts a two-week clock; when it
 runs out the row reads "start leaving process" and staff take it from there.
 """
 
-import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,19 +18,13 @@ from database.models import Cadet, CadetAttendance, CadetLeavingProcess
 from core.attendance import attendance_state, ABSENT
 from core.config import LEAVING_PROCESS_REPLY_TO
 from core.db import get_db
-from core.emailer import leaving_process_email_html, send_email
+from core.emailer import EMAIL_RE, leaving_process_email_html, send_email
 from core.leaving import gap_days, is_lapsed, leaving_status
 from core.security import require_staff
 
 router = APIRouter()
 
 PARADE_NIGHT = "Parade Night"
-
-
-# Enough to catch a typo before we hand an address to Gmail. Deliberately not
-# pydantic's EmailStr — that pulls in email-validator for two fields, and Gmail
-# rejects anything genuinely malformed anyway.
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class SendLeavingEmail(BaseModel):
