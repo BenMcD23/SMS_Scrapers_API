@@ -32,6 +32,8 @@ class Cadet(Base):
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
+    appraisals        = relationship("NcoAppraisal",          back_populates="cadet", cascade="all, delete-orphan")
+    appraisal_reminders = relationship("NcoAppraisalReminder", back_populates="cadet", cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -351,6 +353,7 @@ class User(Base):
                                        cascade="all, delete-orphan")
     nco_holidays       = relationship("NcoHoliday",         back_populates="user",
                                        cascade="all, delete-orphan")
+    nco_appraisals     = relationship("NcoAppraisal",       back_populates="author")
 
 
 class BaderCredentials(Base):
@@ -621,6 +624,103 @@ class SessionPlanComment(Base):
 
     plan   = relationship("SessionPlan", back_populates="comments")
     author = relationship("User")
+
+
+# ─── NCO appraisals ───────────────────────────────────────────────────────────
+
+# How far ahead the next review can be booked, in months. The appraisal form
+# offers exactly these, and `next_review_date` is derived from the choice so the
+# stored date and the printed "Next NCO Review" line can never disagree.
+NEXT_REVIEW_MONTHS = (3, 6, 12)
+
+# The five free-text sections of the appraisal, in the order they appear on the
+# form and in the Word template. Shared by the model, the API, the document
+# builders and the AI writer so a section is never named in two places.
+APPRAISAL_SECTIONS = (
+    "general_observations", "effectiveness_in_role", "strengths", "weaknesses",
+    "targets",
+)
+
+
+class NcoAppraisal(Base):
+    """A staff appraisal of one cadet NCO, mirroring the squadron's paper form.
+
+    Written by staff, saved here, and printable as the Word template or a PDF.
+    The header block (name/age/attendance) is *snapshotted* onto the row rather
+    than recomputed on export: an appraisal is a record of what was true on the
+    day, so re-opening one next year must not silently age the NCO up or move
+    their attendance figure.
+    """
+    __tablename__ = "NCO_Appraisals"
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
+                       nullable=False, index=True)
+    # Nulled rather than cascaded if the staff account goes — the appraisal
+    # itself outlives whoever typed it.
+    author_id = Column(Integer,    ForeignKey("Users.id", ondelete="SET NULL"), nullable=True)
+
+    appraisal_date = Column(DateTime, nullable=False)
+
+    # Snapshot of the template's header row, as printed.
+    nco_name   = Column(Text, nullable=False, default="", server_default="")
+    age        = Column(Text, nullable=False, default="", server_default="")
+    attendance = Column(Text, nullable=False, default="", server_default="")
+
+    # One column per APPRAISAL_SECTIONS key.
+    general_observations  = Column(Text, nullable=False, default="", server_default="")
+    effectiveness_in_role = Column(Text, nullable=False, default="", server_default="")
+    strengths             = Column(Text, nullable=False, default="", server_default="")
+    weaknesses            = Column(Text, nullable=False, default="", server_default="")
+    targets               = Column(Text, nullable=False, default="", server_default="")
+
+    # Footer row of the form.
+    next_review_months = Column(Integer,  nullable=False, default=12, server_default="12")
+    next_review_date   = Column(DateTime, nullable=False)
+    cause_for_concern  = Column(Boolean,  nullable=False, default=False, server_default="0")
+    extend_probation   = Column(Boolean,  nullable=False, default=False, server_default="0")
+
+    # Model id when the sections were drafted by the AI writer, so the UI can
+    # say which model wrote it (and flag a fallback). Null when hand-written.
+    generated_by = Column(Text, nullable=True)
+
+    # Set once the PDF has been emailed to the NCO — staff can re-send, and the
+    # last send is what's shown.
+    emailed_at = Column(DateTime, nullable=True)
+    emailed_to = Column(Text,     nullable=True)
+
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    cadet  = relationship("Cadet", back_populates="appraisals")
+    author = relationship("User",  back_populates="nco_appraisals")
+
+
+class NcoAppraisalReminder(Base):
+    """A "chase this one up" note for an NCO who has no appraisal yet.
+
+    Everyone with an appraisal already has a next-review date, so they show up
+    on the upcoming list on their own. This table covers the gap: an NCO who has
+    never been appraised has nothing to sort by until staff put a date on them.
+
+    Deleted — not archived — once an appraisal is saved for that cadet: the
+    reminder's whole purpose was to get one written, and the appraisal it
+    produced is the record worth keeping.
+    """
+    __tablename__ = "NCO_Appraisal_Reminders"
+
+    id       = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
+                      nullable=False, index=True)
+
+    due_date = Column(DateTime, nullable=False)
+    note     = Column(Text,     nullable=False, default="", server_default="")
+
+    created_by_name  = Column(Text,     nullable=False)
+    created_by_email = Column(Text,     nullable=False)
+    created_at       = Column(DateTime, nullable=False)
+
+    cadet = relationship("Cadet", back_populates="appraisal_reminders")
 
 
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────
