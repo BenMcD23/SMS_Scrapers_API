@@ -25,13 +25,8 @@ from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
     assessments, attendance, backups, badges, cadets, committee, events,
-<<<<<<< HEAD
     form_generators, inspections, leaving, nco_appraisals, nco_holidays, newsletters,
-    oc, portal, programme, scrapers, session_plans, settings, stats, stores, texts,
-=======
-    form_generators, inspections, leaving, nco_comments, nco_holidays, newsletters, oc, portal,
-    programme, scrapers, session_plans, settings, stats, stores, texts,
->>>>>>> main
+    oc, portal, programme, scrapers, session_plans, settings, stats, stores, texts, nco_comments
 )
 
 
