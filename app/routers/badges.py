@@ -18,6 +18,19 @@ from core.security import require_staff
 router = APIRouter()
 
 
+def _parse_timestamp(value: str | None) -> datetime | None:
+    """Accept the browser's `toISOString()` (which ends in "Z" — Python 3.10's
+    fromisoformat can't read that) and store it as a naive local timestamp, to
+    match the `datetime.now()` values written everywhere else here."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid timestamp: {value}")
+    return dt.astimezone().replace(tzinfo=None) if dt.tzinfo else dt
+
+
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
 def _cell_to_dict(cell: BadgeGridCell) -> dict:
@@ -350,7 +363,7 @@ def badge_orders_update(
                 if "qmNotes" in raw:
                     oi.qm_notes = json.dumps(raw["qmNotes"])
                 if "givenAt" in raw:
-                    oi.given_at = datetime.fromisoformat(raw["givenAt"]) if raw["givenAt"] else None
+                    oi.given_at = _parse_timestamp(raw["givenAt"])
                 if "givenBy" in raw:
                     oi.given_by = raw["givenBy"]
             else:
