@@ -35,7 +35,7 @@ from core.attendance import ABSENT, PRESENT, count_states
 from core.db import get_db, get_or_create_user
 from core.emailer import EMAIL_RE, nco_appraisal_email_html, send_email
 from core.llm import PRIMARY_MODEL, model_label
-from core.ranks import is_nco_rank
+from core.ranks import is_nco_rank, nco_team
 from core.security import require_staff
 from form_generators.nco_appraisal_gen import build_appraisal_docx, next_review_label
 from form_generators.nco_appraisal_pdf import build_appraisal_pdf
@@ -320,8 +320,7 @@ def list_appraisals(
     "coming up" list in due-date order."""
     today = datetime.now()
 
-    cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
-    ncos = [c for c in cadets if is_nco(c)]
+    ncos = nco_team(db)
 
     # Attendance for the NCO team only, and only inside the window the summary
     # looks at — eager-loading Cadet.attendance would drag the whole squadron's

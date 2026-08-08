@@ -14,7 +14,7 @@ from database.models import Cadet, CadetAttendance, Staff, StaffAttendance
 
 from core.attendance import attendance_state, PRESENT, AUTHORISED, ABSENT
 from core.db import get_db
-from core.ranks import is_nco_rank
+from core.ranks import is_nco_rank, nco_team
 from core.security import require_staff
 
 router = APIRouter()
@@ -152,4 +152,62 @@ def attendance_night_detail(
         "cadets": _roster(db, CadetAttendance, Cadet, CadetAttendance.cadet_id, night, registerType,
                           ranked_ncos=True),
         "staff": _roster(db, StaffAttendance, Staff, StaffAttendance.staff_id, night, registerType),
+    }
+
+
+@router.get("/attendance/ncos")
+def nco_attendance(
+    start: Date | None = Query(None, alias="from"),
+    end: Date | None = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Each NCO's own register over a date range — one row per NCO, carrying the
+    nights they were marked on rather than a single figure.
+
+    Both bounds are inclusive whole days, and an open one means "everything on
+    record that side". Counts and percentages are deliberately left to the
+    client: it already owns how they're presented, and the page's register-type
+    filter has to re-derive them anyway.
+
+    The team is whoever holds an NCO rank *now* — the register doesn't record the
+    rank someone held on the night, so a promotion brings the whole of that
+    cadet's history onto this page.
+    """
+    ncos = nco_team(db)
+    nights: dict[int, list] = {cadet.cin: [] for cadet in ncos}
+
+    if ncos:
+        query = db.query(CadetAttendance).filter(CadetAttendance.cadet_id.in_(list(nights)))
+        if start:
+            query = query.filter(CadetAttendance.date >= datetime(start.year, start.month, start.day))
+        if end:
+            # The bound is a whole day, so it runs to the start of the next one.
+            query = query.filter(
+                CadetAttendance.date < datetime(end.year, end.month, end.day) + timedelta(days=1)
+            )
+        for record in query.all():
+            nights[record.cadet_id].append({
+                "date": record.date.date().isoformat(),
+                "registerType": record.register_type,
+                "status": record.status,
+                "state": attendance_state(record.status),
+            })
+
+    # Newest first, the same order the per-person register arrives in.
+    for entries in nights.values():
+        entries.sort(key=lambda n: (n["date"], n["registerType"] or ""), reverse=True)
+
+    return {
+        "from": start.isoformat() if start else None,
+        "to": end.isoformat() if end else None,
+        "ncos": [
+            {
+                "cin": cadet.cin,
+                "name": f"{cadet.first_name or ''} {cadet.last_name or ''}".strip(),
+                "rank": cadet.rank,
+                "nights": nights[cadet.cin],
+            }
+            for cadet in ncos
+        ],
     }
