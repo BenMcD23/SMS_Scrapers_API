@@ -35,6 +35,7 @@ from core.attendance import ABSENT, PRESENT, count_states
 from core.db import get_db, get_or_create_user
 from core.emailer import EMAIL_RE, nco_appraisal_email_html, send_email
 from core.llm import PRIMARY_MODEL, model_label
+from core.ranks import is_nco_rank
 from core.security import require_staff
 from form_generators.nco_appraisal_gen import build_appraisal_docx, next_review_label
 from form_generators.nco_appraisal_pdf import build_appraisal_pdf
@@ -46,10 +47,6 @@ TEMPLATE_PATH = os.path.join(
 )
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-# Cadet ranks that make someone part of the NCO team. Rank is the only marker —
-# flight isn't, NCOs stay posted to the flight they run.
-NCO_RANKS = {"corporal", "sergeant", "flight sergeant"}
 
 # How far back the auto-filled attendance figure looks. A year covers the whole
 # training cycle, which is the period an appraisal is judging.
@@ -148,7 +145,7 @@ def add_months(start: datetime, months: int) -> datetime:
 
 
 def is_nco(cadet: Cadet) -> bool:
-    return (cadet.rank or "").strip().lower() in NCO_RANKS
+    return is_nco_rank(cadet.rank)
 
 
 def cadet_name(cadet: Cadet) -> str:
