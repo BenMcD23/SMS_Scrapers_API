@@ -2,9 +2,10 @@
 
 Run: PYTHONPATH=app:. python -m routers.test_attendance
 
-Covers what the page relies on: a night is (date, register type), the NCO counts
-are the cadet counts narrowed by rank rather than a separate register, and the
-drill-in marks up cadets — but never staff — as NCOs.
+Covers what the pages rely on: a night is (date, register type), the NCO counts
+are the cadet counts narrowed by rank rather than a separate register, the
+drill-in marks up cadets — but never staff — as NCOs, and the per-NCO breakdown
+honours both ends of its date range.
 """
 from datetime import datetime
 
@@ -76,6 +77,29 @@ def test():
 
     # The other register's rows stay out of this night.
     assert len(detail["cadets"]) == 3
+
+    # ── the per-NCO breakdown ────────────────────────────────────────────────
+    breakdown = att.nco_attendance(None, None, db, _idinfo())
+    # The NCO team in surname order, and the plain cadet is not on it.
+    assert [n["cin"] for n in breakdown["ncos"]] == [flt_sgt.cin, corporal.cin]
+
+    corporal_row = breakdown["ncos"][1]
+    assert corporal_row["rank"] == "Corporal" and corporal_row["name"] == "Sam Smith"
+    # Both of their nights, newest first, each classified for the client.
+    assert [(n["date"], n["registerType"], n["state"]) for n in corporal_row["nights"]] == [
+        ("2026-06-06", "Camp", "present"), ("2026-06-05", "Parade Night", "present"),
+    ]
+    assert breakdown["ncos"][0]["nights"][0]["state"] == "authorised"
+
+    # Both bounds are inclusive whole days: asking for the parade night alone
+    # keeps it and drops the camp the following day.
+    ranged = att.nco_attendance(night.date(), night.date(), db, _idinfo())
+    assert ranged["from"] == ranged["to"] == "2026-06-05"
+    assert [n["date"] for n in ranged["ncos"][1]["nights"]] == ["2026-06-05"]
+    # An NCO with nothing in range still gets a row, so the page can show the
+    # whole team rather than only whoever turned out.
+    empty = att.nco_attendance(datetime(2026, 7, 1).date(), None, db, _idinfo())
+    assert [n["nights"] for n in empty["ncos"]] == [[], []]
 
     print("attendance self-check passed")
 
