@@ -626,7 +626,6 @@ class SessionPlanComment(Base):
     author = relationship("User")
 
 
-<<<<<<< HEAD
 # ─── NCO appraisals ───────────────────────────────────────────────────────────
 
 # How far ahead the next review can be booked, in months. The appraisal form
@@ -722,7 +721,8 @@ class NcoAppraisalReminder(Base):
     created_at       = Column(DateTime, nullable=False)
 
     cadet = relationship("Cadet", back_populates="appraisal_reminders")
-=======
+
+
 # ─── NCO quick comments ───────────────────────────────────────────────────────
 
 class NcoComment(Base):
@@ -769,7 +769,6 @@ class NcoCommentReply(Base):
 
     comment = relationship("NcoComment", back_populates="replies")
     author  = relationship("User")
->>>>>>> main
 
 
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────
