@@ -25,8 +25,8 @@ from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 from routers import (
     assessments, attendance, backups, badges, cadets, committee, events,
-    form_generators, inspections, leaving, nco_holidays, newsletters, oc, portal,
-    programme, scrapers, session_plans, settings, stats, stores, texts,
+    form_generators, inspections, leaving, nco_appraisals, nco_holidays, newsletters,
+    oc, portal, programme, scrapers, session_plans, settings, stats, stores, texts,
 )
 
 
@@ -203,5 +203,6 @@ app.include_router(committee.router)
 app.include_router(oc.router)
 app.include_router(session_plans.router)
 app.include_router(nco_holidays.router)
+app.include_router(nco_appraisals.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)

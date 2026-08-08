@@ -3,6 +3,7 @@
 import base64
 import html
 import os
+import re
 import email.mime.multipart
 import email.mime.text
 import email.mime.base
@@ -12,6 +13,11 @@ from googleapiclient.discovery import build as google_build
 
 from core.config import SA_EMAIL, SA_PRIVATE_KEY, NOREPLY_EMAIL, SITE_BASE_URL
 from core.security import _service_account_creds
+
+# Enough to catch a typo before we hand an address to Gmail. Deliberately not
+# pydantic's EmailStr — that pulls in email-validator for a couple of fields,
+# and Gmail rejects anything genuinely malformed anyway.
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 FOOTER = (
     '<p style="margin:20px 0 0;font-size:12px;color:#999">'
@@ -428,5 +434,35 @@ def leaving_process_email_html(cadet_name: str, weeks_absent: int, reply_to: str
       <p style="margin-top:20px">Thanks,<br>317 (Failsworth) Squadron</p>
       <p style="margin:20px 0 0;font-size:12px;color:#999">
         Replies to this email go to {_esc(reply_to)}.</p>
+    </div>
+    """
+
+
+def nco_appraisal_email_html(nco_name: str, appraisal_date: str, next_review: str,
+                             appraised_by: str, reply_to: str | None = None) -> str:
+    """To the NCO the appraisal is about, carrying the appraisal PDF.
+
+    Drops the shared FOOTER when a reply_to is given: it goes out from the
+    unmonitored noreply account, so with a real mailbox attached "do not reply"
+    would be wrong — an NCO who wants to talk about their appraisal should.
+    """
+    tail = (
+        f'<p style="margin:20px 0 0;font-size:12px;color:#999">'
+        f"Replies to this email go to {_esc(reply_to)}.</p>"
+        if reply_to else FOOTER
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Your NCO Appraisal</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>Hi {_esc(nco_name)},</p>
+      <p>Your NCO appraisal is attached as a PDF. It was completed on
+         {_esc(appraisal_date)} by {_esc(appraised_by)}.</p>
+      <p>Please read it properly &mdash; particularly the targets, which are what
+         we'll look at together at your next review in {_esc(next_review)}.</p>
+      <p>If anything in it doesn't match how you see your own performance, speak to
+         a member of staff. An appraisal is meant to be a conversation, not a verdict.</p>
+      <p style="margin-top:20px">317 (Failsworth) Squadron</p>
+      {tail}
     </div>
     """
