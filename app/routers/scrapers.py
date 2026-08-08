@@ -36,7 +36,14 @@ from routers.stats import compute_stats
 
 router = APIRouter()
 
-SCRAPER_TIMEOUT_SECONDS = 900
+# A run is killed when it stops making *progress*, not on total runtime: a full
+# cadet-quali sweep of a large squadron legitimately runs past any fixed
+# wall-clock cap (it was being killed mid-save after the scrape had finished and
+# reported as a timeout), while a wedged Bader page goes quiet straight away.
+SCRAPER_IDLE_TIMEOUT_SECONDS = 300
+# Backstop for a run that keeps logging but never finishes.
+SCRAPER_MAX_RUNTIME_SECONDS = 3 * 60 * 60
+WATCHDOG_POLL_SECONDS = 15
 RUN_LOG_RETENTION_DAYS = 7
 
 # ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
@@ -70,6 +77,39 @@ named_scraper_states: dict = {
 
 upload_jobs: dict[str, dict] = {}
 upload_jobs_lock = threading.Lock()
+
+
+def start_watchdog(state: dict, label: str, on_timeout, is_current=None) -> None:
+    """Watch a running scraper and trip `on_timeout` when it stalls.
+
+    Progress is measured by the run appending to its own log, so a scrape that
+    is slow but alive keeps itself alive. `is_current` guards against a stale
+    watchdog from a previous run of the same slot killing the current one.
+    """
+    def watch():
+        started = last_progress = time.monotonic()
+        seen = len(state["messages"])
+        while True:
+            time.sleep(WATCHDOG_POLL_SECONDS)
+            if not state["running"] or (is_current and not is_current()):
+                return
+            now = time.monotonic()
+            if len(state["messages"]) != seen:
+                seen = len(state["messages"])
+                last_progress = now
+            idle = now - last_progress
+            if idle >= SCRAPER_IDLE_TIMEOUT_SECONDS or now - started >= SCRAPER_MAX_RUNTIME_SECONDS:
+                # Killing a run is otherwise invisible outside the SSE log, which
+                # makes "Scraper timed out." impossible to chase in the API logs.
+                print(
+                    f"[scraper watchdog] {label} killed after {now - started:.0f}s "
+                    f"({idle:.0f}s since its last log line)",
+                    flush=True,
+                )
+                on_timeout()
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def create_upload_job(started_by: str) -> tuple[str, dict]:
@@ -106,18 +146,16 @@ def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: l
     def on_context_ready(ctx):
         state["context"] = ctx
 
-    def monitor_timeout():
-        time.sleep(SCRAPER_TIMEOUT_SECONDS)
-        if state["running"]:
-            stop_event.set()
-            ctx = state.get("context")
-            if ctx:
-                try:
-                    ctx.close()
-                except Exception:
-                    pass
+    def on_timeout():
+        stop_event.set()
+        ctx = state.get("context")
+        if ctx:
+            try:
+                ctx.close()
+            except Exception:
+                pass
 
-    threading.Thread(target=monitor_timeout, daemon=True).start()
+    start_watchdog(state, f"upload-qualifications job {job_id}", on_timeout)
 
     try:
         upload_qualifications_scraper(
@@ -193,14 +231,12 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
     def on_context_ready(ctx):
         state["context"] = ctx
 
-    def monitor_timeout():
-        time.sleep(SCRAPER_TIMEOUT_SECONDS)
-        if state["running"] and state["run_id"] == run_id:
-            state["stop_reason"] = state["stop_reason"] or "timeout"
-            stop_event.set()
-            _quit_context(state)
+    def on_timeout():
+        state["stop_reason"] = state["stop_reason"] or "timeout"
+        stop_event.set()
+        _quit_context(state)
 
-    threading.Thread(target=monitor_timeout, daemon=True).start()
+    start_watchdog(state, name, on_timeout, is_current=lambda: state["run_id"] == run_id)
 
     def append_stop_outcome():
         if state["stop_reason"] == "manual":
