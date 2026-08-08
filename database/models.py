@@ -623,6 +623,54 @@ class SessionPlanComment(Base):
     author = relationship("User")
 
 
+# ─── NCO quick comments ───────────────────────────────────────────────────────
+
+class NcoComment(Base):
+    """A short note an NCO (or staff member) drops about a cadet or about the
+    squadron in general — the quick, in-the-moment observations that otherwise
+    only ever get said out loud. Everyone who can see the page can reply, so a
+    comment becomes a thread.
+
+    `cadet_id` is nulled rather than cascaded when a cadet leaves (the quali
+    scraper hard-deletes departed cadets), and `cadet_name` is snapshotted, so
+    the note still reads correctly afterwards."""
+    __tablename__ = "NCO_Comments"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+
+    subject      = Column(Text,     nullable=False)
+    body         = Column(Text,     nullable=False)
+    comment_date = Column(DateTime, nullable=False)  # the day it's about, prefilled with today
+
+    # Null on a general comment — that's what makes it general.
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="SET NULL"), nullable=True)
+    cadet_name = Column(Text, nullable=False, default="", server_default="")
+
+    created_at = Column(DateTime, nullable=False)
+
+    author  = relationship("User")
+    cadet   = relationship("Cadet")
+    replies = relationship(
+        "NcoCommentReply", back_populates="comment",
+        cascade="all, delete-orphan", order_by="NcoCommentReply.created_at",
+    )
+
+
+class NcoCommentReply(Base):
+    """A reply on an NcoComment's chain."""
+    __tablename__ = "NCO_Comment_Replies"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    comment_id = Column(Integer, ForeignKey("NCO_Comments.id", ondelete="CASCADE"), nullable=False)
+    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    body       = Column(Text,     nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    comment = relationship("NcoComment", back_populates="replies")
+    author  = relationship("User")
+
+
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────
 
 class ScraperRun(Base):
