@@ -14,6 +14,7 @@ from database.models import Cadet, CadetAttendance, Staff, StaffAttendance
 
 from core.attendance import attendance_state, PRESENT, AUTHORISED, ABSENT
 from core.db import get_db
+from core.ranks import is_nco_rank
 from core.security import require_staff
 
 router = APIRouter()
@@ -42,18 +43,53 @@ def _grouped_counts(db: Session, model, person_id_col):
     return grouped
 
 
+def _nco_counts(db: Session):
+    """Same shape as `_grouped_counts`, but only the cadets whose rank puts them
+    on the NCO team.
+
+    Rank comes back from SQL and is judged here, so the one rule in `core.ranks`
+    decides rather than a hand-rolled SQL `lower()`. It is the cadet's *current*
+    rank, so an older night is counted against today's NCO team — the same basis
+    the appraisal page uses, and the only one on record: the register doesn't
+    store the rank someone held on the night.
+    """
+    rows = (
+        db.query(
+            CadetAttendance.date, CadetAttendance.register_type,
+            CadetAttendance.status, Cadet.rank,
+            func.count(CadetAttendance.cadet_id).label("n"),
+        )
+        .join(Cadet, CadetAttendance.cadet_id == Cadet.cin)
+        .group_by(
+            CadetAttendance.date, CadetAttendance.register_type,
+            CadetAttendance.status, Cadet.rank,
+        )
+        .all()
+    )
+    grouped: dict[tuple, dict] = {}
+    for row_date, register_type, status, rank, n in rows:
+        if not is_nco_rank(rank):
+            continue
+        counts = grouped.setdefault((row_date.date(), register_type), _empty_counts())
+        counts[attendance_state(status)] += n
+    return grouped
+
+
 @router.get("/attendance/nights")
 def attendance_nights(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    """Every night on record, newest first, with cadet and staff head counts.
+    """Every night on record, newest first, with cadet, NCO and staff head counts.
 
     Returned whole — one row per night is small even over a 15-year register, so
-    the client filters and charts it without another round trip.
+    the client filters and charts it without another round trip. NCOs are a
+    subset of the cadet counts, not a fourth group beside them, so a night is
+    listed on the strength of its cadet and staff registers alone.
     """
     cadets = _grouped_counts(db, CadetAttendance, CadetAttendance.cadet_id)
     staff = _grouped_counts(db, StaffAttendance, StaffAttendance.staff_id)
+    ncos = _nco_counts(db)
 
     nights = []
     for key in sorted(set(cadets) | set(staff), reverse=True):
@@ -62,13 +98,20 @@ def attendance_nights(
             "date": night.isoformat(),
             "registerType": register_type,
             "cadets": cadets.get(key, _empty_counts()),
+            "ncos": ncos.get(key, _empty_counts()),
             "staff": staff.get(key, _empty_counts()),
         })
     return nights
 
 
-def _roster(db: Session, model, person_model, join_col, night: Date, register_type: str | None):
-    """Everyone on one night's register, with the name from their person row."""
+def _roster(db: Session, model, person_model, join_col, night: Date, register_type: str | None,
+            ranked_ncos: bool = False):
+    """Everyone on one night's register, with the name from their person row.
+
+    `ranked_ncos` marks up the cadet register so the client can narrow it to the
+    NCO team without knowing which ranks those are. It stays off for staff —
+    a staff sergeant holds the rank but is not a cadet NCO.
+    """
     start = datetime(night.year, night.month, night.day)
     query = (
         db.query(model, person_model)
@@ -84,6 +127,7 @@ def _roster(db: Session, model, person_model, join_col, night: Date, register_ty
             "cin": person.cin,
             "name": f"{person.first_name or ''} {person.last_name or ''}".strip(),
             "rank": person.rank,
+            "isNco": ranked_ncos and is_nco_rank(person.rank),
             "status": record.status,
             "state": attendance_state(record.status),
             "registerType": record.register_type,
@@ -105,6 +149,7 @@ def attendance_night_detail(
     return {
         "date": night.isoformat(),
         "registerType": registerType,
-        "cadets": _roster(db, CadetAttendance, Cadet, CadetAttendance.cadet_id, night, registerType),
+        "cadets": _roster(db, CadetAttendance, Cadet, CadetAttendance.cadet_id, night, registerType,
+                          ranked_ncos=True),
         "staff": _roster(db, StaffAttendance, Staff, StaffAttendance.staff_id, night, registerType),
     }
