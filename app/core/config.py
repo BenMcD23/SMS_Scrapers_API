@@ -74,6 +74,7 @@ SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://sms.317atc.co.uk").rstrip("/
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
 NOTIFY_API_KEY = os.getenv("NOTIFY_API_KEY")
 NOTIFY_SMS_TEMPLATE_ID = os.getenv("NOTIFY_SMS_TEMPLATE_ID")
 ALERT_EMAIL = os.getenv("ALERT_EMAIL", NOTIFY_GROUP)
