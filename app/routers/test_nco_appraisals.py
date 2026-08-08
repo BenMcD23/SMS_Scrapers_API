@@ -56,13 +56,11 @@ def test_is_nco():
     def cadet(rank, flight):
         return Cadet(cin=1, first_name="A", last_name="B", rank=rank, flight=flight)
 
-    # Either marker is enough, because rank and flight don't always move together.
-    assert na.is_nco(cadet("Cpl", "A"))
-    assert na.is_nco(cadet("Cadet", "NCO"))
-    assert na.is_nco(cadet(None, "nco"))          # flight match is case-insensitive
-    assert all(na.is_nco(cadet(r, "A")) for r in ("Sgt", "FS", "CWO"))
+    # Rank is the only marker — the NCO's flight is whichever one they run.
+    assert all(na.is_nco(cadet(r, "A")) for r in ("Corporal", "Sergeant", "Flight Sergeant"))
+    assert na.is_nco(cadet("corporal", None))     # match is case-insensitive
     # Plain cadets aren't in the NCO team, and neither is a blank record.
-    assert not na.is_nco(cadet("Cadet", "B"))
+    assert not na.is_nco(cadet("Cadet", "NCO"))
     assert not na.is_nco(cadet(None, None))
     print("is_nco self-check passed")
 
@@ -109,9 +107,9 @@ def test():
     get_or_create_user(db, staff)
 
     now = datetime.now()
-    smith = Cadet(cin=101, first_name="Sam", last_name="Smith", rank="Cpl", flight="NCO",
+    smith = Cadet(cin=101, first_name="Sam", last_name="Smith", rank="Corporal", flight="NCO",
                   date_of_birth=datetime(2009, 1, 5), email="sam.smith@317atc.co.uk")
-    jones = Cadet(cin=102, first_name="Jo", last_name="Jones", rank="Sgt", flight="NCO",
+    jones = Cadet(cin=102, first_name="Jo", last_name="Jones", rank="Sergeant", flight="NCO",
                   date_of_birth=datetime(2008, 1, 5))
     plain = Cadet(cin=103, first_name="Pat", last_name="Plain", rank="Cadet", flight="A")
     db.add_all([smith, jones, plain])
@@ -129,7 +127,7 @@ def test():
 
     # Age and attendance are filled in from the record, ready for the form.
     row = next(n for n in overview["ncos"] if n["cin"] == smith.cin)
-    assert row["nco_name"] == "Cpl Sam Smith"
+    assert row["nco_name"] == "Corporal Sam Smith"
     assert row["attendance"] == "90% (9/10 nights, last 12 months)"
     assert row["age"] == na.age_on(smith, now.date())
 
@@ -137,7 +135,7 @@ def test():
     reminder = na.upsert_reminder(
         na.ReminderBody(cadet_id=jones.cin, due_date=_day(10), note="First one"), db, staff,
     )
-    assert reminder["nco_name"] == "Sgt Jo Jones"
+    assert reminder["nco_name"] == "Sergeant Jo Jones"
     # A second reminder moves the date rather than stacking up a duplicate.
     moved = na.upsert_reminder(
         na.ReminderBody(cadet_id=jones.cin, due_date=_day(20)), db, staff,
@@ -179,7 +177,7 @@ def test():
     assert appraisal["cause_for_concern"] is True
     assert appraisal["author_name"] == "staff Staff"
     # Header block snapshotted from the record because the form left it blank.
-    assert appraisal["nco_name"] == "Cpl Sam Smith"
+    assert appraisal["nco_name"] == "Corporal Sam Smith"
     assert appraisal["attendance"] == "90% (9/10 nights, last 12 months)"
 
     # An out-of-range interval is refused rather than silently coerced.
@@ -241,7 +239,7 @@ def test():
         response = na.download_appraisal(appraisal["id"], fmt, db, staff)
         body = _streamed(response)
         assert body.startswith(magic), f"{fmt} did not render"
-        assert "NCO_Appraisal_Cpl_Sam_Smith_20260808" in response.headers["content-disposition"]
+        assert "NCO_Appraisal_Corporal_Sam_Smith_20260808" in response.headers["content-disposition"]
 
     # ── emailing the PDF to the NCO ──────────────────────────────────────────
     sent: list[dict] = []

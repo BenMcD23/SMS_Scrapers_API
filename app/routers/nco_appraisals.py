@@ -47,10 +47,9 @@ TEMPLATE_PATH = os.path.join(
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-# Cadet ranks that make someone part of the NCO team. Checked alongside the
-# "NCO" flight, because a newly promoted cadet is usually moved into the flight
-# before (or after) their rank catches up in Bader — either marker is enough.
-NCO_RANKS = ("Cpl", "Sgt", "FS", "CWO")
+# Cadet ranks that make someone part of the NCO team. Rank is the only marker —
+# flight isn't, NCOs stay posted to the flight they run.
+NCO_RANKS = {"corporal", "sergeant", "flight sergeant"}
 
 # How far back the auto-filled attendance figure looks. A year covers the whole
 # training cycle, which is the period an appraisal is judging.
@@ -149,10 +148,7 @@ def add_months(start: datetime, months: int) -> datetime:
 
 
 def is_nco(cadet: Cadet) -> bool:
-    if (cadet.flight or "").strip().upper() == "NCO":
-        return True
-    rank = (cadet.rank or "").strip()
-    return any(rank.startswith(r) for r in NCO_RANKS)
+    return (cadet.rank or "").strip().lower() in NCO_RANKS
 
 
 def cadet_name(cadet: Cadet) -> str:
