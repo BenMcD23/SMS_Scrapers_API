@@ -20,6 +20,7 @@ from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
 from core.emailer import send_email, ready_to_collect_email_html
 from core.security import require_staff
+from core import stock_events
 
 router = APIRouter()
 
@@ -105,6 +106,7 @@ def order_to_dict(order: StoresOrder) -> dict:
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
+                "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -713,6 +715,76 @@ def stores_mark_item_ready(
 
     db.refresh(order)
     return order_to_dict(order)
+
+
+@router.post("/stores/orders/{order_id}/items/{item_id}/stock", status_code=200)
+def stores_order_item_stock(
+    order_id: int,
+    item_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take this order item off the shelf, or put it back — adjusting the stock
+    count and appending to the item's stock history in one go, so the two can't
+    drift apart the way two separate client calls could."""
+    action = body.get("action")
+    if action not in ("remove", "return"):
+        raise HTTPException(status_code=400, detail="action must be 'remove' or 'return'")
+
+    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(StoresOrderItem).filter(
+        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    events = stock_events.events_list(item.stock_events)
+    by = body.get("by") or idinfo.get("email")
+
+    if action == "remove":
+        if stock_events.is_removed(events):
+            raise HTTPException(status_code=400, detail="Already removed from stock")
+        stock_item = db.query(StoresItem).filter(StoresItem.id == int(body.get("stockItemId") or 0)).first()
+        if not stock_item:
+            raise HTTPException(status_code=404, detail="Stock item not found")
+        if stock_item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Out of stock")
+        stock_item.quantity -= 1
+        events.append(stock_events.new_event(
+            stock_events.REMOVED, by,
+            stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
+        ))
+    else:
+        removal = stock_events.last_removal(events)
+        if not stock_events.is_removed(events) or not removal:
+            raise HTTPException(status_code=400, detail="Item has not been removed from stock")
+        stock_item = db.query(StoresItem).filter(StoresItem.id == removal.get("stockItemId")).first()
+        if not stock_item:
+            # The row it came off may have been edited away since; fall back to
+            # the same type/size anywhere in the stores rather than losing the unit.
+            stock_item = db.query(StoresItem).filter(
+                StoresItem.item_type == removal.get("itemType"),
+                StoresItem.size      == removal.get("size"),
+            ).first()
+        if not stock_item:
+            raise HTTPException(
+                status_code=400,
+                detail="That stock entry no longer exists — add the item back on the stock page",
+            )
+        stock_item.quantity += 1
+        events.append(stock_events.new_event(
+            stock_events.RETURNED, by,
+            stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
+        ))
+
+    item.stock_events = stock_events.dump(events)
+    db.commit()
+    db.refresh(order)
+    db.refresh(stock_item)
+    return {"order": order_to_dict(order), "stockItem": _item_to_dict(stock_item)}
 
 
 # ── Issuances ─────────────────────────────────────────────────────────────────

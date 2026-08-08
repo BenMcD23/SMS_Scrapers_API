@@ -762,6 +762,9 @@ class StoresOrderItem(Base):
     given_at         = Column(DateTime, nullable=True)
     given_by         = Column(Text,     nullable=True)
     ready_to_collect = Column(DateTime, nullable=True)
+    # Append-only log of stock removals/returns for this item, so the QM can see
+    # who took the item off the shelf and when: JSON [{id, action, timestamp, by, ...}]
+    stock_events     = Column(Text, nullable=False, default="[]", server_default="[]")
 
     order = relationship("StoresOrder", back_populates="order_items")
 
@@ -833,6 +836,8 @@ class BadgeOrderItem(Base):
     given_at         = Column(DateTime, nullable=True)
     given_by         = Column(Text,     nullable=True)
     ready_to_collect = Column(DateTime, nullable=True)
+    # See StoresOrderItem.stock_events — same append-only log, against the badge grid
+    stock_events     = Column(Text, nullable=False, default="[]", server_default="[]")
 
     order = relationship("BadgeOrder", back_populates="order_items")
 

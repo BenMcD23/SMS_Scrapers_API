@@ -14,6 +14,7 @@ from database.models import (
 from core.db import get_db
 from core.emailer import send_email, ready_to_collect_email_html
 from core.security import require_staff
+from core import stock_events
 
 router = APIRouter()
 
@@ -83,6 +84,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
+                "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -422,6 +424,82 @@ def badge_orders_mark_item_ready(
 
     db.refresh(order)
     return badge_order_to_dict(order)
+
+
+@router.post("/stores/badges/orders/{order_id}/items/{item_id}/stock", status_code=200)
+def badge_order_item_stock(
+    order_id: int,
+    item_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take this badge off the grid, or put it back — adjusting the grid count
+    and appending to the item's stock history in one go (see the uniform twin,
+    stores_order_item_stock)."""
+    action = body.get("action")
+    if action not in ("remove", "return"):
+        raise HTTPException(status_code=400, detail="action must be 'remove' or 'return'")
+
+    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(BadgeOrderItem).filter(
+        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    events = stock_events.events_list(item.stock_events)
+    by = body.get("by") or idinfo.get("email")
+
+    if action == "remove":
+        if stock_events.is_removed(events):
+            raise HTTPException(status_code=400, detail="Already removed from stock")
+        badge_item = db.query(BadgeItem).filter(BadgeItem.id == int(body.get("itemId") or 0)).first()
+        if not badge_item:
+            raise HTTPException(status_code=404, detail="Badge stock item not found")
+        if badge_item.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Out of stock")
+        events.append(stock_events.new_event(
+            stock_events.REMOVED, by,
+            itemId=badge_item.id, cellId=badge_item.cell_id, badgeName=badge_item.name,
+        ))
+        badge_item.quantity -= 1
+        # The grid stores presence, not zeroes — an empty row is removed entirely.
+        if badge_item.quantity <= 0:
+            db.delete(badge_item)
+    else:
+        removal = stock_events.last_removal(events)
+        if not stock_events.is_removed(events) or not removal:
+            raise HTTPException(status_code=400, detail="Item has not been removed from stock")
+        badge_item = db.query(BadgeItem).filter(BadgeItem.id == removal.get("itemId")).first()
+        if not badge_item:
+            # It was deleted when its count hit zero (or renamed) — put it back in
+            # the cell it came from, matching on name.
+            badge_item = db.query(BadgeItem).filter(
+                BadgeItem.cell_id == removal.get("cellId"),
+                BadgeItem.name    == removal.get("badgeName"),
+            ).first()
+        if badge_item:
+            badge_item.quantity += 1
+        else:
+            cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == removal.get("cellId")).first()
+            if not cell:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The grid cell that badge came from no longer exists — add it back on the badge grid",
+                )
+            db.add(BadgeItem(cell_id=cell.id, name=removal.get("badgeName"), quantity=1))
+        events.append(stock_events.new_event(
+            stock_events.RETURNED, by,
+            cellId=removal.get("cellId"), badgeName=removal.get("badgeName"),
+        ))
+
+    item.stock_events = stock_events.dump(events)
+    db.commit()
+    db.refresh(order)
+    return {"order": badge_order_to_dict(order), "badges": _badge_full_response(db)}
 
 
 # ── Badge order lists (supplier order batches) ────────────────────────────────
