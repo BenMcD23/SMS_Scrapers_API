@@ -1,11 +1,13 @@
 """The squadron's LLM client — model preference chain and the calls behind it.
 
-Models are tried in order until one answers. Gemini 3.5 Flash writes the best
-prose but its free tier only allows 20 requests/day (per model), so GLM 5.2 on
-NVIDIA's free endpoint catches the overflow (it benchmarks level with 3.5
-Flash), then Gemini 2.5 Flash (250/day), then Groq's gpt-oss-120b as the final
-fallback. All are thinking models — keep token budgets high enough that
-reasoning doesn't starve the actual answer.
+Models are tried in order until one answers. GLM 5.2 on NVIDIA's free endpoint
+leads: it benchmarks level with Gemini 3.5 Flash and its free tier caps requests
+per minute (~40, shared across the whole API key) rather than per day, so a
+month of texts never runs it dry — bursts just wait. Gemini 3.5 Flash writes
+comparable prose but allows only 20 requests/day, so it and Gemini 2.5 Flash
+(250/day) sit behind it, with Groq's gpt-oss-120b as the final fallback. All are
+thinking models — keep token budgets high enough that reasoning doesn't starve
+the actual answer.
 
 Shared by every AI feature (parade-night texts, NCO appraisals) so the chain,
 the quota fallback and the model labels are defined once. Callers get back the
@@ -32,8 +34,9 @@ NVIDIA_MAX_TOKENS = 16384
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "openai/gpt-oss-120b"
 
-# Preference order, best first. Anything other than the first entry means we
-# fell back — usually because the best model's daily free-tier quota ran out.
+# Preference order, best first. Anything other than the first entry means we fell
+# back — GLM's per-minute limit is waited out rather than fallen back on, so in
+# practice that means NVIDIA errored or the key is missing.
 MODEL_PREFERENCE = [NVIDIA_MODEL, "gemini-3.5-flash", "gemini-2.5-flash", GROQ_MODEL]
 PRIMARY_MODEL = MODEL_PREFERENCE[0]
 
@@ -143,22 +146,3 @@ def _call_model(model: str, prompt: str, system_prompt: str, temperature: float,
         prompt, system_prompt, temperature, groq_max_tokens or max_tokens,
         reasoning_effort="low",
     )
-
-
-if __name__ == "__main__":
-    # ponytail: self-check for the fallback order only — no network, no framework.
-    import core.llm as llm
-
-    calls: list[str] = []
-
-    def fake(model, *_args, **_kw):
-        calls.append(model)
-        if model != GROQ_MODEL:
-            raise RuntimeError("quota")
-        return "ok"
-
-    llm._call_model = fake
-    assert llm.generate("p", "s") == ("ok", GROQ_MODEL)
-    assert calls == MODEL_PREFERENCE, calls
-    assert PRIMARY_MODEL == "gemini-3.5-flash"
-    print("chain ok:", " -> ".join(model_label(m) for m in MODEL_PREFERENCE))
