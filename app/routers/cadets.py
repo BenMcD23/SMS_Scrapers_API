@@ -19,7 +19,7 @@ from core.attendance import attendance_state
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
-from core.security import require_staff, require_staff_or_nco
+from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 
 router = APIRouter()
 
@@ -74,7 +74,10 @@ def search_cadets(
 @router.get("/cadets")
 def list_cadets(
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
+    # SNCOs too: the inspection sheet builds its flight tabs from this roster,
+    # so staff-only here meant an SNCO saw "No cadets found for this flight".
+    # Same fields /cadets/search already returns to every NCO.
+    idinfo: dict = Depends(require_staff_or_snco),
 ):
     cached = cache.get(CADETS_CACHE_KEY)
     if cached is not None:

@@ -34,8 +34,6 @@ def test_parse_attendance_row():
     # Day-first, not month-first — 03/04 is 3 April, not 4 March
     assert _parse_attendance_row(["03/04/2024", "a", "b", "c"])["date"] == datetime(2024, 4, 3)
 
-    print("attendance row parse self-check passed")
-
 
 def test_expected_total():
     assert _expected_total("Showing 1 to 25 of 2,047 entries") == 2047
@@ -43,9 +41,3 @@ def test_expected_total():
     assert _expected_total("Showing 0 to 0 of 0 entries (filtered from 12 total entries)") == 0
     assert _expected_total("") is None
     assert _expected_total(None) is None
-    print("expected total self-check passed")
-
-
-if __name__ == "__main__":
-    test_parse_attendance_row()
-    test_expected_total()

@@ -1,7 +1,5 @@
 """Self-check for NCO holiday booking, cancellation and the audit trail.
 
-Run: PYTHONPATH=app:. python -m routers.test_nco_holidays
-
 Covers the rules that make this feature what it is: you can only book your own
 holiday, it needs two weeks' notice, cancelling removes the calendar event but
 never the record, and the booking keeps who added it and when even after it's
@@ -332,9 +330,3 @@ def test():
         soon.id, nh.HolidayBody(date_from=_day(3), date_to=_day(5)), db, alice))
     assert _on(stale, "date_to") == _day(5)               # the record is still right
     assert stale["on_calendar"] is False             # ...the calendar isn't, yet
-
-    print("nco holidays self-check passed")
-
-
-if __name__ == "__main__":
-    test()

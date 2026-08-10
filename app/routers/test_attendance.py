@@ -1,7 +1,5 @@
 """Self-check for the squadron-wide attendance endpoints.
 
-Run: PYTHONPATH=app:. python -m routers.test_attendance
-
 Covers what the pages rely on: a night is (date, register type), the NCO counts
 are the cadet counts narrowed by rank rather than a separate register, the
 drill-in marks up cadets — but never staff — as NCOs, and the per-NCO breakdown
@@ -100,9 +98,3 @@ def test():
     # whole team rather than only whoever turned out.
     empty = att.nco_attendance(datetime(2026, 7, 1).date(), None, db, _idinfo())
     assert [n["nights"] for n in empty["ncos"]] == [[], []]
-
-    print("attendance self-check passed")
-
-
-if __name__ == "__main__":
-    test()

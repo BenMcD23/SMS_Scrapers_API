@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    env:
+      # The suite needs no real credentials — everything it touches is either an
+      # in-memory SQLite DB or a stub. These only exist because importing the app
+      # reads them at module level.
+      #
+      # A throwaway Fernet key: utils/crypto.py refuses to import without one,
+      # and nothing here encrypts anything worth protecting.
+      ENCRYPTION_KEY: "5-6ZgtVJdBRAJfCPIhLdyUFqGgb0ChZfBGB4fL0jTOo="
+      DATABASE_URL: "sqlite:///:memory:"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Match the Dockerfile, so CI exercises the version that ships.
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        # requirements-dev.txt pulls in requirements.txt itself.
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest

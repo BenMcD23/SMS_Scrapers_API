@@ -23,7 +23,6 @@ def test():
     assert match_email("ALAN", "SMITH", EMAILS) is None
     # ambiguous surname, no initial match -> None (two Gills, neither starts with X)
     assert match_email("XAVIER", "GILL", EMAILS) is None
-    print("match_email self-check passed")
 
 
 def test_attendance_periods():
@@ -39,7 +38,6 @@ def test_attendance_periods():
     assert (2025, 7) in attendance_periods(date(2026, 6, 30))
     # July boundary is H2 — no previous year
     assert all(y == 2026 for y, _ in attendance_periods(date(2026, 7, 1)))
-    print("attendance_periods self-check passed")
 
 
 def _record(day, month, year, register_type="Parade Night", status="Present Correctly Dressed"):
@@ -68,7 +66,6 @@ def test_monthly_attendance():
     assert monthly_attendance([_record(4, 5, 2009)], today)["2025-07"] == 0
 
     assert all(v == 0 for v in monthly_attendance([], today).values())
-    print("monthly_attendance self-check passed")
 
 
 def test_compute_htd():
@@ -83,11 +80,3 @@ def test_compute_htd():
     # zero distance -> all zero
     z = compute_htd(0, [5])
     assert z["total_a"] == 0.0 and z["total_claimed"] == 0.0, z
-    print("compute_htd self-check passed")
-
-
-if __name__ == "__main__":
-    test()
-    test_attendance_periods()
-    test_monthly_attendance()
-    test_compute_htd()
