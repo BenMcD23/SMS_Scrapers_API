@@ -39,14 +39,26 @@ _token_cache_lock = threading.Lock()
 _google_request = requests.Request()
 
 
+def _dev_fake_email(role: str) -> str:
+    """Identity the dev bypass logs in as for a role. Staff keeps the owner
+    account so owner-only pages stay reachable; SNCO/NCO get their own accounts
+    so role checks and the rows they create match what a real one would see."""
+    return OWNER_EMAIL if role == "staff" else f"dev.{role}@{GOOGLE_DOMAIN}"
+
+
 def verify_token(authorization: str) -> dict:
     # ponytail: dev-only fake token for local UI testing, pairs with the
     # frontend's AUTH_DEV_BYPASS. Inert unless DEV_FAKE_AUTH=1 (never in prod).
-    if os.environ.get("DEV_FAKE_AUTH") == "1" and authorization == "Bearer dev-fake-token":
+    # "Bearer dev-fake-token" is staff; ":snco"/":nco" suffix picks that role.
+    if os.environ.get("DEV_FAKE_AUTH") == "1" and (authorization or "").startswith("Bearer dev-fake-token"):
+        role = authorization.split("dev-fake-token", 1)[1].lstrip(":") or "staff"
+        if role not in ("staff", "snco", "nco"):
+            raise HTTPException(status_code=401, detail="Invalid Token")
         return {
-            "email": OWNER_EMAIL, "email_verified": True, "hd": GOOGLE_DOMAIN,
-            # A stable sub so get_or_create_user works under the dev bypass.
-            "sub": "dev-fake-sub", "given_name": "Dev", "family_name": "Owner",
+            "email": _dev_fake_email(role), "email_verified": True, "hd": GOOGLE_DOMAIN,
+            # A stable sub per role so get_or_create_user works under the bypass.
+            "sub": "dev-fake-sub" if role == "staff" else f"dev-fake-sub-{role}",
+            "given_name": "Dev", "family_name": "Owner" if role == "staff" else role.upper(),
         }
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -184,10 +196,12 @@ def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
 
 
 def get_user_role(email: str) -> str | None:
-    # ponytail: pairs with the dev-fake-token bypass above. Set DEV_FAKE_ROLE to
-    # nco/snco to see the app as that role locally.
-    if os.environ.get("DEV_FAKE_AUTH") == "1" and email.lower() == OWNER_EMAIL.lower():
-        return os.environ.get("DEV_FAKE_ROLE") or "staff"
+    # ponytail: pairs with the dev-fake-token bypass above — the role is decided
+    # by which fake account the token logged in as, no group lookup.
+    if os.environ.get("DEV_FAKE_AUTH") == "1":
+        for role in ("staff", "snco", "nco"):
+            if (email or "").lower() == _dev_fake_email(role).lower():
+                return role
     with _role_cache_lock:
         cached = _role_cache.get(email)
         if cached and time.time() < cached[1]:

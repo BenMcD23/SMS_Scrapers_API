@@ -1,0 +1,72 @@
+- generic [active] [ref=f1e1]:
+  - generic [ref=f1e2]:
+    - generic [ref=f1e5]:
+      - list [ref=f1e7]:
+        - listitem [ref=f1e8]:
+          - link "317 Squadron Management System" [ref=f1e9] [cursor=pointer]:
+            - /url: /
+            - generic [ref=f1e11]:
+              - generic [ref=f1e12]: 317 Squadron
+              - generic [ref=f1e13]: Management System
+      - generic [ref=f1e14]:
+        - list [ref=f1e17]:
+          - listitem [ref=f1e18]:
+            - link "Dashboard" [ref=f1e19] [cursor=pointer]:
+              - /url: /
+        - generic [ref=f1e26]:
+          - generic [ref=f1e27]: Cadets
+          - list [ref=f1e29]:
+            - listitem [ref=f1e30]:
+              - link "Assessments" [ref=f1e31] [cursor=pointer]:
+                - /url: /cadets/assessments
+        - generic [ref=f1e37]:
+          - generic [ref=f1e38]: Assessment Sheets
+          - list [ref=f1e40]:
+            - listitem [ref=f1e41]:
+              - link "Leadership" [ref=f1e42] [cursor=pointer]:
+                - /url: /assessments/leadership
+            - listitem [ref=f1e46]:
+              - link "Radio" [ref=f1e47] [cursor=pointer]:
+                - /url: /assessments/radio
+            - listitem [ref=f1e55]:
+              - link "MOI" [ref=f1e56] [cursor=pointer]:
+                - /url: /assessments/moi
+        - generic [ref=f1e60]:
+          - generic [ref=f1e61]: Training
+          - list [ref=f1e63]:
+            - listitem [ref=f1e64]:
+              - link "Session Plans" [ref=f1e65] [cursor=pointer]:
+                - /url: /session-plans
+            - listitem [ref=f1e70]:
+              - link "NCO Holidays" [ref=f1e71] [cursor=pointer]:
+                - /url: /nco-holidays
+            - listitem [ref=f1e77]:
+              - link "NCO Comments" [ref=f1e78] [cursor=pointer]:
+                - /url: /nco-comments
+        - generic [ref=f1e82]:
+          - generic [ref=f1e83]: Squadron
+          - list [ref=f1e85]:
+            - listitem [ref=f1e86]:
+              - link "Settings" [ref=f1e87] [cursor=pointer]:
+                - /url: /settings
+      - list [ref=f1e93]:
+        - listitem [ref=f1e94]:
+          - button "? Signed out" [ref=f1e95]:
+            - generic [ref=f1e96]: "?"
+            - generic [ref=f1e98]: Signed out
+    - main [ref=f1e103]:
+      - generic [ref=f1e104]:
+        - button "Toggle Sidebar" [ref=f1e105] [cursor=pointer]
+        - generic [ref=f1e107]: Training · NCO Holidays
+      - main [ref=f1e110]:
+        - generic [ref=f1e111]:
+          - generic [ref=f1e113]:
+            - heading "NCO Holidays" [level=1] [ref=f1e114]
+            - paragraph [ref=f1e115]: Book your holidays — they go straight onto the squadron's NCO Holidays calendar
+          - tablist [ref=f1e117]:
+            - tab "Upcoming" [selected] [ref=f1e118]
+          - generic [ref=f1e120]:
+            - generic [ref=f1e122]: No holidays booked
+            - generic [ref=f1e123]: No NCO has booked time off yet.
+  - region "Notifications alt+T"
+  - button "Open Next.js Dev Tools" [ref=f1e129] [cursor=pointer]

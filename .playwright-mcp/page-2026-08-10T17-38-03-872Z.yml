@@ -1,0 +1,22 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]: 317 (Failsworth) Squadron RAFAC
+      - generic [ref=e6]:
+        - paragraph [ref=e7]: Squadron Management System
+        - paragraph [ref=e8]: Cadet records, assessments, stores and squadron tools in one place.
+      - paragraph [ref=e9]: For authorised staff and NCOs only.
+    - generic [ref=e11]:
+      - generic [ref=e13]:
+        - heading "Sign in" [level=1] [ref=e14]
+        - paragraph [ref=e15]: Use your squadron Google account to continue.
+      - button "Continue with Google" [ref=e16] [cursor=pointer]
+      - paragraph [ref=e17]: Access is restricted to members of the 317 staff and NCO teams.
+      - generic [ref=e18]:
+        - paragraph [ref=e19]: Dev sign-in
+        - generic [ref=e20]:
+          - button "staff" [ref=e21] [cursor=pointer]
+          - button "snco" [ref=e22] [cursor=pointer]
+          - button "nco" [ref=e23] [cursor=pointer]
+  - region "Notifications alt+T"
+  - button "Open Next.js Dev Tools" [ref=e29] [cursor=pointer]
