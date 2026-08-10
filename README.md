@@ -269,6 +269,27 @@ PYTHONPATH=app:. uvicorn api:app --reload
 
 The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+`pytest.ini` puts both the repo root and `app/` on `sys.path`, so there is no
+`PYTHONPATH` to remember and tests can be run from anywhere in the repo. Useful
+variants:
+
+```bash
+pytest app/routers/test_nco_holidays.py   # one file
+pytest -k inspection                      # by name
+pytest -x -vv                             # stop at the first failure, verbose
+```
+
+Everything runs against in-memory SQLite with Google calls stubbed, so no
+database, network or credentials are needed. The suite runs on every push and
+pull request via `.github/workflows/tests.yml`.
+
 ## Dev fake auth (local UI testing)
 
 Real auth needs a Google login plus a Workspace service account, which can't be

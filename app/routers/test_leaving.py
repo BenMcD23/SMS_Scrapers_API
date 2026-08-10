@@ -1,7 +1,4 @@
-"""Self-checks for the leaving-process date rules.
-
-Run: cd app && PYTHONPATH=.:.. python routers/test_leaving.py
-"""
+"""Self-checks for the leaving-process date rules."""
 from datetime import datetime, timedelta
 
 from core.leaving import (
@@ -27,8 +24,6 @@ def test_is_lapsed():
     assert not is_lapsed(PARADE - timedelta(days=90), None)
     assert not is_lapsed(None, None)
 
-    print("is_lapsed self-check passed")
-
 
 def test_gap_days():
     assert gap_days(PARADE - timedelta(days=35), PARADE) == 35
@@ -37,7 +32,6 @@ def test_gap_days():
     # A register dated after the last parade night (a camp, say) reads as 0, not
     # a negative gap.
     assert gap_days(PARADE + timedelta(days=3), PARADE) == 0
-    print("gap_days self-check passed")
 
 
 def test_leaving_status():
@@ -57,11 +51,3 @@ def test_leaving_status():
     assert leaving_status(now - timedelta(days=RESPONSE_DAYS - 1), now) == (WAITING, 1)
     assert leaving_status(now - timedelta(days=RESPONSE_DAYS), now) == (START_LEAVING, 0)
     assert leaving_status(now - timedelta(days=365), now) == (START_LEAVING, 0)
-
-    print("leaving_status self-check passed")
-
-
-if __name__ == "__main__":
-    test_is_lapsed()
-    test_gap_days()
-    test_leaving_status()

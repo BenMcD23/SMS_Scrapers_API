@@ -1,7 +1,5 @@
 """Self-check for NCO appraisals — the schedule, the autofill and the documents.
 
-Run: PYTHONPATH=app:. python -m routers.test_nco_appraisals
-
 Covers the rules that make this feature what it is: the next-review choice is
 what schedules the follow-up, an appraisal always wins over a reminder for the
 same NCO, the header block is snapshotted rather than recomputed, and both
@@ -49,7 +47,6 @@ def test_add_months():
     assert na.add_months(datetime(2026, 8, 8), 3).date().isoformat() == "2026-11-08"
     assert na.add_months(datetime(2026, 8, 8), 6).date().isoformat() == "2027-02-08"
     assert na.add_months(datetime(2026, 12, 31), 12).date().isoformat() == "2027-12-31"
-    print("add_months self-check passed")
 
 
 def test_is_nco():
@@ -62,7 +59,6 @@ def test_is_nco():
     # Plain cadets aren't in the NCO team, and neither is a blank record.
     assert not na.is_nco(cadet("Cadet", "NCO"))
     assert not na.is_nco(cadet(None, None))
-    print("is_nco self-check passed")
 
 
 def test_attendance_summary():
@@ -86,7 +82,6 @@ def test_attendance_summary():
     # about an NCO with no scraped register yet.
     assert na.attendance_summary([]) == ""
     assert na.attendance_summary([Record(now, "Authorised Absence")]) == ""
-    print("attendance_summary self-check passed")
 
 
 def test_age_on():
@@ -95,7 +90,6 @@ def test_age_on():
     assert na.age_on(cadet, datetime(2026, 9, 1).date()) == "17"   # on the day itself
     # No date of birth on record leaves the box blank rather than guessing.
     assert na.age_on(Cadet(cin=2, first_name="A", last_name="B"), datetime(2026, 8, 8).date()) == ""
-    print("age_on self-check passed")
 
 
 def test():
@@ -270,13 +264,3 @@ def test():
         raise AssertionError("expected a malformed address to be rejected")
     except ValueError:
         pass
-
-    print("nco appraisals self-check passed")
-
-
-if __name__ == "__main__":
-    test_add_months()
-    test_is_nco()
-    test_attendance_summary()
-    test_age_on()
-    test()

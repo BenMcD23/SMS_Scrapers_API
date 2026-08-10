@@ -1,7 +1,5 @@
 """Self-check for session plan visibility and comments.
 
-Run: PYTHONPATH=app:. python -m routers.test_session_plans
-
 Covers the two rules that aren't obvious from reading a single endpoint:
 drafts are private but submitted plans are readable by every NCO, and NCOs can
 comment on plans they can't approve.
@@ -85,9 +83,3 @@ def test():
     assert approved["status"] == "approved"
     assert len(approved["comments"]) == 1
     assert db.query(SessionPlan).count() == 1
-
-    print("session plan visibility/comments self-check passed")
-
-
-if __name__ == "__main__":
-    test()
