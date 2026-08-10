@@ -34,7 +34,7 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 
 # Preference order, best first. Anything other than the first entry means we
 # fell back — usually because the best model's daily free-tier quota ran out.
-MODEL_PREFERENCE = ["gemini-3.5-flash", NVIDIA_MODEL, "gemini-2.5-flash", GROQ_MODEL]
+MODEL_PREFERENCE = [NVIDIA_MODEL, "gemini-3.5-flash", "gemini-2.5-flash", GROQ_MODEL]
 PRIMARY_MODEL = MODEL_PREFERENCE[0]
 
 MODEL_LABELS = {

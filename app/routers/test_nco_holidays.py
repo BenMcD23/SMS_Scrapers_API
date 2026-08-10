@@ -74,7 +74,7 @@ def test():
     assert holiday["created_at"] is not None
     assert len(created) == 1 and created[0]["name"] == "alice T"
 
-    # Everyone on the page sees the whole squadron's bookings.
+    # Everyone on the page sees the whole squadron's upcoming bookings.
     assert hid in [h["id"] for h in run(nh.list_holidays(db, bob))["holidays"]]
 
     # Only the author or staff can remove one.
@@ -97,6 +97,10 @@ def test():
     assert cancelled["created_at"] == holiday["created_at"]
     assert db.query(NcoHoliday).filter(NcoHoliday.id == hid).first() is not None
     assert hid in [h["id"] for h in run(nh.list_holidays(db, alice))["holidays"]]
+    # ...but the audit trail is staff-only: another NCO no longer sees a
+    # cancelled booking that isn't theirs, while staff still do.
+    assert hid not in [h["id"] for h in run(nh.list_holidays(db, bob))["holidays"]]
+    assert hid in [h["id"] for h in run(nh.list_holidays(db, staff))["holidays"]]
 
     # ...and can't be cancelled twice.
     try:

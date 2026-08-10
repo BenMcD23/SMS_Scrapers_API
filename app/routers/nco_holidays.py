@@ -181,8 +181,9 @@ async def list_holidays(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    """The whole squadron's bookings, cancelled ones included — this list is the
-    audit trail, so nothing is filtered out."""
+    """Staff get the whole squadron's bookings, cancelled ones included — that
+    list is the audit trail. NCOs get everyone's upcoming bookings plus their
+    own history, which is all the "Upcoming"/"Mine" tabs ever show."""
     user = get_or_create_user(db, idinfo)
     is_staff = _is_staff(idinfo)
     holidays = (
@@ -190,6 +191,12 @@ async def list_holidays(
         .order_by(NcoHoliday.date_from.desc(), NcoHoliday.id.desc())
         .all()
     )
+    if not is_staff:
+        today = _today()
+        holidays = [
+            h for h in holidays
+            if h.user_id == user.id or (h.cancelled_at is None and h.date_to >= today)
+        ]
     notice_days = _min_notice_days(idinfo)
     return {
         "holidays": [_serialise(h, user, is_staff) for h in holidays],
