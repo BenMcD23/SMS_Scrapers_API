@@ -115,6 +115,27 @@ def test_log_polling_returns_only_the_tail():
     db.commit()
     third = sc.scraper_logs(job.id, after=second["last_seq"], db=db, idinfo=_idinfo())
     assert [row["value"] for row in third["logs"]] == ["done"]
+    assert third["has_more"] is False
+
+
+def test_a_truncated_log_page_says_so():
+    # A client that has been away long enough to fall a whole page behind must
+    # not read "job finished" off a page that stopped early.
+    db = _db()
+    job = sc.enqueue_job(db, "medical", "staff@317atc.co.uk")
+    job.status = "done"
+    now = datetime.now()
+    for seq in range(1, sc.LOG_PAGE_SIZE + 5):
+        db.add(ScraperJobLog(job_id=job.id, seq=seq, ts=now, type="info", value=f"line {seq}"))
+    db.commit()
+
+    first = sc.scraper_logs(job.id, after=0, db=db, idinfo=_idinfo())
+    assert len(first["logs"]) == sc.LOG_PAGE_SIZE
+    assert first["has_more"] is True
+
+    rest = sc.scraper_logs(job.id, after=first["last_seq"], db=db, idinfo=_idinfo())
+    assert len(rest["logs"]) == 4
+    assert rest["has_more"] is False
 
 
 def test_scrapers_running_reports_the_live_job_per_scraper():

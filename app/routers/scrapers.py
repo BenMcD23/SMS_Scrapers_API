@@ -33,6 +33,10 @@ router = APIRouter()
 
 RUN_LOG_RETENTION_DAYS = 7
 
+# Cap on log lines per poll. A cadet-quali sweep emits thousands, and a client
+# that has been away needs to catch up in pages rather than in one huge body.
+LOG_PAGE_SIZE = 2000
+
 NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff", "absences"]
 
 # Upload-to-Bader jobs share the queue with the named scrapers but not their
@@ -209,7 +213,7 @@ def scraper_logs(
         db.query(ScraperJobLog)
         .filter(ScraperJobLog.job_id == job_id, ScraperJobLog.seq > after)
         .order_by(ScraperJobLog.seq)
-        .limit(2000)
+        .limit(LOG_PAGE_SIZE)
         .all()
     )
 
@@ -220,6 +224,11 @@ def scraper_logs(
             for r in rows
         ],
         "last_seq": rows[-1].seq if rows else after,
+        # A full page means the tail was truncated. Without this the client
+        # would see a finished job alongside a partial log and stop polling
+        # there — which is exactly what happens after a tab has been in the
+        # background through a long run.
+        "has_more": len(rows) == LOG_PAGE_SIZE,
     }
 
 

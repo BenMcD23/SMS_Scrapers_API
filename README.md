@@ -116,10 +116,38 @@ invokes the same function with a `{"job": "<name>"}` payload;
 
 Trigger each rule manually once after setting them up. `db_backup` is the one
 to watch: **Neon's free tier has no downloadable backups**, so the Drive dump
-is the only recovery path, and it now runs somewhere nobody is watching.
+is the only recovery path, and it now runs somewhere nobody is watching. Two
+things it needs beyond the rule itself:
+
+- `DATABASE_DIRECT_URL` set on the Lambda. `pg_dump` and `psql` can't work
+  through PgBouncer, so they use that rather than the pooled `DATABASE_URL`.
+- A `postgresql-client` major version matching Neon's (see above).
+
+The owner-only *preview a backup* flow (`/backups`) additionally creates and
+drops a scratch database and connects to a `postgres` database on the same
+host. Neon's default database is usually `neondb`, so check that path
+specifically the first time rather than assuming it carried over.
 
 The scraper *schedules* are not here — they live on the worker
 (`app/worker.py`), so a cloud outage doesn't stop a scheduled scrape.
+
+### 4. What CI needs
+
+`.github/workflows/deploy.yml` reads these. Repository **secrets**:
+
+| Secret | Used for |
+| --- | --- |
+| `NEON_DIRECT_URL_PROD` / `NEON_DIRECT_URL_DEV` | the migration step (direct, not pooled) |
+| `AWS_DEPLOY_ROLE_ARN` | OIDC role the workflow assumes — no long-lived AWS keys |
+| `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` | reaching the home box for the worker deploy |
+| `SERVER_HOST`, `SERVER_USER`, `SSH_PRIVATE_KEY` | the worker deploy itself |
+
+Repository **variables**: `AWS_REGION`, `ECR_REPOSITORY`,
+`LAMBDA_FUNCTION_NAME_PREFIX` (the workflow appends `-prod` / `-dev`).
+
+The AWS role needs ECR push, `lambda:UpdateFunctionCode`,
+`lambda:PublishVersion`, `lambda:GetFunction*`, and a trust policy for this
+repository's GitHub OIDC subject.
 
 ## Server setup (one-time)
 
