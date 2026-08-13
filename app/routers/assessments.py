@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 import io
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, defer, joinedload
@@ -547,7 +547,6 @@ def delete_assessment(
 @router.post("/assessments/upload-to-bader")
 def upload_qualifications_to_bader(
     data: UploadQualificationsRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -571,10 +570,13 @@ def upload_qualifications_to_bader(
     if missing:
         raise HTTPException(status_code=404, detail=f"Assessment ID(s) not found: {sorted(missing)}")
 
-    # create_upload_job checks RAM and raises 503 if too low
-    job_id, _ = scrapers.create_upload_job(idinfo.get("email"))
-    background_tasks.add_task(
-        scrapers.run_upload_job, job_id, user.id, idinfo.get("email", ""), data.assessment_ids
+    # Playwright only exists on the home box, so the upload is queued like any
+    # other scrape and the worker picks it up.
+    job = scrapers.enqueue_job(
+        db,
+        scrapers.UPLOAD_SCRAPER_ID,
+        idinfo.get("email"),
+        payload={"user_id": user.id, "assessment_ids": data.assessment_ids},
     )
 
-    return {"status": "started", "job_id": job_id, "assessment_ids": data.assessment_ids}
+    return {"status": "started", "job_id": job.id, "assessment_ids": data.assessment_ids}

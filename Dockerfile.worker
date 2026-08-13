@@ -1,3 +1,8 @@
+# The scraper worker — the only thing left running at home.
+#
+# Unchanged from the old single image, because this is the half that genuinely
+# needs Chromium and its OS libraries. The cloud API is built from
+# Dockerfile.api instead, without any of it.
 FROM python:3.10-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -37,8 +42,12 @@ COPY . .
 
 RUN mkdir -p /app/data
 
-EXPOSE 8000
+# No EXPOSE and no port: the worker only ever makes outbound connections. That
+# is the whole point — nothing has to be able to reach this box.
 
 ENV PYTHONPATH=/app/app:/app
 
-CMD ["sh", "-c", "alembic -c database/alembic.ini upgrade head && uvicorn api:app --host 0.0.0.0 --port 8000"]
+# Migrations are not run here. They run once in CI against Neon's direct URL,
+# before either the Lambda or this worker is updated, because both now share
+# one schema and a partial deploy must not leave new code on an old one.
+CMD ["python", "-m", "worker"]

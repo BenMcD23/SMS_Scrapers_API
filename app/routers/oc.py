@@ -13,12 +13,11 @@ from database.models import (
     Cadet, CadetAttendance, CadetQualification, Staff, StaffAttendance,
 )
 
-from core import cache
 from core.attendance import attendance_state, PRESENT, AUTHORISED, ABSENT
 from core.db import get_db
 from core.qualifications import quali_expiry_cutoff
 from core.security import require_oc
-from routers.stats import STATS_CACHE_KEY, STATS_CACHE_TTL, compute_stats
+from routers.stats import compute_stats
 
 router = APIRouter()
 
@@ -105,11 +104,7 @@ async def oc_dashboard(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),
 ):
-    # Squadron strength — reuse the stats cache the home page already warms.
-    strength = cache.get(STATS_CACHE_KEY)
-    if strength is None:
-        strength = compute_stats(db)
-        cache.set(STATS_CACHE_KEY, strength, STATS_CACHE_TTL)
+    strength = compute_stats(db)
 
     now = datetime.now()
     today = datetime(now.year, now.month, now.day)

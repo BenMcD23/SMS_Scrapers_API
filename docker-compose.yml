@@ -1,33 +1,22 @@
+# The home stack, after the move to the cloud: the scraper worker and nothing
+# else. Postgres lives on Neon and the API on Lambda, so neither is here, and
+# no service in this file listens for anything — the worker claims its work
+# over an outbound connection to Neon.
+#
+# Tailscale is kept purely as an admin convenience (SSH and deploys). It no
+# longer fronts anything user-facing, so if it drops, scrapers pause and the
+# site carries on.
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: 317_SMS
-      POSTGRES_USER: sms_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sms_user -d 317_SMS"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  api:
-    build: .
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
     env_file:
       - .env
-    # Migrations deliberately do NOT run here — a failed one used to kill the
-    # whole container via `&&`. The deploy script runs them as a separate step.
-    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    command: python -m worker
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/ping')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+    # No healthcheck: there is no port to probe. `docker compose logs -f worker`
+    # shows the claim loop, and a wedged run is caught by the idle watchdog.
     shm_size: 768mb
     deploy:
       resources:
@@ -38,10 +27,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app/app:/app
-      - DATABASE_URL=postgresql+psycopg2://sms_user:${POSTGRES_PASSWORD}@db:5432/317_SMS
-    depends_on:
-      db:
-        condition: service_healthy
+      # DATABASE_URL comes from .env and points at Neon — the *direct*
+      # (non-pooled) host. The worker holds a handful of long-lived
+      # connections, which is what the direct endpoint is for; PgBouncer is
+      # there for the Lambda's short-lived ones.
 
   tailscale:
     image: tailscale/tailscale:latest
@@ -49,18 +38,14 @@ services:
     hostname: 317-sms-api
     environment:
       - TS_STATE_DIR=/var/lib/tailscale
-      - TS_SERVE_CONFIG=/config/serve-config.json
       - TS_HOSTNAME=317-sms-api
+      # TS_SERVE_CONFIG is gone with serve-config.json: Funnel used to be the
+      # public front door for the whole API, which is exactly the single point
+      # of failure this rewrite removes.
     volumes:
       - ./tailscale_data:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
-      - ./serve-config.json:/config/serve-config.json:ro
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    depends_on:
-      - api
     restart: unless-stopped
-
-volumes:
-  postgres_data:
