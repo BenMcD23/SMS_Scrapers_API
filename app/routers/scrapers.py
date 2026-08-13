@@ -1,345 +1,113 @@
-"""Bader scrapers — background runs, live SSE log streams, start/stop.
+"""Bader scrapers — queueing, log polling, start/stop.
 
-Named scrapers (cadet-quali, cadet-event, 317-event, medical) each have their
-own state slot and can run in parallel.  Upload jobs each get a unique UUID
-job_id so any number can run simultaneously (subject to the RAM guard).
+Nothing in this module runs a scraper. The API lives in the cloud and the
+browser automation lives on the home box, so a run is a row in `Scraper_Jobs`
+that the worker (app/worker.py) claims over an outbound connection. This module
+only writes and reads those rows, which is why it must stay free of Playwright
+and of anything that imports it — see scripts/scraper_calls.py.
+
+Named scrapers (cadet-quali, cadet-event, 317-event, medical, staff, absences)
+allow one live job each, enforced by a partial unique index rather than by
+in-process state. Upload jobs are exempt: any number can be queued at once.
 """
 
-import asyncio
 import json
-import threading
-import time
-import traceback
-import uuid
 from datetime import datetime, timedelta
 
-from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from database.database import SessionLocal, engine
-from database.models import ScraperRun, ScraperSchedule, StatsSnapshot, AttachmentCheckQual
-
-from scripts.scraper_calls import (
-    info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
-    upload_qualifications_scraper, absence_scraper,
+from database.database import SessionLocal
+from database.models import (
+    ACTIVE_JOB_STATUSES, AttachmentCheckQual, ScraperJob, ScraperJobLog,
+    ScraperRun, ScraperSchedule,
 )
-from scripts.staff_scraper import staff_scraper
 
 from core.db import get_db, get_or_create_user
-from core.scheduler import scheduler
 from core.security import require_staff, require_owner
-from routers.cadets import invalidate_cadet_caches
-from routers.stats import compute_stats
 
 router = APIRouter()
 
-# A run is killed when it stops making *progress*, not on total runtime: a full
-# cadet-quali sweep of a large squadron legitimately runs past any fixed
-# wall-clock cap (it was being killed mid-save after the scrape had finished and
-# reported as a timeout), while a wedged Bader page goes quiet straight away.
-SCRAPER_IDLE_TIMEOUT_SECONDS = 300
-# Backstop for a run that keeps logging but never finishes.
-SCRAPER_MAX_RUNTIME_SECONDS = 3 * 60 * 60
-WATCHDOG_POLL_SECONDS = 15
 RUN_LOG_RETENTION_DAYS = 7
-
-# ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
 
 NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff", "absences"]
 
-SCRAPER_FUNCS = {
-    "cadet-quali": info_and_quali_scraper,
-    "cadet-event": cadet_event_scraper,
-    "317-event":   event_317_scraper,
-    "medical":     medical_scraper,
-    "staff":       staff_scraper,
-    "absences":    absence_scraper,
-}
-
-named_scraper_states: dict = {
-    name: {
-        "messages":    [],
-        "lock":        threading.Lock(),
-        "running":     False,
-        "started_by":  None,
-        "stop_event":  threading.Event(),
-        "stop_reason": None,
-        "run_id":      0,
-        "context":     None,
-    }
-    for name in NAMED_SCRAPERS
-}
-
-# ── Per-job upload state ────────────────────────────────────────────────────────────────
-
-upload_jobs: dict[str, dict] = {}
-upload_jobs_lock = threading.Lock()
+# Upload-to-Bader jobs share the queue with the named scrapers but not their
+# one-at-a-time rule, so they're identified by this reserved scraper_id.
+UPLOAD_SCRAPER_ID = "upload-qualifications"
 
 
-def start_watchdog(state: dict, label: str, on_timeout, is_current=None) -> None:
-    """Watch a running scraper and trip `on_timeout` when it stalls.
+# ── Queue helpers ─────────────────────────────────────────────────────────────
 
-    Progress is measured by the run appending to its own log, so a scrape that
-    is slow but alive keeps itself alive. `is_current` guards against a stale
-    watchdog from a previous run of the same slot killing the current one.
+def enqueue_job(
+    db: Session,
+    scraper_id: str,
+    requested_by: str | None,
+    payload: dict | None = None,
+) -> ScraperJob:
+    """Queue a run, or 409 if this named scraper already has a live job.
+
+    The uniqueness check is the partial unique index, not a prior SELECT: two
+    Lambda containers can serve two clicks at the same instant, and only the
+    database sees both.
     """
-    def watch():
-        started = last_progress = time.monotonic()
-        seen = len(state["messages"])
-        while True:
-            time.sleep(WATCHDOG_POLL_SECONDS)
-            if not state["running"] or (is_current and not is_current()):
-                return
-            now = time.monotonic()
-            if len(state["messages"]) != seen:
-                seen = len(state["messages"])
-                last_progress = now
-            idle = now - last_progress
-            if idle >= SCRAPER_IDLE_TIMEOUT_SECONDS or now - started >= SCRAPER_MAX_RUNTIME_SECONDS:
-                # Killing a run is otherwise invisible outside the SSE log, which
-                # makes "Scraper timed out." impossible to chase in the API logs.
-                print(
-                    f"[scraper watchdog] {label} killed after {now - started:.0f}s "
-                    f"({idle:.0f}s since its last log line)",
-                    flush=True,
-                )
-                on_timeout()
-                return
-
-    threading.Thread(target=watch, daemon=True).start()
-
-
-def create_upload_job(started_by: str) -> tuple[str, dict]:
-    from scripts.scraper_utils import check_ram_ok
-    ram_ok, available_mb = check_ram_ok()
-    if not ram_ok:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Server RAM too low ({available_mb:.0f} MB available, need 500 MB). Try again shortly.",
-        )
-    job_id = uuid.uuid4().hex[:8]
-    state = {
-        "job_id":     job_id,
-        "messages":   [],
-        "lock":       threading.Lock(),
-        "running":    True,
-        "started_by": started_by,
-        "stop_event": threading.Event(),
-        "context":    None,
-        "started_at": datetime.now(),
-        "finished_at": None,
-    }
-    with upload_jobs_lock:
-        upload_jobs[job_id] = state
-    return job_id, state
-
-
-def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: list[int]):
-    state = upload_jobs[job_id]
-    db = Session(engine)
-    stop_event = state["stop_event"]
-    success = False
-
-    def on_context_ready(ctx):
-        state["context"] = ctx
-
-    def on_timeout():
-        stop_event.set()
-        ctx = state.get("context")
-        if ctx:
-            try:
-                ctx.close()
-            except Exception:
-                pass
-
-    start_watchdog(state, f"upload-qualifications job {job_id}", on_timeout)
-
-    try:
-        upload_qualifications_scraper(
-            state["messages"],
-            state["lock"],
-            user_id,
-            db,
-            stop_event,
-            assessment_ids=assessment_ids,
-            on_context_ready=on_context_ready,
-        )
-
-        with state["lock"]:
-            if stop_event.is_set():
-                state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
-            else:
-                state["messages"].append(json.dumps({"type": "status", "value": "done"}))
-                success = True
-    except Exception as e:
-        print(f"[upload-job {job_id}] CRASH:\n" + traceback.format_exc(), flush=True)
-        with state["lock"]:
-            state["messages"].append(json.dumps({"type": "error", "value": f"Crash: {type(e).__name__}: {str(e)}"}))
-    finally:
-        try:
-            run_db = Session(engine)
-            run_db.add(ScraperRun(
-                scraper_id="upload-qualifications",
-                ran_at=datetime.now(),
-                success=success,
-                ran_by=user_email,
-                logs=_format_run_logs(state["messages"]),
-            ))
-            run_db.commit()
-            run_db.close()
-        except Exception as rec_err:
-            print(f"[scraper run record] failed: {rec_err}", flush=True)
-        db.close()
-        state["running"] = False
-        state["context"] = None
-        state["finished_at"] = datetime.now()
-
-
-def _quit_context(state: dict):
-    ctx = state.get("context")
-    if ctx:
-        try:
-            ctx.close()
-        except Exception:
-            pass
-        state["context"] = None
-
-
-def _save_stats_snapshot(db: Session):
-    try:
-        snapshot = StatsSnapshot(captured_at=datetime.now(), data=compute_stats(db))
-        db.add(snapshot)
-        db.commit()
-    except Exception as snap_err:
-        print(f"[stats snapshot] failed: {snap_err}")
-
-
-def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: str):
-    state = named_scraper_states[name]
-    db = Session(engine)
-    stop_event = state["stop_event"]
-    stop_event.clear()
-    state["stop_reason"] = None
-    state["run_id"] += 1
-    run_id = state["run_id"]
-    state["context"] = None
-    success = False
-
-    def on_context_ready(ctx):
-        state["context"] = ctx
-
-    def on_timeout():
-        state["stop_reason"] = state["stop_reason"] or "timeout"
-        stop_event.set()
-        _quit_context(state)
-
-    start_watchdog(state, name, on_timeout, is_current=lambda: state["run_id"] == run_id)
-
-    def append_stop_outcome():
-        if state["stop_reason"] == "manual":
-            state["messages"].append(json.dumps({"type": "status", "value": "stopped"}))
-        else:
-            state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
-
-    try:
-        scraper_func(state["messages"], state["lock"], user_id, db, stop_event, on_context_ready=on_context_ready)
-
-        with state["lock"]:
-            if stop_event.is_set():
-                append_stop_outcome()
-            else:
-                if name == "cadet-quali":
-                    _save_stats_snapshot(db)
-                invalidate_cadet_caches()
-                state["messages"].append(json.dumps({"type": "status", "value": "done"}))
-                success = True
-    except Exception as e:
-        with state["lock"]:
-            if stop_event.is_set():
-                append_stop_outcome()
-            else:
-                state["messages"].append(json.dumps({"type": "error", "value": f"Crash: {str(e)}"}))
-    finally:
-        state["context"] = None
-        if state["stop_reason"] != "manual":
-            try:
-                run_db = Session(engine)
-                run_db.add(ScraperRun(
-                    scraper_id=name,
-                    ran_at=datetime.now(),
-                    success=success,
-                    ran_by=user_email,
-                    logs=_format_run_logs(state["messages"]),
-                ))
-                run_db.commit()
-                run_db.close()
-            except Exception as rec_err:
-                print(f"[scraper run record] failed: {rec_err}")
-        db.close()
-        state["running"] = False
-        state["started_by"] = None
-
-
-# ── Endpoints ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/run-scraper/{name}")
-def start_scraper(
-    name: str,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    user = get_or_create_user(db, idinfo)
-
-    if not user.bader_credentials:
-        raise HTTPException(status_code=400, detail="Bader credentials not saved. Please go to Settings first.")
-
-    if name not in SCRAPER_FUNCS:
-        raise HTTPException(status_code=404, detail="Scraper not found")
-
-    # RAM guard for named scrapers too
-    from scripts.scraper_utils import check_ram_ok
-    ram_ok, available_mb = check_ram_ok()
-    if not ram_ok:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Server RAM too low ({available_mb:.0f} MB available, need 500 MB). Try again shortly.",
-        )
-
-    state = named_scraper_states[name]
-    with state["lock"]:
-        if state["running"]:
-            raise HTTPException(status_code=400, detail="Scraper already running")
-        state["running"] = True
-        state["started_by"] = idinfo.get("email")
-        state["messages"].clear()
-        state["messages"].append(json.dumps({
-            "type": "status", "value": "running",
-            "started_by": state["started_by"], "scraper_name": name,
-        }))
-
-    background_tasks.add_task(
-        run_named_scraper_task, name, SCRAPER_FUNCS[name], user.id, idinfo.get("email", "")
+    job = ScraperJob(
+        scraper_id=scraper_id,
+        status="queued",
+        payload=payload,
+        requested_by=requested_by,
+        requested_at=datetime.now(),
     )
-    return {"status": "started"}
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Scraper already running")
+    db.refresh(job)
+    return job
 
 
-@router.post("/stop-scraper/{name}")
-def stop_scraper(name: str, idinfo: dict = Depends(require_staff)):
-    if name not in named_scraper_states:
-        raise HTTPException(status_code=404, detail="Unknown scraper")
-    state = named_scraper_states[name]
-    if not state["running"]:
-        raise HTTPException(status_code=400, detail="Scraper is not running")
-    state["stop_reason"] = "manual"
-    state["stop_event"].set()
-    _quit_context(state)
-    with state["lock"]:
-        state["messages"].append(json.dumps({"type": "warning", "value": "[STOPPED] Scraper was manually stopped."}))
-    return {"status": "stopping"}
+def active_job(db: Session, scraper_id: str) -> ScraperJob | None:
+    return (
+        db.query(ScraperJob)
+        .filter(
+            ScraperJob.scraper_id == scraper_id,
+            ScraperJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(ScraperJob.requested_at.desc())
+        .first()
+    )
+
+
+def _request_stop(db: Session, job: ScraperJob) -> str:
+    """Flag a job to stop. A job the worker hasn't claimed yet is cancelled
+    outright — otherwise it would sit queued until a worker picked it up just
+    to stop immediately, and the scraper slot would stay locked meanwhile."""
+    job.stop_requested = True
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.finished_at = datetime.now()
+        db.commit()
+        return "cancelled"
+    db.commit()
+    return "stopping"
+
+
+def _job_json(job: ScraperJob) -> dict:
+    return {
+        "job_id":       job.id,
+        "scraper_id":   job.scraper_id,
+        "status":       job.status,
+        "running":      job.status in ACTIVE_JOB_STATUSES,
+        "started_by":   job.requested_by,
+        "requested_at": job.requested_at.isoformat() if job.requested_at else None,
+        "started_at":   job.claimed_at.isoformat() if job.claimed_at else None,
+        "finished_at":  job.finished_at.isoformat() if job.finished_at else None,
+    }
 
 
 def safe_parse(m: str) -> dict | None:
@@ -350,6 +118,12 @@ def safe_parse(m: str) -> dict | None:
 
 
 def _format_run_logs(messages: list[str]) -> str:
+    """Flatten a run's log messages into the plain text stored on ScraperRun.
+
+    Kept here (rather than in the worker) because it defines the format
+    /scraper-runs and /api-logs read back — the worker imports it so both ends
+    agree on one representation.
+    """
     lines = []
     for m in messages:
         parsed = safe_parse(m)
@@ -362,133 +136,143 @@ def _format_run_logs(messages: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _staff_from_header_or_query(authorization: str, token: str):
-    auth = authorization or (f"Bearer {token}" if token else None)
-    return require_staff(auth)
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
-
-@router.get("/scraper-stream/{name}")
-async def named_scraper_stream(
+@router.get("/run-scraper/{name}")
+def start_scraper(
     name: str,
-    authorization: str = Header(None),
-    token: str = Query(None),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
 ):
-    _staff_from_header_or_query(authorization, token)
+    user = get_or_create_user(db, idinfo)
 
-    if name not in named_scraper_states:
+    if not user.bader_credentials:
+        raise HTTPException(status_code=400, detail="Bader credentials not saved. Please go to Settings first.")
+
+    if name not in NAMED_SCRAPERS:
+        raise HTTPException(status_code=404, detail="Scraper not found")
+
+    # The RAM guard now lives on the worker, at the point of claiming: this
+    # process has no idea how much memory the home box has.
+    job = enqueue_job(db, name, idinfo.get("email"), payload={"user_id": user.id})
+    return {"status": "started", "job_id": job.id}
+
+
+@router.post("/stop-scraper/{name}")
+def stop_scraper(
+    name: str,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    if name not in NAMED_SCRAPERS:
         raise HTTPException(status_code=404, detail="Unknown scraper")
-
-    state = named_scraper_states[name]
-
-    async def event_generator():
-        with state["lock"]:
-            if state["running"] and state["started_by"]:
-                yield f"data: {json.dumps({'type': 'status', 'value': 'running', 'started_by': state['started_by'], 'scraper_name': name})}\n\n"
-            last_idx = len(state["messages"])
-            for msg in state["messages"]:
-                yield f"data: {msg}\n\n"
-
-        while True:
-            await asyncio.sleep(0.5)
-            with state["lock"]:
-                current_len = len(state["messages"])
-            if last_idx < current_len:
-                with state["lock"]:
-                    new_msgs = state["messages"][last_idx:]
-                for msg in new_msgs:
-                    yield f"data: {msg}\n\n"
-                last_idx = current_len
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.get("/upload-stream/{job_id}")
-async def upload_stream(
-    job_id: str,
-    authorization: str = Header(None),
-    token: str = Query(None),
-):
-    _staff_from_header_or_query(authorization, token)
-
-    with upload_jobs_lock:
-        state = upload_jobs.get(job_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Upload job not found")
-
-    async def event_generator():
-        with state["lock"]:
-            last_idx = len(state["messages"])
-            for msg in state["messages"]:
-                yield f"data: {msg}\n\n"
-
-        while True:
-            await asyncio.sleep(0.5)
-            with state["lock"]:
-                current_len = len(state["messages"])
-            if last_idx < current_len:
-                with state["lock"]:
-                    new_msgs = state["messages"][last_idx:]
-                for msg in new_msgs:
-                    yield f"data: {msg}\n\n"
-                last_idx = current_len
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.get("/upload-jobs")
-def get_upload_jobs(idinfo: dict = Depends(require_staff)):
-    with upload_jobs_lock:
-        jobs = list(upload_jobs.values())
-    return [
-        {
-            "job_id":      j["job_id"],
-            "running":     j["running"],
-            "started_by":  j["started_by"],
-            "started_at":  j["started_at"].isoformat() if j["started_at"] else None,
-            "finished_at": j["finished_at"].isoformat() if j["finished_at"] else None,
-        }
-        for j in jobs
-    ]
+    job = active_job(db, name)
+    if not job:
+        raise HTTPException(status_code=400, detail="Scraper is not running")
+    # The worker polls stop_requested, so stopping takes a second or two rather
+    # than being instant — it used to set an in-process Event directly.
+    return {"status": _request_stop(db, job), "job_id": job.id}
 
 
 @router.post("/stop-upload/{job_id}")
-def stop_upload_job(job_id: str, idinfo: dict = Depends(require_staff)):
-    with upload_jobs_lock:
-        state = upload_jobs.get(job_id)
-    if not state:
+def stop_upload_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    job = db.query(ScraperJob).filter(ScraperJob.id == job_id).first()
+    if not job or job.scraper_id != UPLOAD_SCRAPER_ID:
         raise HTTPException(status_code=404, detail="Upload job not found")
-    if not state["running"]:
+    if job.status not in ACTIVE_JOB_STATUSES:
         raise HTTPException(status_code=400, detail="Upload job is not running")
-    state["stop_event"].set()
-    _quit_context(state)
-    return {"status": "stopping"}
+    return {"status": _request_stop(db, job)}
+
+
+@router.get("/scraper-logs/{job_id}")
+def scraper_logs(
+    job_id: int,
+    after: int = 0,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Everything that has happened on a job since log line `after`.
+
+    Replaces the SSE stream: Lambda can't reliably stream a Python response,
+    and the in-process buffer the old stream read from doesn't exist any more.
+    The client polls this with its last `seq` and gets the tail.
+    """
+    job = db.query(ScraperJob).filter(ScraperJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    rows = (
+        db.query(ScraperJobLog)
+        .filter(ScraperJobLog.job_id == job_id, ScraperJobLog.seq > after)
+        .order_by(ScraperJobLog.seq)
+        .limit(2000)
+        .all()
+    )
+
+    return {
+        **_job_json(job),
+        "logs": [
+            {"seq": r.seq, "ts": r.ts.isoformat(), "type": r.type, "value": r.value}
+            for r in rows
+        ],
+        "last_seq": rows[-1].seq if rows else after,
+    }
+
+
+@router.get("/upload-jobs")
+def get_upload_jobs(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    cutoff = datetime.now() - timedelta(hours=12)
+    jobs = (
+        db.query(ScraperJob)
+        .filter(
+            ScraperJob.scraper_id == UPLOAD_SCRAPER_ID,
+            or_(ScraperJob.status.in_(ACTIVE_JOB_STATUSES), ScraperJob.requested_at >= cutoff),
+        )
+        .order_by(ScraperJob.requested_at.desc())
+        .all()
+    )
+    return [_job_json(j) for j in jobs]
 
 
 @router.get("/scrapers-running")
-def scrapers_running(idinfo: dict = Depends(require_staff)):
-    with upload_jobs_lock:
-        jobs_snapshot = list(upload_jobs.values())
+def scrapers_running(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    live = {
+        j.scraper_id: j
+        for j in db.query(ScraperJob)
+        .filter(ScraperJob.status.in_(ACTIVE_JOB_STATUSES))
+        .order_by(ScraperJob.requested_at)
+        .all()
+        if j.scraper_id != UPLOAD_SCRAPER_ID
+    }
+    uploads = (
+        db.query(ScraperJob)
+        .filter(
+            ScraperJob.scraper_id == UPLOAD_SCRAPER_ID,
+            ScraperJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .all()
+    )
     return {
         **{
-            name: {"running": state["running"], "started_by": state["started_by"]}
-            for name, state in named_scraper_states.items()
-        },
-        "upload_jobs": [
-            {
-                "job_id":     j["job_id"],
-                "running":    j["running"],
-                "started_by": j["started_by"],
+            name: {
+                "running":    name in live,
+                "started_by": live[name].requested_by if name in live else None,
+                "job_id":     live[name].id if name in live else None,
+                "status":     live[name].status if name in live else None,
             }
-            for j in jobs_snapshot
-        ],
+            for name in NAMED_SCRAPERS
+        },
+        "upload_jobs": [_job_json(j) for j in uploads],
     }
 
 
@@ -585,17 +369,44 @@ def api_logs(
 
 
 def cleanup_old_run_logs():
+    """Daily purge (EventBridge on Lambda) of old run records and finished jobs.
+
+    Job rows carry their whole log line-by-line, so they're the bulkier half
+    now — the ScraperRun summary is what /api-logs actually reads.
+    """
     cutoff = datetime.now() - timedelta(days=RUN_LOG_RETENTION_DAYS)
-    db = Session(engine)
+    db = SessionLocal()
     try:
         deleted = (
             db.query(ScraperRun)
             .filter(ScraperRun.ran_at < cutoff)
             .delete(synchronize_session=False)
         )
+        stale_jobs = (
+            db.query(ScraperJob.id)
+            .filter(
+                ScraperJob.requested_at < cutoff,
+                ScraperJob.status.notin_(ACTIVE_JOB_STATUSES),
+            )
+            .all()
+        )
+        job_ids = [i for (i,) in stale_jobs]
+        if job_ids:
+            # Explicit, because SQLite (local/tests) doesn't enforce the
+            # ondelete=CASCADE the Postgres FK relies on.
+            db.query(ScraperJobLog).filter(ScraperJobLog.job_id.in_(job_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(ScraperJob).filter(ScraperJob.id.in_(job_ids)).delete(
+                synchronize_session=False
+            )
         db.commit()
-        if deleted:
-            print(f"[cleanup_old_run_logs] purged {deleted} run record(s) older than {RUN_LOG_RETENTION_DAYS} days", flush=True)
+        if deleted or job_ids:
+            print(
+                f"[cleanup_old_run_logs] purged {deleted} run record(s) and "
+                f"{len(job_ids)} job(s) older than {RUN_LOG_RETENTION_DAYS} days",
+                flush=True,
+            )
     except Exception as e:
         db.rollback()
         print(f"[cleanup_old_run_logs] failed: {e}", flush=True)
@@ -604,69 +415,11 @@ def cleanup_old_run_logs():
 
 
 # ── Schedules ──────────────────────────────────────────────────────────────────
+# Schedule *evaluation* lives on the worker (core/worker), so a cloud outage
+# can't stop a scheduled scrape. These endpoints only read and write the rows;
+# the worker re-reads them on its own poll and re-registers its cron jobs.
 
 VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-
-
-def _run_scheduled_scraper(name: str):
-    db = SessionLocal()
-    claimed = False
-    try:
-        sched = db.query(ScraperSchedule).filter(ScraperSchedule.scraper_id == name).first()
-        if not sched or not sched.enabled or not sched.user:
-            return
-        if not sched.user.bader_credentials:
-            print(f"[scheduled scraper] {name}: {sched.user.email} has no Bader credentials saved, skipping")
-            return
-
-        user_id, email = sched.user.id, sched.user.email
-        state = named_scraper_states[name]
-        with state["lock"]:
-            if state["running"]:
-                print(f"[scheduled scraper] {name}: already running, skipping")
-                return
-            state["running"] = True
-            state["started_by"] = f"schedule ({email})"
-            state["messages"].clear()
-            state["messages"].append(json.dumps({
-                "type": "status", "value": "running",
-                "started_by": state["started_by"], "scraper_name": name,
-            }))
-            claimed = True
-    finally:
-        db.close()
-
-    if claimed:
-        run_named_scraper_task(name, SCRAPER_FUNCS[name], user_id, email)
-
-
-def register_schedule_jobs():
-    db = SessionLocal()
-    try:
-        schedules = {s.scraper_id: s for s in db.query(ScraperSchedule).all()}
-        for name in NAMED_SCRAPERS:
-            job_id = f"scraper-sched-{name}"
-            sched = schedules.get(name)
-            if sched and sched.enabled and sched.days_of_week:
-                scheduler.add_job(
-                    _run_scheduled_scraper,
-                    CronTrigger(
-                        day_of_week=sched.days_of_week,
-                        hour=sched.hour,
-                        minute=sched.minute,
-                        timezone="Europe/London",
-                    ),
-                    args=[name],
-                    id=job_id,
-                    replace_existing=True,
-                )
-            else:
-                try:
-                    scheduler.remove_job(job_id)
-                except Exception:
-                    pass
-    finally:
-        db.close()
 
 
 def _schedule_json(name: str, sched: ScraperSchedule | None) -> dict:
@@ -735,7 +488,6 @@ def put_scraper_schedule(
     db.commit()
     db.refresh(sched)
 
-    register_schedule_jobs()
     return _schedule_json(name, sched)
 
 

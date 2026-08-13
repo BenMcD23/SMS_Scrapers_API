@@ -1,13 +1,12 @@
+# Dev overrides for the home worker stack.
+#
+# The dev worker points at a Neon *branch* (set DATABASE_URL in this stack's
+# .env), which gives a dev database carrying prod's data without maintaining a
+# seeded one — so there is no dev `db` service here any more.
 services:
-  db:
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data_dev:/var/lib/postgresql/data
-
-  api:
-    ports:
-      - "8001:8000"
+  worker:
+    environment:
+      - WORKER_ENV=dev
 
   tailscale:
     container_name: tailscale-dev
@@ -16,6 +15,3 @@ services:
     # inherited the prod name and got auto-suffixed to 317-sms-api-1.
     environment:
       - TS_HOSTNAME=317-sms-api-dev
-
-volumes:
-  postgres_data_dev:

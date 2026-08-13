@@ -14,7 +14,6 @@ from database.models import (
     CadetQualification, CadetEvent, CadetTheoryProgress,
 )
 
-from core import cache
 from core.attendance import attendance_state
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
@@ -23,15 +22,11 @@ from core.security import require_staff, require_staff_or_nco, require_staff_or_
 
 router = APIRouter()
 
-CADETS_CACHE_KEY = "cadets:list"
-CADETS_CACHE_TTL = 60
-
-
-def invalidate_cadet_caches():
-    """Drop caches derived from the cadet roster. Call from any write that
-    changes cadet data (staff edits, scraper imports)."""
-    cache.invalidate(CADETS_CACHE_KEY)
-    cache.invalidate("stats:current")
+# There is deliberately no cadet-roster cache. It used to be an in-process TTL
+# cache, which only ever held for one container: on Lambda each request may
+# land on a different one, so an edit would appear to some users and not
+# others at random. The roster is small and Neon is fast — the query is cheap
+# enough not to need one.
 
 
 class CadetPatch(BaseModel):
@@ -79,13 +74,8 @@ def list_cadets(
     # Same fields /cadets/search already returns to every NCO.
     idinfo: dict = Depends(require_staff_or_snco),
 ):
-    cached = cache.get(CADETS_CACHE_KEY)
-    if cached is not None:
-        return cached
     cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
-    result = [_cadet_summary(c) for c in cadets]
-    cache.set(CADETS_CACHE_KEY, result, CADETS_CACHE_TTL)
-    return result
+    return [_cadet_summary(c) for c in cadets]
 
 
 # ─── Audit helpers ────────────────────────────────────────────────────────────
@@ -556,6 +546,5 @@ def patch_cadet(
 
     db.commit()
     db.refresh(cadet)
-    invalidate_cadet_caches()
 
     return {"status": "success", "message": f"Cadet {cin} updated.", "updated_fields": list(update_data.keys())}

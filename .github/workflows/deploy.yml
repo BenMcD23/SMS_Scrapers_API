@@ -17,21 +17,122 @@ on:
         type: string
         required: true
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+# There are two deploy targets sharing one schema now (the Lambda and the home
+# worker), so two overlapping runs could put new code against an old schema.
+concurrency:
+  group: deploy-${{ inputs.ref || github.ref_name }}
+  cancel-in-progress: false
 
+permissions:
+  contents: read
+  id-token: write   # OIDC, so no long-lived AWS keys live in this repo
+
+jobs:
+  # ── 1. Schema first, once ───────────────────────────────────────────────────
+  # Against Neon's *direct* URL: PgBouncer can't run the session-level things
+  # migrations do. Both deploys below wait on this, so neither ever runs new
+  # code against an old schema.
+  migrate:
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.setenv.outputs.env }}
     steps:
       - name: Set environment
+        id: setenv
         run: |
           BRANCH="${{ inputs.ref || github.ref_name }}"
+          if [[ "$BRANCH" == "main" ]]; then ENV=prod; else ENV=dev; fi
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-          if [[ "$BRANCH" == "main" ]]; then
-            echo "ENV=prod" >> $GITHUB_ENV
-          else
-            echo "ENV=dev" >> $GITHUB_ENV
-          fi
+          echo "ENV=$ENV"       >> $GITHUB_ENV
+          echo "env=$ENV"       >> $GITHUB_OUTPUT
 
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run migrations against Neon
+        env:
+          # The direct (non-pooled) endpoint — NOT the -pooler host.
+          DATABASE_URL: ${{ secrets[format('NEON_DIRECT_URL_{0}', steps.setenv.outputs.env == 'prod' && 'PROD' || 'DEV')] }}
+        run: |
+          alembic -c database/alembic.ini current
+          alembic -c database/alembic.ini upgrade head
+          alembic -c database/alembic.ini current
+
+  # ── 2. The cloud API ────────────────────────────────────────────────────────
+  api:
+    needs: migrate
+    runs-on: ubuntu-latest
+    env:
+      ENV: ${{ needs.migrate.outputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push the API image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
+          IMAGE="$REGISTRY/$REPOSITORY:$ENV-${GITHUB_SHA::12}"
+          # Dockerfile.api, not Dockerfile.worker: no Chromium, no Playwright,
+          # none of the X11 libraries — that's most of the cold start.
+          docker build -f Dockerfile.api -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Update the Lambda
+        run: |
+          FN="${{ vars.LAMBDA_FUNCTION_NAME_PREFIX }}-$ENV"
+          aws lambda update-function-code --function-name "$FN" --image-uri "$IMAGE" >/dev/null
+          aws lambda wait function-updated --function-name "$FN"
+          aws lambda publish-version --function-name "$FN" >/dev/null
+
+      - name: Smoke-test the Function URL
+        run: |
+          FN="${{ vars.LAMBDA_FUNCTION_NAME_PREFIX }}-$ENV"
+          URL=$(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl --output text)
+          # /ping is unauthenticated and touches nothing — enough to prove the
+          # new image starts and answers before anyone notices it doesn't.
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS --max-time 30 "${URL}ping" | grep -q '"ok":true'; then
+              echo "API healthy at $URL"
+              exit 0
+            fi
+            echo "attempt $attempt failed, retrying"
+            sleep $((attempt * 4))
+          done
+          echo "API did not come up" >&2
+          exit 1
+
+  # ── 3. The home worker ──────────────────────────────────────────────────────
+  # Still over Tailscale SSH — the one thing Tailscale is still for. If this
+  # step fails the site is unaffected; only scrapers are.
+  worker:
+    needs: migrate
+    runs-on: ubuntu-latest
+    env:
+      ENV: ${{ needs.migrate.outputs.env }}
+      BRANCH: ${{ inputs.ref || github.ref_name }}
+    steps:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
@@ -39,7 +140,7 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
-      - name: Deploy to server
+      - name: Deploy the worker
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -53,19 +154,16 @@ jobs:
             # not a workspace, so just match the remote exactly.
             git fetch origin $BRANCH
             git reset --hard FETCH_HEAD
-            # Only rebuild/recreate db+api. Leaving tailscale untouched keeps the
-            # ingress up during deploys and avoids the fixed-container_name conflict
-            # that the old `docker rm -f tailscale` workaround existed to paper over.
-            # ponytail: if tailscale itself ever needs updating, run a full `up -d` by hand.
             if [[ "$ENV" == "prod" ]]; then
               DC="docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml"
             else
               DC="docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml"
             fi
-            # db first, then migrate, then swap the api. `set -e` means a failed
-            # migration aborts the deploy with the old api still serving.
-            $DC build api
-            $DC up -d --wait db
-            $DC run --rm api alembic -c database/alembic.ini upgrade head
-            $DC up -d --wait api
+            # No db to bring up and no migration step here — the schema was
+            # migrated in CI before this job started. Leaving tailscale
+            # untouched avoids the fixed-container_name conflict on recreate.
+            $DC build worker
+            # The worker hands any in-flight job back to the queue on SIGTERM,
+            # so a deploy mid-scrape requeues rather than wedging it.
+            $DC up -d worker
             docker image prune -f

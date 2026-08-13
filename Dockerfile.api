@@ -1,0 +1,51 @@
+# The cloud API, packaged for AWS Lambda.
+#
+# Deliberately *not* the worker image: no Chromium, no `playwright install`, and
+# none of the X11/GTK libraries it needs. That's the bulk of the old image and
+# all of it is dead weight here — Playwright only ever runs on the home box
+# (see Dockerfile.worker).
+#
+# python:3.10-slim rather than an AWS base image, because both of the native
+# tools that survive are trivial to install with apt and awkward on Amazon
+# Linux. awslambdaric is the runtime interface client that makes any image a
+# Lambda image.
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# poppler-utils: pdf2image, used by routers/programme.py.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wget gnupg ca-certificates \
+      poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# postgresql-client (pg_dump) for scripts/db_backup.py. The major version MUST
+# match the Neon server's or pg_dump refuses to run at all — and because the
+# backup job is now a scheduled Lambda invocation nobody watches, a mismatch
+# fails quietly until the day a restore is needed. Check with
+# `SELECT version()` on Neon and bump PG_MAJOR when Neon upgrades.
+ARG PG_MAJOR=17
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && wget -qO /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+         https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}" \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir awslambdaric==3.1.1
+
+COPY . .
+
+ENV PYTHONPATH=/app/app:/app
+
+# The Lambda runtime API drives the process; there is no port to expose and no
+# uvicorn. Migrations do NOT run here — they run once in CI against Neon's
+# direct URL, before either deploy target is updated.
+ENTRYPOINT ["/usr/local/bin/python", "-m", "awslambdaric"]
+CMD ["lambda_handler.handler"]

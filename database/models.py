@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, BigInteger, Float, Boolean, Text, DateTime,
-    ForeignKey, LargeBinary, JSON, UniqueConstraint,
+    ForeignKey, Index, LargeBinary, JSON, UniqueConstraint, text,
 )
 from sqlalchemy.orm import relationship, backref
 from database.database import Base
@@ -804,6 +804,82 @@ class ScraperSchedule(Base):
     updated_at   = Column(DateTime, nullable=True)
 
     user = relationship("User")
+
+
+# ─── Scraper job queue ────────────────────────────────────────────────────────
+# The API (cloud) only ever writes rows here; the home worker claims them and
+# writes the results back. Nothing has to be able to reach the house.
+
+# Statuses a job occupies while it still owns its scraper slot.
+ACTIVE_JOB_STATUSES = ("queued", "claimed", "running")
+
+
+class ScraperJob(Base):
+    """One requested scraper run, claimed and executed by the home worker."""
+    __tablename__ = "Scraper_Jobs"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    scraper_id     = Column(Text, nullable=False)   # named scraper, or "upload-qualifications"
+    # queued | claimed | running | done | failed | cancelled
+    status         = Column(Text, nullable=False, default="queued", server_default="queued")
+    payload        = Column(JSON, nullable=True)    # e.g. {"assessment_ids": [...], "user_id": 3}
+    requested_by   = Column(Text, nullable=True)    # email, or "schedule (email)"
+    requested_at   = Column(DateTime, nullable=False)
+    claimed_at     = Column(DateTime, nullable=True)
+    finished_at    = Column(DateTime, nullable=True)
+    stop_requested = Column(Boolean, nullable=False, default=False, server_default="0")
+    worker_id      = Column(Text, nullable=True)
+    # Bounded so a job that reliably kills the worker can't be requeued forever
+    # by the stale-job sweep.
+    attempts       = Column(Integer, nullable=False, default=0, server_default="0")
+
+    logs = relationship(
+        "ScraperJobLog", back_populates="job", cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        # The database is the lock: at most one live job per named scraper. This
+        # replaces the old in-process `named_scraper_states` guard, which only
+        # ever knew about runs in its own container. Upload jobs are exempt —
+        # any number may run at once — so they're excluded by scraper_id.
+        Index(
+            "uq_scraper_jobs_active",
+            "scraper_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued','claimed','running') "
+                "AND scraper_id <> 'upload-qualifications'"
+            ),
+            sqlite_where=text(
+                "status IN ('queued','claimed','running') "
+                "AND scraper_id <> 'upload-qualifications'"
+            ),
+        ),
+        Index("ix_scraper_jobs_status", "status"),
+    )
+
+
+class ScraperJobLog(Base):
+    """One log line from a running job.
+
+    Rows are incremental and never rewritten, so the UI can poll for
+    "everything after seq N" instead of holding a stream open.
+    """
+    __tablename__ = "Scraper_Job_Logs"
+
+    id     = Column(Integer, primary_key=True, autoincrement=True)
+    job_id = Column(Integer, ForeignKey("Scraper_Jobs.id", ondelete="CASCADE"), nullable=False)
+    seq    = Column(Integer, nullable=False)     # 1-based, per job
+    ts     = Column(DateTime, nullable=False)
+    type   = Column(Text, nullable=False, default="info")   # info | warning | error | status
+    value  = Column(Text, nullable=False, default="")
+
+    job = relationship("ScraperJob", back_populates="logs")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "seq", name="uq_scraper_job_logs_seq"),
+    )
 
 
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────

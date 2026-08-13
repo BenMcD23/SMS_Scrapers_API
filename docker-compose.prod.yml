@@ -1,4 +1,8 @@
+# Prod overrides for the home worker stack.
+#
+# Nothing to publish any more — the old `8000:8000` existed to give Tailscale
+# Funnel something to proxy to, and there is no longer an API here to proxy.
 services:
-  api:
-    ports:
-      - "8000:8000"
+  worker:
+    environment:
+      - WORKER_ENV=prod
