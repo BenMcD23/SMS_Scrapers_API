@@ -43,9 +43,17 @@ _GZIP_MIME = "application/gzip"
 # ── connection helpers ────────────────────────────────────────────────────────
 
 def _pg_url(dbname: str | None = None) -> str:
-    """The DATABASE_URL as a libpq-compatible URL (drops the +psycopg2 driver
-    suffix), optionally pointing at a different database on the same server."""
-    raw = os.environ.get("DATABASE_URL")
+    """The database URL as a libpq-compatible one (drops the +psycopg2 driver
+    suffix), optionally pointing at a different database on the same server.
+
+    Prefers DATABASE_DIRECT_URL when it's set. On Lambda, DATABASE_URL is
+    Neon's *pooled* endpoint, and PgBouncer's transaction pooling can't carry
+    what pg_dump and psql need — a backup taken through it is not a backup you
+    can rely on, and the free tier has no other copy. The worker and local dev
+    already use the direct URL, where this falls through to DATABASE_URL
+    unchanged.
+    """
+    raw = os.environ.get("DATABASE_DIRECT_URL") or os.environ.get("DATABASE_URL")
     if not raw:
         raise RuntimeError("DATABASE_URL is not set; backups require PostgreSQL")
     url = raw.replace("postgresql+psycopg2://", "postgresql://", 1)
