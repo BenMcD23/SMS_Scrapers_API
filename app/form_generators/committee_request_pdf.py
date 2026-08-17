@@ -59,7 +59,7 @@ def build_committee_request_pdf(
 
     story = []
 
-    story.append(Paragraph("317 (Wimbledon) Squadron ATC", h1))
+    story.append(Paragraph("317 Failsworth & Newton Heath Squadron ATC", h1))
     story.append(Paragraph("Committee Purchase Request", sub))
     story.append(Table(
         [[""]], colWidths=[doc.width],
