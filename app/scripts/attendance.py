@@ -4,11 +4,10 @@ Cadet and staff profiles use the same tab dropdown and the same #attendance
 DataTable, so both scrapers share this.
 """
 from datetime import datetime
-import re
-import time
 
 from playwright.sync_api import Page
 
+from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 
 
@@ -33,8 +32,7 @@ def _parse_attendance_row(cells):
 def _expected_total(info_text):
     """Row count DataTables claims, from "Showing 1 to 25 of 2,047 entries".
     None if the text isn't in that form."""
-    match = re.search(r"of\s+([\d,]+)\s+entries", info_text or "")
-    return int(match.group(1).replace(",", "")) if match else None
+    return entries_total(info_text)
 
 
 def get_attendance(page: Page):
@@ -53,33 +51,28 @@ def get_attendance(page: Page):
             safe_click(page, tab_el)
             wait_for_preloader(page)
             wait_for_aspx_load(page)
-            time.sleep(0.5)
 
+        # The table the second click opens is what the fixed sleeps after each
+        # click were really standing in for — wait on it instead.
         page.wait_for_selector("#attendance", timeout=15000)
 
         # DataTables shows 10 rows by default and drops the rest from the DOM —
         # without switching to "All" we'd silently scrape a tenth of the history.
-        try:
-            page.locator("[name='attendance_length']").select_option(value="-1")
-            time.sleep(0.5)
-        except Exception:
-            pass  # too few rows for DataTables to render the length control
+        # required=False: too few rows and DataTables renders no length control.
+        ensure_all_rows_shown(page, "attendance_length", "attendance", required=False)
+        wait_for_full_draw(page, "attendance")
 
         # Read the whole table in a single evaluate(). Walking it with
         # query_selector_all + inner_text() costs a CDP round-trip per cell,
         # which is minutes for staff with registers going back to 2009.
-        rows = page.evaluate(
-            "() => Array.from(document.querySelectorAll('#attendance tbody tr'))"
-            ".map(tr => Array.from(tr.querySelectorAll('td')).map(td => td.innerText))"
-        )
-        for cells in rows:
+        for cells in read_rows(page, "#attendance"):
             record = _parse_attendance_row(cells)
             if record:
                 records.append(record)
 
         # Callers full-replace on a non-empty result, so a partial read would
-        # swap years of history for a handful of rows. Say so rather than
-        # silently losing it.
+        # swap years of history for a handful of rows. wait_for_full_draw should
+        # have prevented that; say so if it somehow didn't.
         info_el = page.query_selector("#attendance_info")
         expected = _expected_total(info_el.inner_text() if info_el else None)
         if expected is not None and len(records) < expected:

@@ -8,6 +8,7 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from database.database import SessionLocal
 from database.models import Location, Event317
 
+from scripts.tables import ensure_all_rows_shown
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 
 # Unit label the events table uses for our squadron — the marker for which rows
@@ -31,27 +32,10 @@ def clean_html(raw_html):
 def _ensure_all_rows_shown(page: Page, expected_rows: int | None = None):
     """Put the table back to "show all rows", but only when it isn't already.
 
-    ``select_option`` fires a change event whatever the current value, and
-    DataTables re-renders every row on it — with the length set to -1 that is the
-    slowest single operation in the event loop, so skip it when nothing changed.
+    The shared helper is what this function used to be; the other scrapers now
+    lean on the same idempotency, so it lives in scripts.tables.
     """
-    select = page.locator("[name='eventTable_length']")
-    select.wait_for(timeout=20000)
-
-    already_all = select.input_value() == "-1"
-    if already_all and expected_rows is not None:
-        # A postback can leave the dropdown reading -1 while DataTables has gone
-        # back to rendering a single page, so trust the row count over the value.
-        try:
-            already_all = len(_get_table_rows(page)) >= expected_rows
-        except Exception:
-            already_all = False
-    if already_all:
-        return
-
-    select.select_option(value="-1")
-    wait_for_preloader(page)
-    wait_for_aspx_load(page)
+    ensure_all_rows_shown(page, "eventTable_length", "eventTable", expected_rows)
 
 
 def _ensure_events_table(page: Page, expected_rows: int | None = None):
