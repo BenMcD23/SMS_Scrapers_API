@@ -8,6 +8,11 @@ from database.models import Location, Event317
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 
+# Unit label the events table uses for our squadron — the marker for which rows
+# get their full event details pulled as well as their attendees.
+UNIT_317 = "317 (Failsworth & Newton Heath)"
+EVENT_DETAIL_URL = "https://sms.bader.mod.uk/events/details/detail.aspx?eventId={}"
+
 
 def clean_html(raw_html):
     if not raw_html:
@@ -56,15 +61,43 @@ def _get_table_rows(page: Page):
     return rows
 
 
-def get_all_event_names(page: Page):
+def _event_id_from_row(columns):
+    """Event id off the title cell's detail link, or None if the row has none.
+
+    The first anchor in the cell is the share dropdown (href="#"), the second is
+    the actual detail link, so prefer the second and fall back to the first.
+    """
+    links = columns[1].query_selector_all("a") if len(columns) > 1 else []
+    if not links:
+        return None
+    href = links[1].get_attribute("href") if len(links) > 1 else links[0].get_attribute("href")
+    if href and "eventId=" in href:
+        return href.split("eventId=")[1].split("&")[0]
+    return None
+
+
+def get_event_names_and_317_links(page: Page):
+    """One walk of the events table: every event name, plus detail links for the
+    317 events so their metadata sync can ride along with the same scrape.
+
+    Links are built absolute from the event id rather than taken from the href
+    attribute, which is relative (``details\\detail.aspx?eventId=...``).
+    """
     _setup_events_table(page)
     rows = _get_table_rows(page)
     event_names = []
+    event_links_317 = []
     for row in rows:
         columns = row.query_selector_all("td")
-        if len(columns) < 2:
+        if len(columns) < 7:
             raise Exception("Unexpected table format, not enough columns")
         event_names.append(columns[1].inner_text().replace("\n", " "))
+
+        if columns[6].inner_text().strip() != UNIT_317:
+            continue
+        event_id = _event_id_from_row(columns)
+        if event_id:
+            event_links_317.append(EVENT_DETAIL_URL.format(event_id))
 
     info_el = page.wait_for_selector("#eventTable_info", timeout=20000)
     try:
@@ -72,23 +105,7 @@ def get_all_event_names(page: Page):
     except (IndexError, ValueError):
         raise Exception(f"Failed to parse number of events from text: '{info_el.inner_text()}'")
 
-    return event_names, number_of_events
-
-
-def get_317_event_links(page: Page):
-    _setup_events_table(page)
-    rows = _get_table_rows(page)
-    event_links_317 = []
-    for row in rows:
-        columns = row.query_selector_all("td")
-        if len(columns) < 7:
-            raise Exception("Unexpected table format, not enough columns")
-        if columns[6].inner_text() != "317 (Failsworth & Newton Heath)":
-            continue
-        links = columns[1].query_selector_all("a")
-        if len(links) > 1:
-            event_links_317.append(links[1].get_attribute("href"))
-    return event_links_317
+    return event_names, number_of_events, event_links_317
 
 
 def get_sub_app_attendees(page: Page, event_id, scraper_messages, scraper_lock):
@@ -208,11 +225,7 @@ def get_event_attendees(page: Page, event_names, number_of_events, scraper_messa
             event_id = None
             try:
                 rows = _get_table_rows(page)
-                cols = rows[i].query_selector_all("td")
-                links = cols[1].query_selector_all("a") if len(cols) > 1 else []
-                href = links[1].get_attribute("href") if len(links) > 1 else (links[0].get_attribute("href") if links else "")
-                if href and "eventId=" in href:
-                    event_id = href.split("eventId=")[1].split("&")[0]
+                event_id = _event_id_from_row(rows[i].query_selector_all("td"))
             except Exception:
                 pass
 
@@ -319,7 +332,7 @@ def get_317_event_info(page: Page, event_links_317, scraper_messages, scraper_lo
                 break
 
             with scraper_lock:
-                scraper_messages.append(f"On event {index+1} out of {num_links}")
+                scraper_messages.append(f"On 317 event {index+1} out of {num_links}")
 
             page.goto(link)
             wait_for_preloader(page)
