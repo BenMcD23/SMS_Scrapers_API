@@ -78,7 +78,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         if stop_event.is_set(): return
 
-        cadetNames, numberOfCadets = get_cadet_names(page)
+        cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
         attachment_check_quals = {q.qual_name.casefold() for q in db_session.query(AttachmentCheckQual).all()}
 
@@ -87,7 +87,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         cadet_data = get_cadet_info_and_qualifications(
             page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
-            attachment_check_quals=attachment_check_quals,
+            attachment_check_quals=attachment_check_quals, profile_links=profile_links,
         )
 
         if stop_event.is_set():
@@ -581,7 +581,7 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
         if stop_event.is_set(): return
-        cadetNames, numberOfCadets = get_cadet_names(page)
+        cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
@@ -591,6 +591,7 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 
         cadet_allergies_data = get_cadet_medical(
             page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
+            profile_links=profile_links,
         )
 
         if stop_event.is_set():

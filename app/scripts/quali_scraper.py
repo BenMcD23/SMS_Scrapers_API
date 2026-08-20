@@ -1,43 +1,49 @@
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from datetime import datetime
 import json
-import time
 import threading
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 from scripts.attendance import get_attendance
+from scripts.profiles import CADETS, collect_profile_links, open_profile
+from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
 
 scraper_lock = threading.Lock()
 
 
 def get_cadet_names(page: Page):
-    page.goto("https://sms.bader.mod.uk/cadets/default.aspx")
+    """Names, count, and the postback link for each row, off one drawn table.
+
+    The links are collected here because this is the only point in a scrape where
+    every row is rendered anyway. Handing them to the profile loop is what lets
+    it skip redrawing the table once per cadet.
+    """
+    page.goto(CADETS["url"])
     wait_for_aspx_load(page)
 
-    page.locator("[name='Cadets_length']").select_option(value="-1")
+    ensure_all_rows_shown(page, "Cadets_length", "Cadets")
+    wait_for_full_draw(page, "Cadets")
 
-    cadetNames = []
-    tbodies = page.query_selector_all("tbody")
-    if not tbodies:
-        raise Exception("Cadet table not found")
-    rows = tbodies[0].query_selector_all("tr")
+    rows = read_rows(page, "#Cadets")
     if not rows:
         raise Exception("No cadet rows found")
 
-    for row in rows:
-        columns = row.query_selector_all("td")
-        name = " ".join(columns[i].inner_text().replace("\n", " ") for i in [1, 2])
-        cadetNames.append(name.strip())
+    cadetNames = [
+        " ".join(row[i].replace("\n", " ") for i in [1, 2]).strip()
+        for row in rows
+        if len(row) > 2
+    ]
 
     info_el = page.wait_for_selector("#Cadets_info", timeout=20000)
     info_text = info_el.inner_text()
 
-    try:
-        numberOfCadets = int(info_text.split(" ")[5])
-    except (IndexError, ValueError):
+    numberOfCadets = entries_total(info_text)
+    if numberOfCadets is None:
         raise Exception(f"Failed to parse number of cadets from text: '{info_text}'")
 
-    return cadetNames, numberOfCadets
+    profile_links = collect_profile_links(page, CADETS["link_marker"])
+
+    return cadetNames, numberOfCadets, profile_links
 
 
 CLASSIFICATION_LEVELS = [
@@ -59,8 +65,9 @@ def get_classification(page: Page):
             safe_click(page, tab_element)
             wait_for_preloader(page)
             wait_for_aspx_load(page)
-            time.sleep(0.5)
 
+        # The edit link only exists once the Classification form view has
+        # rendered — the condition the fixed sleeps above were standing in for.
         page.wait_for_selector(
             "#ctl00_ctl00_cphBaseBody_cphBody_fvClassification_lbEdit",
             timeout=15000,
@@ -153,7 +160,6 @@ def get_all_classifications(page: Page):
                 print(f"Warning: classification report stopped advancing at page {pages}")
                 break
             wait_for_aspx_load(page)
-            time.sleep(0.3)
 
         print(f"Classification report: {pages} page(s), {len(result)} cadets matched")
 
@@ -162,9 +168,68 @@ def get_all_classifications(page: Page):
     return result
 
 
-def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None, attachment_check_quals=None):
+def _read_qual_rows(page: Page):
+    """Every direct-child row of the qualifications table, in one round trip.
+
+    Returns the row's class, its cell texts, and whether its hidden sibling row
+    carries a proof attachment — everything _parse_qual_rows needs, so a cadet
+    with thirty quals costs one CDP call rather than a hundred.
+    """
+    return page.evaluate(
+        """() => {
+            const body = document.querySelector('tbody');
+            if (!body) return [];
+            return Array.from(body.children).filter(el => el.tagName === 'TR').map(tr => {
+                const sib = tr.nextElementSibling;
+                return {
+                    className: tr.className || '',
+                    cells: Array.from(tr.querySelectorAll('td')).map(td => td.innerText),
+                    // The proofs table for each qual is already rendered in the
+                    // hidden sibling row — a View link (hlAttachment) only exists
+                    // when at least one proof is attached. No clicking needed.
+                    hasAttachment: !!(sib && sib.classList.contains('sibling')
+                        && sib.querySelector("a[id*='hlAttachment']")),
+                };
+            });
+        }"""
+    )
+
+
+def _qual_date(text):
+    try:
+        return datetime.strptime((text or "").strip(), "%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def _parse_qual_rows(rows, attachment_check_quals):
+    """Qualification records out of the raw rows _read_qual_rows returned."""
+    quals = []
+    for row in rows:
+        if "sibling" in (row.get("className") or ""):
+            continue  # hidden proof/attachment row, not a qualification
+        cells = row.get("cells") or []
+        if not cells or not cells[0].strip():
+            continue
+
+        qual_type = cells[0].replace("\n", " ").strip()
+        quals.append({
+            "qual_type": qual_type,
+            "status": "true",
+            "date_achieved": _qual_date(cells[1]) if len(cells) > 1 else None,
+            "date_expires": _qual_date(cells[2]) if len(cells) > 2 else None,
+            # Left as None — not False — for quals nobody asked us to check.
+            "has_attachment": bool(row.get("hasAttachment"))
+            if qual_type.casefold() in attachment_check_quals else None,
+        })
+    return quals
+
+
+def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None, attachment_check_quals=None, profile_links=None):
     attachment_check_quals = attachment_check_quals or set()  # casefolded exact qual names to check for proof attachments
+    profile_links = profile_links or {}
     cadet_data = []
+    fast_opens = 0
     classifications_by_name = get_all_classifications(page)
 
     for i in range(numberOfCadets):
@@ -176,20 +241,8 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}"}))
 
-        page.goto("https://sms.bader.mod.uk/cadets/default.aspx")
-        wait_for_aspx_load(page)
-
-        page.locator("[name='Cadets_length']").select_option(value="-1")
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-
-        link = page.wait_for_selector(
-            f"#ctl00_ctl00_cphBaseBody_cphBody_lvCadets_ctrl{i}_lbFamilyName",
-            timeout=20000,
-        )
-        safe_click(page, link)
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
+        if open_profile(page, i, profile_links, CADETS, numberOfCadets):
+            fast_opens += 1
 
         # CIN
         try:
@@ -256,58 +309,13 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             safe_click(page, tab_el)
             wait_for_preloader(page)
             wait_for_aspx_load(page)
-            time.sleep(0.5)
-
-        wait_for_aspx_load(page)
 
         cadetQualifications = []
         try:
-            wait_for_aspx_load(page)
-            tbody = page.wait_for_selector("tbody", timeout=10000)
-            rows = tbody.query_selector_all(":scope > tr")  # direct children only — skips nested attachment tables
-
-            for row in rows:
-                if "sibling" in (row.get_attribute("class") or ""):
-                    continue  # hidden proof/attachment row, not a qualification
-                cols = row.query_selector_all("td")
-                if not cols or not cols[0].inner_text().strip():
-                    continue
-
-                qual_type = cols[0].inner_text().replace("\n", " ").strip()
-
-                date_achieved = None
-                if len(cols) > 1:
-                    try:
-                        date_achieved = datetime.strptime(cols[1].inner_text().strip(), "%d/%m/%Y")
-                    except (ValueError, IndexError):
-                        pass
-
-                date_expires = None
-                if len(cols) > 2:
-                    try:
-                        date_expires = datetime.strptime(cols[2].inner_text().strip(), "%d/%m/%Y")
-                    except (ValueError, IndexError):
-                        pass
-
-                has_attachment = None
-                if qual_type.casefold() in attachment_check_quals:
-                    # The proofs table for each qual is already rendered in the
-                    # hidden sibling row — a View link (hlAttachment) only exists
-                    # when at least one proof is attached. No clicking needed.
-                    has_attachment = bool(row.evaluate(
-                        "el => { const sib = el.nextElementSibling;"
-                        " return !!(sib && sib.classList.contains('sibling')"
-                        " && sib.querySelector(\"a[id*='hlAttachment']\")); }"
-                    ))
-
-                cadetQualifications.append({
-                    "qual_type": qual_type,
-                    "status": "true",
-                    "date_achieved": date_achieved,
-                    "date_expires": date_expires,
-                    "has_attachment": has_attachment,
-                })
-
+            # The tab is only really open once its table is there, which is what
+            # the fixed sleeps in the loop above were waiting for.
+            page.wait_for_selector("tbody", timeout=10000)
+            cadetQualifications = _parse_qual_rows(_read_qual_rows(page), attachment_check_quals)
         except Exception as e:
             print(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
 
@@ -324,5 +332,11 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             "qualifications": cadetQualifications,
             "attendance": cadetAttendance,
         })
+
+    with scraper_lock:
+        scraper_messages.append(json.dumps({
+            "type": "info",
+            "value": f"Opened {fast_opens} of {len(cadet_data)} profile(s) without redrawing the cadet list.",
+        }))
 
     return cadet_data
