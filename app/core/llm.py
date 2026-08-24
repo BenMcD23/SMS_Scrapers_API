@@ -26,7 +26,7 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 # NVIDIA and Groq both speak the OpenAI chat-completions API, so one caller does
 # both — only the base URL, key and payload extras differ.
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_MODEL = "z-ai/glm-5.2"
+NVIDIA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
 # GLM 5.2 thinks hard; NVIDIA's own example uses 16k, and anything less risks
 # the reasoning eating the whole budget before the answer starts.
 NVIDIA_MAX_TOKENS = 16384
