@@ -1,6 +1,6 @@
 """Bader scrapers — background runs, live SSE log streams, start/stop.
 
-Named scrapers (cadet-quali, cadet-event, 317-event, medical) each have their
+Named scrapers (cadet-quali, cadet-event, medical, ...) each have their
 own state slot and can run in parallel.  Upload jobs each get a unique UUID
 job_id so any number can run simultaneously (subject to the RAM guard).
 """
@@ -23,7 +23,7 @@ from database.database import SessionLocal, engine
 from database.models import ScraperRun, ScraperSchedule, StatsSnapshot, AttachmentCheckQual
 
 from scripts.scraper_calls import (
-    info_and_quali_scraper, cadet_event_scraper, event_317_scraper, medical_scraper,
+    info_and_quali_scraper, cadet_event_scraper, medical_scraper,
     upload_qualifications_scraper, absence_scraper,
 )
 from scripts.staff_scraper import staff_scraper
@@ -46,14 +46,13 @@ SCRAPER_MAX_RUNTIME_SECONDS = 3 * 60 * 60
 WATCHDOG_POLL_SECONDS = 15
 RUN_LOG_RETENTION_DAYS = 7
 
-# ── Per-scraper state for the 4 named scrapers ──────────────────────────────────────────────
+# ── Per-scraper state for the named scrapers ──────────────────────────────────────────────
 
-NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "317-event", "medical", "staff", "absences"]
+NAMED_SCRAPERS = ["cadet-quali", "cadet-event", "medical", "staff", "absences"]
 
 SCRAPER_FUNCS = {
     "cadet-quali": info_and_quali_scraper,
     "cadet-event": cadet_event_scraper,
-    "317-event":   event_317_scraper,
     "medical":     medical_scraper,
     "staff":       staff_scraper,
     "absences":    absence_scraper,

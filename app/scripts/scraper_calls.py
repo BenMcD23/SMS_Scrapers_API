@@ -78,7 +78,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         if stop_event.is_set(): return
 
-        cadetNames, numberOfCadets = get_cadet_names(page)
+        cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
         attachment_check_quals = {q.qual_name.casefold() for q in db_session.query(AttachmentCheckQual).all()}
 
@@ -87,7 +87,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
 
         cadet_data = get_cadet_info_and_qualifications(
             page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
-            attachment_check_quals=attachment_check_quals,
+            attachment_check_quals=attachment_check_quals, profile_links=profile_links,
         )
 
         if stop_event.is_set():
@@ -404,10 +404,13 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
         if stop_event.is_set(): return
-        event_names, number_of_events = get_all_event_names(page)
+        event_names, number_of_events, event_links_317 = get_event_names_and_317_links(page)
 
         with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": "Got event names, starting to get cadets on events"}))
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Got event names ({len(event_links_317)} of them 317 events), starting to get cadets on events",
+            }))
 
         event_attendees = get_event_attendees(
             page, event_names, number_of_events, scraper_messages, scraper_lock, stop_event=stop_event,
@@ -512,6 +515,34 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     "value": f"Ban-notification check failed: {str(e)}",
                 }))
 
+        # 317's own events get their full details pulled in the same pass — the
+        # links came off the table walk above, so this costs one page load per
+        # 317 event instead of a second full scrape. Left until last because it
+        # navigates away from the events table for good. A failure here is not
+        # fatal: the attendance above is already committed.
+        if stop_event.is_set():
+            return
+        if event_links_317:
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "info",
+                    "value": f"Syncing details for {len(event_links_317)} 317 event(s)...",
+                }))
+            try:
+                get_317_event_info(page, event_links_317, scraper_messages, scraper_lock, stop_event=stop_event)
+                with scraper_lock:
+                    if not stop_event.is_set():
+                        scraper_messages.append(json.dumps({"type": "info", "value": "317 event details synced."}))
+            except Exception as e:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"317 event detail sync failed: {str(e)}",
+                    }))
+        else:
+            with scraper_lock:
+                scraper_messages.append(json.dumps({"type": "info", "value": "No 317 events found, nothing to sync."}))
+
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
@@ -524,47 +555,6 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             db_session.rollback()
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "error", "value": f"Internal Error: {str(e)}"}))
-    finally:
-        if context:
-            try:
-                context.close()
-            except Exception:
-                pass
-
-
-def event_317_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
-    context = None
-    try:
-        with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "status", "value": "Started 317 event info scraper"}))
-
-        page, context, credentials = init_scraper(user_id, db_session)
-        if on_context_ready:
-            on_context_ready(context)
-
-        if stop_event.is_set(): return
-        login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
-
-        if stop_event.is_set(): return
-        event_links_317 = get_317_event_links(page)
-
-        with scraper_lock:
-            scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(event_links_317)} event links. Syncing to database..."}))
-
-        get_317_event_info(page, event_links_317, scraper_messages, scraper_lock, stop_event=stop_event)
-
-        with scraper_lock:
-            if not stop_event.is_set():
-                scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
-
-    except PlaywrightTimeoutError:
-        if not stop_event.is_set():
-            with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "error", "value": "Bader took too long to respond. Connection timed out."}))
-    except Exception as e:
-        if not stop_event.is_set():
-            with scraper_lock:
-                scraper_messages.append(json.dumps({"type": "error", "value": f"Sync Error: {str(e)}"}))
     finally:
         if context:
             try:
@@ -591,7 +581,7 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
         if stop_event.is_set(): return
-        cadetNames, numberOfCadets = get_cadet_names(page)
+        cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
@@ -601,6 +591,7 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 
         cadet_allergies_data = get_cadet_medical(
             page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=stop_event,
+            profile_links=profile_links,
         )
 
         if stop_event.is_set():
