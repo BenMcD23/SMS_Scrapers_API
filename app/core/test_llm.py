@@ -38,7 +38,7 @@ def chain(monkeypatch):
 
 def test_primary_is_glm():
     # The UI names GLM 5.2 to the user, so this is what that copy depends on.
-    assert PRIMARY_MODEL == NVIDIA_MODEL == "z-ai/glm-5.2"
+    assert PRIMARY_MODEL == NVIDIA_MODEL == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_first_working_model_wins(chain):
