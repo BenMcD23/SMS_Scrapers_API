@@ -1,7 +1,7 @@
 """The model preference chain and its fallback behaviour.
 
 Was a `__main__` self-check inside llm.py, which nothing ran — so it went stale
-(still asserting Gemini led the chain long after GLM 5.2 took over) and had
+(still asserting Gemini led the chain long after NVIDIA took over) and had
 stopped being runnable at all, since executing llm.py as a script makes
 core/calendar.py shadow the stdlib `calendar` module.
 
@@ -36,8 +36,8 @@ def chain(monkeypatch):
     return install
 
 
-def test_primary_is_glm():
-    # The UI names GLM 5.2 to the user, so this is what that copy depends on.
+def test_primary_is_nemotron():
+    # The UI names the primary model to the user, so copy depends on this.
     assert PRIMARY_MODEL == NVIDIA_MODEL == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
@@ -63,8 +63,8 @@ def test_raises_when_every_model_fails(chain):
 
 def test_every_model_in_the_chain_has_a_label():
     # A missing label falls back to the raw id, which would surface something
-    # like "z-ai/glm-5.2" to squadron staff in the texts UI.
+    # like "nvidia/nemotron-3-ultra-550b-a55b" to squadron staff in the texts UI.
     for model in MODEL_PREFERENCE:
         assert model in MODEL_LABELS, f"{model} has no display label"
-    assert model_label(PRIMARY_MODEL) == "GLM 5.2"
+    assert model_label(PRIMARY_MODEL) == "Nemotron 3 Ultra"
     assert model_label(None) == "Unknown"
