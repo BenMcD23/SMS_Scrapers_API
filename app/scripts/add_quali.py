@@ -4,6 +4,8 @@ import json
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
+from scripts.profiles import CADETS, link_index
+from scripts.tables import ensure_all_rows_shown, wait_for_full_draw
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
 
 
@@ -49,24 +51,32 @@ def add_qualification_with_attachment(
 
     # 1. Open cadets list and find the cadet by CIN
     log(f"Navigating to cadet list to find CIN {cin_str}...")
-    page.goto("https://sms.bader.mod.uk/cadets/default.aspx")
+    page.goto(CADETS["url"])
     wait_for_aspx_load(page)
 
-    page.locator("[name='Cadets_length']").select_option(value="-1")
-    wait_for_preloader(page)
-    wait_for_aspx_load(page)
+    # The whole table has to be in the DOM before the CIN can be found in it, so
+    # unlike the read-only scrapers this one does want the full redraw — it just
+    # has to wait for it to finish rather than assume it has.
+    ensure_all_rows_shown(page, "Cadets_length", "Cadets")
+    wait_for_full_draw(page, "Cadets")
 
-    rows = page.query_selector_all("xpath=//tbody/tr")
+    # One evaluate rather than two round trips per row: find the row whose last
+    # cell is this CIN and hand back its profile link id.
+    link_id = page.evaluate(
+        """(cin) => {
+            for (const tr of document.querySelectorAll('tbody tr')) {
+                const cells = tr.querySelectorAll('td');
+                if (!cells.length) continue;
+                if (cells[cells.length - 1].innerText.trim() !== cin) continue;
+                const link = tr.querySelector("a[id*='lbFamilyName']");
+                if (link) return link.id;
+            }
+            return null;
+        }""",
+        cin_str,
+    )
 
-    cadet_index = None
-    for row in rows:
-        cols = row.query_selector_all("td")
-        if cols and cols[-1].inner_text().strip() == cin_str:
-            link = row.query_selector("xpath=.//a[contains(@id,'lbFamilyName')]")
-            link_id = link.get_attribute("id")
-            cadet_index = int(link_id.split("_ctrl")[1].split("_")[0])
-            break
-
+    cadet_index = link_index(link_id)
     if cadet_index is None:
         raise ValueError(f"Cadet with CIN {cin_str} not found in the cadets list.")
 

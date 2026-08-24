@@ -1,6 +1,7 @@
 from playwright.sync_api import Page
 from datetime import datetime
 
+from scripts.tables import ensure_all_rows_shown, read_rows, wait_for_full_draw
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader
 
 ABSENCES_URL = "https://sms.bader.mod.uk/units/common/unitAbsences.aspx"
@@ -23,24 +24,25 @@ def get_absences(page: Page):
     wait_for_preloader(page)
     wait_for_aspx_load(page)
 
-    # Show all rows (like the quali scraper does with Cadets_length).
-    try:
-        page.locator("[name='unitAbsences_length']").select_option(value="-1")
-        wait_for_aspx_load(page)
-    except Exception:
-        pass  # dropdown absent when there are 0 absences
+    # Show all rows. required=False: the dropdown is absent when there are 0
+    # absences, and wait_for_aspx_load doesn't cover a client-side DataTables
+    # redraw, so wait on the drawn row count instead.
+    ensure_all_rows_shown(page, "unitAbsences_length", "unitAbsences", required=False)
+    wait_for_full_draw(page, "unitAbsences")
 
+    return _parse_absence_rows(read_rows(page, "#unitAbsences"))
+
+
+def _parse_absence_rows(rows):
     absences = []
-    rows = page.query_selector_all("#unitAbsences tbody tr")
-    for row in rows:
-        cols = row.query_selector_all("td")
+    for cols in rows:
         if len(cols) < 6:
             continue  # "No data available" placeholder row
-        first_name = cols[0].inner_text().strip()
-        last_name = cols[1].inner_text().strip()
-        date_from = _parse_date(cols[3].inner_text())
-        date_to = _parse_date(cols[4].inner_text())
-        reason = cols[5].inner_text().strip()
+        first_name = cols[0].strip()
+        last_name = cols[1].strip()
+        date_from = _parse_date(cols[3])
+        date_to = _parse_date(cols[4])
+        reason = cols[5].strip()
         if not (first_name and last_name and date_from and date_to):
             continue
         absences.append({

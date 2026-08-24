@@ -2,8 +2,10 @@ from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from datetime import date
 import json
 
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import wait_for_aspx_load, wait_for_preloader
 from scripts.scraper_utils import init_scraper, login, match_email
+from scripts.profiles import STAFF, collect_profile_links, open_profile
+from scripts.tables import ensure_all_rows_shown, read_rows, wait_for_full_draw
 from scripts.attendance import get_attendance
 from core.attendance import attendance_state, PRESENT
 
@@ -12,30 +14,37 @@ from google_admin_api.get_all_users import get_workspace_users
 
 
 def get_staff(page: Page):
-    """Scrape the staff roster from SMS. Returns list of {first_name, last_name, rank, cin}."""
-    page.goto("https://sms.bader.mod.uk/staff/default.aspx")
+    """Scrape the staff roster from SMS.
+
+    Returns (list of {first_name, last_name, rank, cin}, postback link per row).
+    The links come off the same drawn table as the names, which is what lets
+    add_staff_profile_details skip redrawing it once per person.
+    """
+    page.goto(STAFF["url"])
     wait_for_aspx_load(page)
     wait_for_preloader(page)
 
-    page.locator("[name='Staff_length']").select_option(value="-1")
+    # The old code read the table straight after select_option with nothing
+    # waiting on the redraw, so a slow one silently returned the first 10 staff.
+    ensure_all_rows_shown(page, "Staff_length", "Staff")
+    wait_for_full_draw(page, "Staff")
 
-    table = page.query_selector("#Staff tbody")
-    if not table:
-        raise Exception("Staff table not found")
+    rows = read_rows(page, "#Staff")
+    if not rows:
+        raise Exception("Staff table not found, or it rendered no rows")
 
     staff = []
-    for row in table.query_selector_all("tr"):
-        cols = row.query_selector_all("td")
+    for cols in rows:
         if len(cols) < 8:
             continue  # spacer/empty rows in the rendered table
         # Columns: 0 checkbox, 1 Firstname, 2 Surname, 3 Rank, 4 Birthday, 5 Age, 6 Gender, 7 CIN
         staff.append({
-            "first_name": cols[1].inner_text().strip(),
-            "last_name":  cols[2].inner_text().strip(),
-            "rank":       cols[3].inner_text().strip(),
-            "cin":        cols[7].inner_text().strip(),
+            "first_name": cols[1].strip(),
+            "last_name":  cols[2].strip(),
+            "rank":       cols[3].strip(),
+            "cin":        cols[7].strip(),
         })
-    return staff
+    return staff, collect_profile_links(page, STAFF["link_marker"])
 
 
 def get_staff_address(page: Page):
@@ -62,10 +71,12 @@ def get_staff_address(page: Page):
         return None
 
 
-def add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=None):
+def add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=None, profile_links=None):
     """Visit each staff member's profile (by row index) and set entry['address']
     and entry['attendance']."""
+    profile_links = profile_links or {}
     total = len(staff)
+    fast_opens = 0
     for i, entry in enumerate(staff):
         if stop_event and stop_event.is_set():
             return
@@ -76,22 +87,18 @@ def add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_
                 "value": f"Fetching profile {i + 1} of {total}: {entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
             }))
 
-        page.goto("https://sms.bader.mod.uk/staff/default.aspx")
-        wait_for_aspx_load(page)
-        page.locator("[name='Staff_length']").select_option(value="-1")
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-
-        link = page.wait_for_selector(
-            f"#ctl00_ctl00_cphBaseBody_cphBody_lvStaff_ctrl{i}_lnkFamilyName",
-            timeout=20000,
-        )
-        safe_click(page, link)
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
+        if open_profile(page, i, profile_links, STAFF, total):
+            fast_opens += 1
 
         entry["address"] = get_staff_address(page)
         entry["attendance"] = get_attendance(page)
+
+    with scraper_lock:
+        scraper_messages.append(json.dumps({
+            "type": "info",
+            "value": f"Opened {fast_opens} of {total} profile(s) without redrawing the staff list.",
+        }))
+
 
 def attendance_periods(today):
     """(year, month) pairs to scrape: current year up to the current month, plus
@@ -140,12 +147,15 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
         if stop_event.is_set(): return
-        staff = get_staff(page)
+        staff, profile_links = get_staff(page)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Found {len(staff)} staff. Fetching profiles..."}))
 
-        add_staff_profile_details(page, staff, scraper_messages, scraper_lock, stop_event=stop_event)
+        add_staff_profile_details(
+            page, staff, scraper_messages, scraper_lock, stop_event=stop_event,
+            profile_links=profile_links,
+        )
         if stop_event.is_set(): return
 
         with scraper_lock:
