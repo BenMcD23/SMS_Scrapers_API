@@ -1,18 +1,23 @@
 """Parade-night text management — generation from the programme doc,
 message editing/approval, recipients, and sending via GOV.UK Notify."""
 
+import asyncio
 import csv
 import io
+import json
 import re
-from datetime import datetime
-from typing import Optional
+from datetime import date, datetime
+from typing import Literal, Optional
 
 import openpyxl
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
+from database.database import SessionLocal
 from database.models import ParadeNightMessage, SmsRecipient
 
 from core.db import get_db
@@ -22,6 +27,14 @@ from texts.programme_parser import parse_programme
 from texts.sender import send_parade_message, send_test_sms
 
 router = APIRouter(prefix="/texts")
+
+# How many nights are written at once. The AI call is the whole cost of a month's
+# generation and the free tiers cap requests per *minute* rather than in flight,
+# so a handful in parallel finishes several times sooner; core.llm already waits
+# out a 429, so overshooting the limit costs a pause, not a failure.
+AI_CONCURRENCY = 4
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
 
 
 def _message_json(m: ParadeNightMessage) -> dict:
@@ -52,72 +65,252 @@ def _get_message(db: Session, message_id: int) -> ParadeNightMessage:
     return message
 
 
-# ─── Messages ─────────────────────────────────────────────────────────────────
+# ─── Generation ───────────────────────────────────────────────────────────────
 
-@router.post("/generate")
-def generate_messages(  # sync on purpose — slow AI calls run in the threadpool
-    month: int = None,
-    year: int = None,
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
+
+
+async def _load_programme(month: int | None, year: int | None) -> list[dict]:
+    """Parse a month's programme doc off the event loop, turning its failures into
+    HTTP errors. Callers do this *before* they start streaming, so a missing doc is
+    still a real status code rather than an error buried inside a 200."""
     now = datetime.now()
-    month = month or now.month
-    year = year or now.year
-
     try:
-        nights = parse_programme(month, year)
+        return await run_in_threadpool(parse_programme, month or now.month, year or now.year)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to read programme doc: {e}")
 
-    generated, skipped = 0, 0
-    model_counts: dict[str, int] = {}
+
+def _apply_night(message: ParadeNightMessage, night: dict) -> None:
+    """Copy a parsed programme entry onto a message — everything except the AI text."""
+    message.uniform_raw = night["uniform"]
+    message.dnco = night["dnco"]
+    message.c_flight_raw = night["c_flight"]
+    message.main_body_raw = night["main_body"]
+
+
+def _apply_generated(message: ParadeNightMessage, main_message: str, c_message: str,
+                     model_id: str, part: str = "all") -> None:
+    """Write an AI result onto a message.
+
+    ``part`` narrows it to one of the two texts so a main message you're happy with
+    survives a C Flight rewrite (and vice versa). The uniform line isn't written by
+    the AI at all — it's derived from the raw programme text — so it's only reset on
+    a full regeneration, where any hand edit to it is being replaced anyway.
+    """
+    if part in ("all", "main"):
+        message.main_message = main_message
+    if part in ("all", "c_flight"):
+        message.c_flight_message = c_message
+    if part == "all":
+        message.uniform = format_uniform(message.uniform_raw)
+    message.status = "draft"
+    message.generated_by = model_id
+    message.generated_at = datetime.now()
+
+
+async def _generate_nights(db: Session, nights: list[dict]):
+    """Write a text for each parade night, yielding one event as each lands:
+    ``message`` for a fresh draft, ``skipped`` for a night already sent, ``error``
+    for one the AI wouldn't write.
+
+    The AI calls are blocking httpx, so they run in worker threads several at a
+    time, and every result is applied back here on the event loop — the Session is
+    only ever touched from one thread. Events therefore come out in *completion*
+    order, not date order: callers pass them straight on and let the UI put the
+    cards in their place, which is what lets the first finished night appear while
+    the rest are still being written.
+    """
+    todo: list[tuple[dict, ParadeNightMessage | None]] = []
     for night in nights:
         existing = (
             db.query(ParadeNightMessage)
             .filter(ParadeNightMessage.parade_date == night["date"])
             .first()
         )
-        if existing and existing.status == "sent":
-            skipped += 1
+        if existing is not None and existing.status == "sent":
+            yield {"type": "skipped", "parade_date": night["date"].isoformat()}
             continue
+        todo.append((night, existing))
 
-        try:
-            main_message, c_message, model_id = generate_message(night["main_body"], night["c_flight"])
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
+    semaphore = asyncio.Semaphore(AI_CONCURRENCY)
 
-        if not existing:
-            existing = ParadeNightMessage(parade_date=night["date"])
-            db.add(existing)
+    async def write(night: dict, existing: ParadeNightMessage | None):
+        async with semaphore:
+            try:
+                result = await asyncio.to_thread(
+                    generate_message, night["main_body"], night["c_flight"]
+                )
+                return night, existing, result, None
+            except Exception as e:
+                # One night the model chokes on shouldn't lose the whole month —
+                # report it and let the others through.
+                return night, existing, None, e
 
-        existing.uniform = format_uniform(night["uniform"])
-        existing.uniform_raw = night["uniform"]
-        existing.dnco = night["dnco"]
-        existing.c_flight_raw = night["c_flight"]
-        existing.main_body_raw = night["main_body"]
-        existing.main_message = main_message
-        existing.c_flight_message = c_message
-        existing.status = "draft"
-        existing.generated_by = model_id
-        existing.generated_at = datetime.now()
-        generated += 1
-        model_counts[model_id] = model_counts.get(model_id, 0) + 1
+    tasks = [asyncio.create_task(write(night, existing)) for night, existing in todo]
+    try:
+        for finished in asyncio.as_completed(tasks):
+            night, message, result, error = await finished
+            if error is not None:
+                yield {"type": "error", "parade_date": night["date"].isoformat(),
+                       "error": str(error)}
+                continue
 
-    db.commit()
+            if message is None:
+                message = ParadeNightMessage(parade_date=night["date"])
+                db.add(message)
+            _apply_night(message, night)
+            _apply_generated(message, *result)
+            # Commit per night, so a run the user navigates away from still leaves
+            # the nights already written saved.
+            db.commit()
+            yield {"type": "message", "message": _message_json(message)}
+    finally:
+        for task in tasks:
+            task.cancel()
+
+
+def _new_totals() -> dict:
+    return {"generated": 0, "skipped_sent": 0, "failed": 0, "models": {}, "first_error": None}
+
+
+def _tally(totals: dict, event: dict) -> None:
+    """Fold one generation event into the counts both generate endpoints report."""
+    if event["type"] == "message":
+        totals["generated"] += 1
+        model = event["message"]["generated_by"]
+        totals["models"][model] = totals["models"].get(model, 0) + 1
+    elif event["type"] == "skipped":
+        totals["skipped_sent"] += 1
+    elif event["type"] == "error":
+        totals["failed"] += 1
+        totals["first_error"] = totals["first_error"] or event["error"]
+
+
+def _summary(totals: dict) -> dict:
     return {
         "status": "success",
-        "generated": generated,
-        "skipped_sent": skipped,
+        "generated": totals["generated"],
+        "skipped_sent": totals["skipped_sent"],
+        "failed": totals["failed"],
         "models_used": [
             {"model": mid, "label": model_label(mid), "count": count,
              "fallback": mid != PRIMARY_MODEL}
-            for mid, count in model_counts.items()
+            for mid, count in totals["models"].items()
         ],
     }
 
+
+@router.post("/generate")
+async def generate_messages(
+    month: int = None,
+    year: int = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Generate the whole month and answer once it's done. /generate/stream is what
+    the UI calls; this stays for anything that only wants the summary."""
+    nights = await _load_programme(month, year)
+
+    totals = _new_totals()
+    async for event in _generate_nights(db, nights):
+        _tally(totals, event)
+
+    # Every night failing is the AI being down, not a per-night problem — say so
+    # with a status code rather than a cheerful "generated 0".
+    if totals["generated"] == 0 and totals["failed"] > 0:
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {totals['first_error']}")
+    return _summary(totals)
+
+
+@router.post("/generate/stream")
+async def generate_messages_stream(
+    month: int = None,
+    year: int = None,
+    idinfo: dict = Depends(require_staff),
+):
+    """The same generation as /generate, but each night is sent the moment it's
+    written instead of after the last one — the first parade night is on screen
+    while the rest are still running.
+
+    Server-sent events over POST: EventSource can't set an Authorization header and
+    an id_token in the query string lands in every access log, so the frontend
+    reads the body stream itself. text/event-stream is also the one content type
+    GZipMiddleware leaves alone — gzip would sit on each event until it had enough
+    to compress, which is exactly what we're trying to avoid.
+    """
+    nights = await _load_programme(month, year)
+
+    async def events():
+        # Our own Session: FastAPI closes a Depends(get_db) one before the response
+        # body starts streaming, so this generator can't borrow it.
+        db = SessionLocal()
+        totals = _new_totals()
+        try:
+            yield _sse({"type": "start",
+                        "parade_dates": [n["date"].isoformat() for n in nights]})
+            async for event in _generate_nights(db, nights):
+                _tally(totals, event)
+                yield _sse(event)
+            yield _sse({"type": "done", **_summary(totals)})
+        except Exception as e:
+            # Headers went out with the 200, so a late failure can only be reported
+            # in the stream itself.
+            db.rollback()
+            yield _sse({"type": "fatal", "error": str(e)})
+        finally:
+            db.close()
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+class GenerateNightBody(BaseModel):
+    parade_date: date
+    # Which of the two texts to write — see _apply_generated.
+    part: Literal["all", "main", "c_flight"] = "all"
+
+
+@router.post("/generate/night")
+async def generate_night(
+    data: GenerateNightBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Generate a single parade night straight from the programme doc — for a night
+    a batch run failed on, or one whose programme entry has changed since it was
+    last written. Unlike /messages/{id}/regenerate this re-reads the doc, and it
+    creates the message if there isn't one yet."""
+    nights = await _load_programme(data.parade_date.month, data.parade_date.year)
+    night = next((n for n in nights if n["date"].date() == data.parade_date), None)
+    if night is None:
+        raise HTTPException(status_code=404, detail="That date isn't a parade night in the programme")
+
+    message = (
+        db.query(ParadeNightMessage)
+        .filter(ParadeNightMessage.parade_date == night["date"])
+        .first()
+    )
+    if message is not None and message.status == "sent":
+        raise HTTPException(status_code=400, detail="Message has already been sent")
+
+    try:
+        result = await asyncio.to_thread(generate_message, night["main_body"], night["c_flight"])
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
+
+    if message is None:
+        message = ParadeNightMessage(parade_date=night["date"])
+        db.add(message)
+    _apply_night(message, night)
+    _apply_generated(message, *result, part=data.part)
+    db.commit()
+    return _message_json(message)
+
+
+# ─── Messages ─────────────────────────────────────────────────────────────────
 
 @router.get("/messages")
 def list_messages(
@@ -173,27 +366,32 @@ def update_message(
     return _message_json(message)
 
 
+class RegenerateBody(BaseModel):
+    # Which of the two texts to rewrite — see _apply_generated.
+    part: Literal["all", "main", "c_flight"] = "all"
+
+
 @router.post("/messages/{message_id}/regenerate")
-def regenerate_message(  # sync on purpose — slow AI call runs in the threadpool
+async def regenerate_message(
     message_id: int,
+    data: Optional[RegenerateBody] = None,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    """Rewrite one night from the programme text already stored on it. No Google
+    Docs round trip — /generate/night is the one that re-reads the doc."""
     message = _get_message(db, message_id)
     if message.status == "sent":
         raise HTTPException(status_code=400, detail="Message has already been sent")
 
     try:
-        main_message, c_message, model_id = generate_message(message.main_body_raw, message.c_flight_raw)
+        result = await asyncio.to_thread(
+            generate_message, message.main_body_raw, message.c_flight_raw
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"AI generation failed: {e}")
 
-    message.main_message = main_message
-    message.c_flight_message = c_message
-    message.uniform = format_uniform(message.uniform_raw)
-    message.status = "draft"
-    message.generated_by = model_id
-    message.generated_at = datetime.now()
+    _apply_generated(message, *result, part=data.part if data else "all")
     db.commit()
     return _message_json(message)
 
