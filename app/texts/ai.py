@@ -1,7 +1,7 @@
 """LLM calls that turn raw programme text into the formatted SMS messages.
 
-The model chain itself (Gemini first, Groq as the quota fallback) lives in
-core.llm — this module is only the prompt and the parsing of what comes back.
+The model chain and its fallbacks live in core.llm — this module is only the
+prompt and the parsing of what comes back.
 """
 
 import re
