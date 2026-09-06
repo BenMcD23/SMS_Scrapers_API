@@ -1050,6 +1050,20 @@ class BadgeOrderListEntry(Base):
 
 # ─── Parade Night Texts ───────────────────────────────────────────────────────
 
+class TextSettings(Base):
+    """Squadron-wide settings for the parade-night texts. One row, ever —
+    read through texts.settings.get_text_settings, which creates it on first
+    use so nothing has to seed it.
+    """
+    __tablename__ = "Text_Settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Invite link for the squadron's WhatsApp community, shown to anyone who has
+    # saved a number. Stored rather than configured in env because WhatsApp
+    # invite links get reset, and staff shouldn't need a redeploy to fix one.
+    whatsapp_invite_url = Column(Text, nullable=False, default="", server_default="")
+
+
 class SmsRecipient(Base):
     """A parade-night text recipient with no account behind them.
 
