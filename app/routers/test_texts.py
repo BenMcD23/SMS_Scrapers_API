@@ -386,3 +386,53 @@ def test_a_replace_import_only_wipes_the_extras(db):
     assert {r.surname for r in db.query(SmsRecipient).all()} == {"Nobody"}
     assert db.query(Cadet).one().phone_number == "07700900001"
     assert db.query(Staff).one().phone_number == "07700900010"
+
+
+# ─── Settings ─────────────────────────────────────────────────────────────────
+
+def test_the_invite_link_starts_unset(db):
+    assert tx.get_settings(db=db, idinfo=STAFF) == {"whatsapp_invite_url": ""}
+
+
+def test_staff_set_the_invite_link(db):
+    url = "https://chat.whatsapp.com/ABCDEFGH"
+
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url=url), db=db, idinfo=STAFF)
+
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == url
+
+
+def test_a_link_that_is_not_whatsapp_is_refused_and_nothing_is_stored(db):
+    with pytest.raises(tx.HTTPException) as exc:
+        tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url="https://example.com/join"),
+                           db=db, idinfo=STAFF)
+
+    assert exc.value.status_code == 400
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == ""
+
+
+def test_clearing_the_link_takes_the_join_prompt_away(db):
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url="https://chat.whatsapp.com/ABC"),
+                       db=db, idinfo=STAFF)
+
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url=""), db=db, idinfo=STAFF)
+
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == ""
+
+
+def test_an_exported_csv_imports_back_to_the_same_list(db):
+    """The export writes phone number/rank/surname — the same three columns the
+    import reads — so a round trip has to land everyone back where they were,
+    including the two whose numbers live on a roster row."""
+    _people(db)
+    before = tx.get_recipients(db=db, idinfo=STAFF)
+
+    # Exactly what the Export CSV button writes.
+    rows = ["phone number,rank,surname"] + [
+        f"{r['phone_number']},{r['rank']},{r['surname']}" for r in before
+    ]
+    _import(db, rows, mode="replace")
+
+    after = tx.get_recipients(db=db, idinfo=STAFF)
+    assert [(r["source"], r["name"], r["phone_number"]) for r in after] == \
+           [(r["source"], r["name"], r["phone_number"]) for r in before]

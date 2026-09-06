@@ -14,6 +14,7 @@ from database.models import BaderCredentials, Cadet, Staff, User, UserProfile, U
 from core.db import get_db, get_or_create_user
 from core.security import require_staff, require_staff_or_nco
 from texts.phone import clean_mobile
+from texts.settings import community_invite_url
 from utils.crypto import encrypt_password, decrypt_password
 
 router = APIRouter()
@@ -241,13 +242,16 @@ def _phone_owner(db: Session, email: str):
     return None, None
 
 
-def _phone_json(kind: str | None, row) -> dict:
+def _phone_json(db: Session, kind: str | None, row) -> dict:
     return {
         "phone_number": (row.phone_number or "") if row else "",
         # Which roster it's stored on, so the UI can say "as a cadet" / "as
         # staff" — and None when there's nowhere to store it at all.
         "kind": kind,
         "name": f"{row.first_name} {row.last_name}".strip() if row else "",
+        # Sent alongside the number so the page can offer the community as soon
+        # as one is saved, without a second round trip.
+        "whatsapp_invite_url": community_invite_url(db),
     }
 
 
@@ -257,7 +261,7 @@ def get_phone_number(
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     kind, row = _phone_owner(db, idinfo.get("email", ""))
-    return _phone_json(kind, row)
+    return _phone_json(db, kind, row)
 
 
 @router.patch("/settings/phone-number")
@@ -282,4 +286,4 @@ def update_phone_number(
 
     row.phone_number = phone or None
     db.commit()
-    return {"status": "success", **_phone_json(kind, row)}
+    return {"status": "success", **_phone_json(db, kind, row)}

@@ -28,6 +28,7 @@ from texts.programme_parser import parse_programme
 from texts.recipients import (
     Recipient, extra_recipient, list_recipients, parse_key, person_recipient,
 )
+from texts.settings import clean_invite_url, community_invite_url, get_text_settings
 from texts.sender import send_parade_message, send_test_sms
 
 router = APIRouter(prefix="/texts")
@@ -441,6 +442,40 @@ def test_send_message(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Test send failed: {e}")
     return {"status": "success"}
+
+
+# ─── Settings ─────────────────────────────────────────────────────────────────
+
+class TextSettingsPatch(BaseModel):
+    whatsapp_invite_url: Optional[str] = None
+
+
+@router.get("/settings")
+def get_settings(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    return {"whatsapp_invite_url": community_invite_url(db)}
+
+
+@router.patch("/settings")
+def update_settings(
+    data: TextSettingsPatch,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Set the WhatsApp community invite link cadets and staff are shown once
+    they've saved a number. An empty value takes the prompt away again."""
+    settings = get_text_settings(db)
+
+    if data.whatsapp_invite_url is not None:
+        try:
+            settings.whatsapp_invite_url = clean_invite_url(data.whatsapp_invite_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    db.commit()
+    return {"whatsapp_invite_url": settings.whatsapp_invite_url}
 
 
 # ─── Recipients ───────────────────────────────────────────────────────────────
