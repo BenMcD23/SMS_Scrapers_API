@@ -13,6 +13,9 @@ class Cadet(Base):
     first_name  = Column(Text, nullable=False)
     last_name   = Column(Text, nullable=False)
     email       = Column(Text, nullable=True)
+    # Mobile the cadet gets parade-night texts on. Owned by the cadet — they set
+    # it themselves on the portal — so nothing scraped ever overwrites it.
+    phone_number = Column(Text, nullable=True)
 
     date_of_birth = Column(DateTime, nullable=True)
     rank          = Column(Text, nullable=True)
@@ -45,6 +48,9 @@ class Staff(Base):
     rank       = Column(Text, nullable=True)
     email      = Column(Text, nullable=True)
     address    = Column(Text, nullable=True)  # current address from SMS profile
+    # Mobile for parade-night texts, set by the member themselves in Settings.
+    # Not scraped — SMS doesn't carry it — so a scraper run never clears it.
+    phone_number = Column(Text, nullable=True)
     attendance = Column(JSON, nullable=True)  # {"YYYY-MM": PC+PI} per month this year
 
     # Row-level register history, separate from the monthly `attendance` counts
@@ -1045,7 +1051,12 @@ class BadgeOrderListEntry(Base):
 # ─── Parade Night Texts ───────────────────────────────────────────────────────
 
 class SmsRecipient(Base):
-    """Someone who receives the parade-night SMS (staff/parents list)."""
+    """A parade-night text recipient with no account behind them.
+
+    Numbers normally live on the Cadet/Staff row they belong to, where their
+    owner keeps them up to date. This table is what's left over: parents and
+    anyone else on the list who isn't on either roster.
+    """
     __tablename__ = "Sms_Recipients"
 
     id           = Column(Integer, primary_key=True, autoincrement=True)
@@ -1077,7 +1088,7 @@ class ParadeNightMessage(Base):
     generated_by     = Column(Text, nullable=True)  # model id that produced the text, e.g. "gemini-3.5-flash"
     generated_at     = Column(DateTime, nullable=False)
     sent_at          = Column(DateTime, nullable=True)
-    send_results     = Column(JSON, nullable=True)  # [{phone, status_code, error?}]
+    send_results     = Column(JSON, nullable=True)  # [{phone, name, source, status, error?}]
 
 
 # ─── Badge Grid ───────────────────────────────────────────────────────────────

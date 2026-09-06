@@ -6,12 +6,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import BaderCredentials, User, UserProfile, UserSignature
+from database.models import BaderCredentials, Cadet, Staff, User, UserProfile, UserSignature
 
 from core.db import get_db, get_or_create_user
 from core.security import require_staff, require_staff_or_nco
+from texts.phone import clean_mobile
 from utils.crypto import encrypt_password, decrypt_password
 
 router = APIRouter()
@@ -40,6 +42,10 @@ class UserProfilePatch(BaseModel):
 
 class AssessorNamePatch(BaseModel):
     assessor_name: str
+
+
+class PhoneNumberPatch(BaseModel):
+    phone_number: str
 
 
 @router.post("/save-credentials")
@@ -208,3 +214,72 @@ def update_assessor_name(
     p.assessor_name = data.assessor_name.strip()
     db.commit()
     return {"status": "success"}
+
+
+# ── Parade-night text number ──────────────────────────────────────────────────
+#
+# The number lives on the squadron record the signed-in account belongs to —
+# the Staff row for a CFAV, the Cadet row for an NCO — not on User, so the text
+# list can read a rank and a surname off the same row and greet people properly.
+
+
+def _phone_owner(db: Session, email: str):
+    """The roster row this account's number belongs on, or (None, None) if the
+    account isn't on either roster — a new CFAV before the first scrape, say."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None, None
+
+    staff = db.query(Staff).filter(func.lower(Staff.email) == email).first()
+    if staff:
+        return "staff", staff
+
+    cadet = db.query(Cadet).filter(func.lower(Cadet.email) == email).first()
+    if cadet:
+        return "cadet", cadet
+
+    return None, None
+
+
+def _phone_json(kind: str | None, row) -> dict:
+    return {
+        "phone_number": (row.phone_number or "") if row else "",
+        # Which roster it's stored on, so the UI can say "as a cadet" / "as
+        # staff" — and None when there's nowhere to store it at all.
+        "kind": kind,
+        "name": f"{row.first_name} {row.last_name}".strip() if row else "",
+    }
+
+
+@router.get("/settings/phone-number")
+def get_phone_number(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    kind, row = _phone_owner(db, idinfo.get("email", ""))
+    return _phone_json(kind, row)
+
+
+@router.patch("/settings/phone-number")
+def update_phone_number(
+    data: PhoneNumberPatch,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Save the mobile that gets the parade-night texts. An empty value clears
+    it, which is how somebody takes themselves off the list."""
+    kind, row = _phone_owner(db, idinfo.get("email", ""))
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Your account isn't linked to a squadron record yet, so there's nowhere to save a number.",
+        )
+
+    try:
+        phone = clean_mobile(data.phone_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    row.phone_number = phone or None
+    db.commit()
+    return {"status": "success", **_phone_json(kind, row)}
