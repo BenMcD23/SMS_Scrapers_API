@@ -5,7 +5,6 @@ import asyncio
 import csv
 import io
 import json
-import re
 from datetime import date, datetime
 from typing import Literal, Optional
 
@@ -18,12 +17,18 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from database.database import SessionLocal
-from database.models import ParadeNightMessage, SmsRecipient
+from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
 
 from core.db import get_db
 from core.security import require_staff
 from texts.ai import PRIMARY_MODEL, format_uniform, generate_message, model_label
+from texts.matching import Roster
+from texts.phone import clean_mobile, normalise_phone
 from texts.programme_parser import parse_programme
+from texts.recipients import (
+    Recipient, extra_recipient, list_recipients, parse_key, person_recipient,
+)
+from texts.settings import clean_invite_url, community_invite_url, get_text_settings
 from texts.sender import send_parade_message, send_test_sms
 
 router = APIRouter(prefix="/texts")
@@ -439,7 +444,49 @@ def test_send_message(
     return {"status": "success"}
 
 
+# ─── Settings ─────────────────────────────────────────────────────────────────
+
+class TextSettingsPatch(BaseModel):
+    whatsapp_invite_url: Optional[str] = None
+
+
+@router.get("/settings")
+def get_settings(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    return {"whatsapp_invite_url": community_invite_url(db)}
+
+
+@router.patch("/settings")
+def update_settings(
+    data: TextSettingsPatch,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Set the WhatsApp community invite link cadets and staff are shown once
+    they've saved a number. An empty value takes the prompt away again."""
+    settings = get_text_settings(db)
+
+    if data.whatsapp_invite_url is not None:
+        try:
+            settings.whatsapp_invite_url = clean_invite_url(data.whatsapp_invite_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    db.commit()
+    return {"whatsapp_invite_url": settings.whatsapp_invite_url}
+
+
 # ─── Recipients ───────────────────────────────────────────────────────────────
+#
+# A recipient is a cadet or staff member with a mobile on their record, or an
+# "extra" row for someone with no account (parents, mainly). They're addressed by
+# the key texts.recipients builds — "cadet:1234567", "staff:1234567", "extra:12"
+# — because there is no single table to hold an id against any more. Clearing a
+# cadet's or staff member's number takes them off the list; only extras are ever
+# deleted outright.
+
 
 class RecipientBody(BaseModel):
     rank: str = ""
@@ -453,17 +500,48 @@ class RecipientPatch(BaseModel):
     phone_number: Optional[str] = None
 
 
-def _recipient_json(r: SmsRecipient) -> dict:
-    return {"id": r.id, "rank": r.rank, "surname": r.surname, "phone_number": r.phone_number}
+def _recipient_json(r: Recipient) -> dict:
+    return {
+        "key": r.key,
+        "source": r.source,
+        "rank": r.rank,
+        "surname": r.surname,
+        "name": r.name,
+        "phone_number": r.phone_number,
+        # The CIN, for the cadet/staff page this recipient came from.
+        "cin": r.id if r.source in ("cadet", "staff") else None,
+    }
+
+
+def _clean_phone(value: str) -> str:
+    """A typed number, or a 400 saying why not."""
+    try:
+        return clean_mobile(value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _resolve(db: Session, key: str):
+    """The row a recipient key points at."""
+    try:
+        source, row_id = parse_key(key)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+
+    model = {"cadet": Cadet, "staff": Staff, "extra": SmsRecipient}[source]
+    column = SmsRecipient.id if source == "extra" else model.cin
+    row = db.query(model).filter(column == row_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Recipient not found")
+    return source, row
 
 
 @router.get("/recipients")
-def list_recipients(
+def get_recipients(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    recipients = db.query(SmsRecipient).order_by(SmsRecipient.surname).all()
-    return [_recipient_json(r) for r in recipients]
+    return [_recipient_json(r) for r in list_recipients(db)]
 
 
 @router.post("/recipients")
@@ -472,7 +550,9 @@ def create_recipient(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    phone = data.phone_number.strip()
+    """Add someone with no account — a parent, say. Cadets and staff get a
+    number by saving one on their own record instead."""
+    phone = _clean_phone(data.phone_number)
     if not phone:
         raise HTTPException(status_code=400, detail="Phone number is required")
 
@@ -480,40 +560,58 @@ def create_recipient(
     db.add(recipient)
     db.commit()
     db.refresh(recipient)
-    return _recipient_json(recipient)
+    return _recipient_json(extra_recipient(recipient))
 
 
-@router.patch("/recipients/{recipient_id}")
+@router.patch("/recipients/{key}")
 def update_recipient(
-    recipient_id: int,
+    key: str,
     data: RecipientPatch,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    recipient = db.query(SmsRecipient).get(recipient_id)
-    if not recipient:
-        raise HTTPException(status_code=404, detail="Recipient not found")
+    source, row = _resolve(db, key)
 
-    for field in ("rank", "surname", "phone_number"):
-        val = getattr(data, field)
-        if val is not None:
-            setattr(recipient, field, val.strip())
+    if data.phone_number is not None:
+        phone = _clean_phone(data.phone_number)
+        if source == "extra" and not phone:
+            raise HTTPException(status_code=400, detail="Phone number is required")
+        # An empty number on a cadet or staff member is how they come off the
+        # list, so it's stored as NULL rather than "" and read back as neither.
+        row.phone_number = phone or None
 
-    if not recipient.phone_number:
-        raise HTTPException(status_code=400, detail="Phone number is required")
+    # Rank and surname come from the roster for anyone who's on it — editing them
+    # here would just be overwritten by the next scrape.
+    if source == "extra":
+        for field in ("rank", "surname"):
+            val = getattr(data, field)
+            if val is not None:
+                setattr(row, field, val.strip())
 
     db.commit()
-    return _recipient_json(recipient)
+    db.refresh(row)
+    return _recipient_json(
+        extra_recipient(row) if source == "extra" else person_recipient(source, row)
+    )
 
 
-def _normalise_phone(value) -> str:
-    """Strip spaces; restore the leading 0 Excel eats off numeric UK mobiles."""
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    phone = re.sub(r"\s+", "", str(value or ""))
-    if re.fullmatch(r"7\d{9}", phone):
-        phone = "0" + phone
-    return phone
+@router.delete("/recipients/{key}")
+def delete_recipient(
+    key: str,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take someone off the list. An extra row goes; a cadet or staff member
+    keeps their record and just loses the number."""
+    source, row = _resolve(db, key)
+
+    if source == "extra":
+        db.delete(row)
+    else:
+        row.phone_number = None
+
+    db.commit()
+    return {"status": "success"}
 
 
 def _parse_recipient_file(filename: str, content: bytes) -> list[list]:
@@ -537,6 +635,12 @@ async def import_recipients(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    """Load a rank/surname/phone sheet, putting each number on the cadet or staff
+    member it names and keeping the rest as extras.
+
+    Matching is the same one the old list was migrated with (texts.matching), so
+    a re-import lands the same way the migration did.
+    """
     if mode not in ("replace", "merge"):
         raise HTTPException(status_code=400, detail="Mode must be 'replace' or 'merge'")
 
@@ -564,7 +668,7 @@ async def import_recipients(
     parsed: dict[str, dict] = {}  # keyed by normalised phone, last row wins
     skipped = 0
     for row in rows[1:]:
-        phone = _normalise_phone(row[phone_i] if phone_i < len(row) else "")
+        phone = normalise_phone(row[phone_i] if phone_i < len(row) else "")
         if not phone:
             if any(str(c or "").strip() for c in row):
                 skipped += 1
@@ -575,39 +679,43 @@ async def import_recipients(
         raise HTTPException(status_code=400, detail="No rows with a phone number found")
 
     if mode == "replace":
+        # Only the extras are wiped — a replace shouldn't quietly strip the
+        # numbers cadets and staff set for themselves.
         db.query(SmsRecipient).delete()
         existing = {}
     else:
         existing = {
-            _normalise_phone(r.phone_number): r
+            normalise_phone(r.phone_number): r
             for r in db.query(SmsRecipient).all()
         }
 
-    imported = 0
+    roster = Roster(db)
+    matched = 0
     for phone, fields in parsed.items():
+        match = roster.match(fields["rank"], fields["surname"])
+        if match.matched:
+            match.person.phone_number = phone
+            matched += 1
+            # The same person may also be sitting in the extras list under this
+            # number — drop it, or they'd stay behind as a duplicate row.
+            stale = existing.pop(phone, None)
+            if stale is not None:
+                db.delete(stale)
+            continue
+
         recipient = existing.get(phone)
         if recipient:
             recipient.rank = fields["rank"]
             recipient.surname = fields["surname"]
         else:
             db.add(SmsRecipient(phone_number=phone, rank=fields["rank"], surname=fields["surname"]))
-        imported += 1
 
     db.commit()
-    total = db.query(SmsRecipient).count()
-    return {"status": "success", "imported": imported, "skipped": skipped, "total": total}
-
-
-@router.delete("/recipients/{recipient_id}")
-def delete_recipient(
-    recipient_id: int,
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    recipient = db.query(SmsRecipient).get(recipient_id)
-    if not recipient:
-        raise HTTPException(status_code=404, detail="Recipient not found")
-
-    db.delete(recipient)
-    db.commit()
-    return {"status": "success"}
+    return {
+        "status": "success",
+        "imported": len(parsed),
+        "matched": matched,
+        "extras": len(parsed) - matched,
+        "skipped": skipped,
+        "total": len(list_recipients(db)),
+    }
