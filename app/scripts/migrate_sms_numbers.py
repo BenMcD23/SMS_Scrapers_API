@@ -106,7 +106,8 @@ def report(result: dict, apply: bool) -> None:
     for label, to, phone in result["already"]:
         print(f"  {label:<28} → {to:<40} {phone}")
 
-    print(f"\n── No match, left on the list: {len(result['unmatched'])} ──")
+    print(f"\n── Nobody to tie them to, kept as their own recipient: "
+          f"{len(result['unmatched'])} ──")
     for label, reason, candidates in result["unmatched"]:
         print(f"  {label:<28} {reason}")
         if candidates:
@@ -115,6 +116,10 @@ def report(result: dict, apply: bool) -> None:
     print(f"\n── Not a UK mobile, left on the list: {len(result['invalid'])} ──")
     for label, phone in result["invalid"]:
         print(f"  {label:<28} {phone!r}")
+
+    if result["unmatched"] or result["invalid"]:
+        print("\nThe names above stay on Sms_Recipients: they're texted as "
+              "themselves, tied to nobody, exactly as they are today.")
 
     if not apply:
         print("\nDry run — nothing was written. Re-run with --apply once the "
