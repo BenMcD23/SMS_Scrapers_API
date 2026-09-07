@@ -5,6 +5,7 @@ stubbed, so what's under test is the concurrency, the ordering the stream relies
 on, and which fields each entry point is allowed to overwrite.
 """
 import asyncio
+import io
 import json
 import threading
 import time
@@ -15,7 +16,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from database.database import Base
-from database.models import ParadeNightMessage
+from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
+from fastapi import UploadFile
 import routers.texts as tx
 
 
@@ -262,3 +264,175 @@ def test_a_sent_night_cannot_be_regenerated(db, monkeypatch):
         with pytest.raises(tx.HTTPException) as exc:
             asyncio.run(call())
         assert exc.value.status_code == 400
+
+
+# ─── Recipients ───────────────────────────────────────────────────────────────
+#
+# The list is now assembled from three places (texts.recipients covers that);
+# what's tested here is the editing on top of it — that a key reaches the right
+# row, and that taking a cadet off the list doesn't take the cadet with it.
+
+def _people(db):
+    db.add_all([
+        Cadet(cin=1, first_name="Ada", last_name="Adams", rank="Corporal",
+              phone_number="07700900001"),
+        Staff(cin=10, first_name="Zoe", last_name="Zephyr", rank="Flight Lieutenant",
+              phone_number="07700900010"),
+        SmsRecipient(rank="Mrs", surname="Mercer", phone_number="07700900020"),
+    ])
+    db.commit()
+
+
+def test_the_list_says_where_each_number_came_from(db):
+    _people(db)
+
+    listed = tx.get_recipients(db=db, idinfo=STAFF)
+
+    assert [(r["source"], r["surname"], r["cin"]) for r in listed] == [
+        ("cadet", "Adams", 1), ("extra", "Mercer", None), ("staff", "Zephyr", 10),
+    ]
+
+
+def test_a_number_is_edited_on_the_record_it_belongs_to(db):
+    _people(db)
+
+    result = tx.update_recipient("cadet:1", tx.RecipientPatch(phone_number="+44 7700 900123"),
+                                 db=db, idinfo=STAFF)
+
+    assert result["phone_number"] == "07700900123"
+    assert db.query(Cadet).one().phone_number == "07700900123"
+
+
+def test_rank_and_surname_are_only_editable_on_an_extra(db):
+    _people(db)
+    extra_key = f"extra:{db.query(SmsRecipient).one().id}"
+
+    tx.update_recipient(extra_key, tx.RecipientPatch(rank="Mr", surname="Mercer"),
+                        db=db, idinfo=STAFF)
+    # A cadet's rank comes off the roster — an edit here would be overwritten by
+    # the next scrape, so it's ignored rather than silently lost later.
+    tx.update_recipient("cadet:1", tx.RecipientPatch(rank="Sergeant"), db=db, idinfo=STAFF)
+
+    assert db.query(SmsRecipient).one().rank == "Mr"
+    assert db.query(Cadet).one().rank == "Corporal"
+
+
+def test_removing_a_cadet_clears_the_number_and_keeps_the_cadet(db):
+    _people(db)
+
+    tx.delete_recipient("cadet:1", db=db, idinfo=STAFF)
+
+    assert db.query(Cadet).one().phone_number is None
+    assert [r["source"] for r in tx.get_recipients(db=db, idinfo=STAFF)] == ["extra", "staff"]
+
+
+def test_removing_an_extra_deletes_the_row(db):
+    _people(db)
+    extra_key = f"extra:{db.query(SmsRecipient).one().id}"
+
+    tx.delete_recipient(extra_key, db=db, idinfo=STAFF)
+
+    assert db.query(SmsRecipient).count() == 0
+
+
+@pytest.mark.parametrize("key", ["cadet:999", "staff:999", "extra:999", "nonsense"])
+def test_a_key_pointing_at_nothing_is_a_404(db, key):
+    with pytest.raises(tx.HTTPException) as exc:
+        tx.delete_recipient(key, db=db, idinfo=STAFF)
+    assert exc.value.status_code == 404
+
+
+def test_a_number_notify_cannot_text_is_refused(db):
+    _people(db)
+
+    with pytest.raises(tx.HTTPException) as exc:
+        tx.update_recipient("cadet:1", tx.RecipientPatch(phone_number="0161 496 0000"),
+                            db=db, idinfo=STAFF)
+
+    assert exc.value.status_code == 400
+    assert db.query(Cadet).one().phone_number == "07700900001"
+
+
+def _import(db, rows: list[str], mode: str = "merge") -> dict:
+    upload = UploadFile(filename="numbers.csv", file=io.BytesIO("\n".join(rows).encode()))
+    return asyncio.run(tx.import_recipients(file=upload, mode=mode, db=db, idinfo=STAFF))
+
+
+def test_import_puts_a_number_on_the_person_it_names(db):
+    db.add(Cadet(cin=1, first_name="Ada", last_name="Adams", rank="Corporal"))
+    db.commit()
+
+    result = _import(db, ["phone number,rank,surname", "07700900001,Cpl,Adams"])
+
+    assert (result["matched"], result["extras"]) == (1, 0)
+    assert db.query(Cadet).one().phone_number == "07700900001"
+    assert db.query(SmsRecipient).count() == 0
+
+
+def test_import_keeps_a_name_it_cannot_place_as_an_extra(db):
+    result = _import(db, ["phone number,rank,surname", "07700900020,Mrs,Mercer"])
+
+    assert (result["matched"], result["extras"]) == (0, 1)
+    assert db.query(SmsRecipient).one().surname == "Mercer"
+
+
+def test_a_replace_import_only_wipes_the_extras(db):
+    _people(db)
+
+    _import(db, ["phone number,rank,surname", "07700900030,Mr,Nobody"], mode="replace")
+
+    # The old extra is gone; the numbers cadets and staff set for themselves are
+    # theirs to clear, not an import's.
+    assert {r.surname for r in db.query(SmsRecipient).all()} == {"Nobody"}
+    assert db.query(Cadet).one().phone_number == "07700900001"
+    assert db.query(Staff).one().phone_number == "07700900010"
+
+
+# ─── Settings ─────────────────────────────────────────────────────────────────
+
+def test_the_invite_link_starts_unset(db):
+    assert tx.get_settings(db=db, idinfo=STAFF) == {"whatsapp_invite_url": ""}
+
+
+def test_staff_set_the_invite_link(db):
+    url = "https://chat.whatsapp.com/ABCDEFGH"
+
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url=url), db=db, idinfo=STAFF)
+
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == url
+
+
+def test_a_link_that_is_not_whatsapp_is_refused_and_nothing_is_stored(db):
+    with pytest.raises(tx.HTTPException) as exc:
+        tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url="https://example.com/join"),
+                           db=db, idinfo=STAFF)
+
+    assert exc.value.status_code == 400
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == ""
+
+
+def test_clearing_the_link_takes_the_join_prompt_away(db):
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url="https://chat.whatsapp.com/ABC"),
+                       db=db, idinfo=STAFF)
+
+    tx.update_settings(tx.TextSettingsPatch(whatsapp_invite_url=""), db=db, idinfo=STAFF)
+
+    assert tx.get_settings(db=db, idinfo=STAFF)["whatsapp_invite_url"] == ""
+
+
+def test_an_exported_csv_imports_back_to_the_same_list(db):
+    """The export writes phone number/rank/surname — the same three columns the
+    import reads — so a round trip has to land everyone back where they were,
+    including the two whose numbers live on a roster row."""
+    _people(db)
+    before = tx.get_recipients(db=db, idinfo=STAFF)
+
+    # Exactly what the Export CSV button writes.
+    rows = ["phone number,rank,surname"] + [
+        f"{r['phone_number']},{r['rank']},{r['surname']}" for r in before
+    ]
+    _import(db, rows, mode="replace")
+
+    after = tx.get_recipients(db=db, idinfo=STAFF)
+    assert [(r["source"], r["name"], r["phone_number"]) for r in after] == \
+           [(r["source"], r["name"], r["phone_number"]) for r in before]

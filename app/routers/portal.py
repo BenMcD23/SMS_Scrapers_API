@@ -15,6 +15,8 @@ from database.models import Cadet, Staff, StaffAttendance, User, StoresOrder, St
 
 from core.db import get_db, get_current_cadet, get_current_user
 from core.security import require_staff, get_roles_for_emails
+from texts.phone import clean_mobile
+from texts.settings import community_invite_url
 from routers.cadets import attendance_to_dict
 from routers.stores import order_to_dict, issuance_to_dict
 from routers.badges import badge_order_to_dict
@@ -40,6 +42,10 @@ class BadgeOrderItemIn(BaseModel):
 
 class BadgeOrderBody(BaseModel):
     items: list[BadgeOrderItemIn]
+
+
+class PhoneNumberBody(BaseModel):
+    phone_number: str
 
 
 def _add_uniform_items(db: Session, order: StoresOrder, items: list[OrderItemIn]):
@@ -85,11 +91,40 @@ def _delete_order(db: Session, order):
 # ── Cadet endpoints ───────────────────────────────────────────────────────────
 
 @router.get("/cadets/me")
-def cadet_get_me(cadet: Cadet = Depends(get_current_cadet)):
+def cadet_get_me(
+    db: Session = Depends(get_db),
+    cadet: Cadet = Depends(get_current_cadet),
+):
     return {
         "cin":   cadet.cin,
         "name":  f"{cadet.first_name} {cadet.last_name}",
         "email": cadet.email,
+        "phone_number": cadet.phone_number or "",
+        # Sent alongside the number so the portal can offer the community as
+        # soon as one is saved, without a second round trip.
+        "whatsapp_invite_url": community_invite_url(db),
+    }
+
+
+@router.patch("/cadets/me/phone-number")
+def cadet_set_phone_number(
+    body: PhoneNumberBody,
+    db: Session = Depends(get_db),
+    cadet: Cadet = Depends(get_current_cadet),
+):
+    """The cadet's own mobile for the parade-night texts. Sending it empty takes
+    them off the list — no staff round trip either way."""
+    try:
+        phone = clean_mobile(body.phone_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    cadet.phone_number = phone or None
+    db.commit()
+    return {
+        "status": "success",
+        "phone_number": phone,
+        "whatsapp_invite_url": community_invite_url(db),
     }
 
 

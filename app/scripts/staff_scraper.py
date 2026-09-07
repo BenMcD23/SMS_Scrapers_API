@@ -13,6 +13,28 @@ from database.models import Staff, StaffAttendance
 from google_admin_api.get_all_users import get_workspace_users
 
 
+def remove_departed_staff(db_session, scraped_cins):
+    """Hard-delete staff in the DB whose CIN wasn't pulled this run (they've left SMS).
+
+    Mirrors remove_departed_cadets. Attendance rows go first because SQLite
+    (local) doesn't enforce the ondelete=CASCADE on the FK. Returns the count.
+    """
+    scraped_cins = set(scraped_cins)
+    if not scraped_cins:
+        return 0  # safety: never wipe everyone if a run somehow produced no CINs
+
+    departed = [c for (c,) in db_session.query(Staff.cin).all() if c not in scraped_cins]
+    if not departed:
+        return 0
+
+    db_session.query(StaffAttendance).filter(
+        StaffAttendance.staff_id.in_(departed)
+    ).delete(synchronize_session=False)
+    db_session.query(Staff).filter(Staff.cin.in_(departed)).delete(synchronize_session=False)
+    db_session.commit()
+    return len(departed)
+
+
 def get_staff(page: Page):
     """Scrape the staff roster from SMS.
 
@@ -180,6 +202,7 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         skipped = 0
         emails_matched = 0
         attendance_rows = 0
+        scraped_cins = []
 
         for entry in staff:
             cin = entry.get("cin")
@@ -227,13 +250,18 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
                 member.attendance = monthly_attendance(records)
 
             saved += 1
+            scraped_cins.append(cin)
 
         db_session.commit()
+
+        # The roster is the full staff list, so anyone in the DB but not pulled
+        # this run has left SMS — hard-delete them, same as departed cadets.
+        removed = remove_departed_staff(db_session, scraped_cins)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped, {attendance_rows} attendance record(s)."
+                "value": f"DB update complete — {saved} staff saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 
