@@ -401,6 +401,7 @@ def list_staff(
             "lastName":  s.last_name,
             "rank":      s.rank,
             "email":     s.email,
+            "phoneNumber": s.phone_number,
             "address":   s.address,
             "attendance": s.attendance,
             "userId":    user_by_email.get((s.email or "").lower()),

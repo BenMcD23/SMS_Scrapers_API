@@ -20,6 +20,7 @@ from core.db import get_db
 from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
 from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
+from texts.phone import clean_mobile
 
 router = APIRouter()
 
@@ -37,6 +38,9 @@ def invalidate_cadet_caches():
 class CadetPatch(BaseModel):
     email: Optional[str] = None
     banned: Optional[bool] = None
+    # The mobile the cadet gets parade-night texts on. Staff can set it here for
+    # a cadet who won't set it themselves; the same number the portal writes.
+    phone_number: Optional[str] = None
 
 
 def _cadet_summary(c: Cadet) -> dict:
@@ -485,6 +489,7 @@ def get_cadet(
     return {
         **_cadet_summary(cadet),
         "email": cadet.email,
+        "phone_number": cadet.phone_number,
         "date_of_birth": cadet.date_of_birth.isoformat() if cadet.date_of_birth else None,
         "banned": cadet.banned,
         "qualifications": qualifications,
@@ -551,6 +556,13 @@ def patch_cadet(
 
     # Only update fields that were explicitly provided
     update_data = data.model_dump(exclude_unset=True)
+    if "phone_number" in update_data:
+        try:
+            # Stored as NULL rather than "", which is how a cadet comes off the
+            # text list — list_recipients reads the two the same way.
+            update_data["phone_number"] = clean_mobile(update_data["phone_number"]) or None
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     for field, value in update_data.items():
         setattr(cadet, field, value)
 
@@ -558,4 +570,11 @@ def patch_cadet(
     db.refresh(cadet)
     invalidate_cadet_caches()
 
-    return {"status": "success", "message": f"Cadet {cin} updated.", "updated_fields": list(update_data.keys())}
+    # The stored values, not the typed ones — a number is normalised on the way
+    # in, and the page would otherwise show what was typed until the next load.
+    return {
+        "status": "success",
+        "message": f"Cadet {cin} updated.",
+        "updated_fields": list(update_data.keys()),
+        "values": update_data,
+    }
