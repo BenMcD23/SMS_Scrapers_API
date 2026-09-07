@@ -8,7 +8,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.database import SessionLocal
-from database.models import ParadeNightMessage, SmsRecipient
+from database.models import ParadeNightMessage
+from texts.recipients import list_recipients
 
 from core.config import NOTIFY_API_KEY, NOTIFY_SMS_TEMPLATE_ID, ALERT_EMAIL
 from core.emailer import send_email, FOOTER
@@ -52,23 +53,29 @@ def send_test_sms(message: ParadeNightMessage, phone_number: str) -> None:
 
 
 def send_parade_message(db: Session, message: ParadeNightMessage) -> list[dict]:
-    """Send `message` to every recipient, record results, and mark it sent."""
+    """Send `message` to every recipient, record results, and mark it sent.
+
+    The recipients are cadets and staff who've saved a mobile plus the extras
+    list — see texts.recipients, which is also what the recipients page shows.
+    """
     client = _notify_client()
-    recipients = db.query(SmsRecipient).all()
+    recipients = list_recipients(db)
     if not recipients:
         raise RuntimeError("No SMS recipients configured")
 
     results = []
     for r in recipients:
+        # `name` rides along so a failure names the person, not just a number.
+        result = {"phone": r.phone_number, "name": r.name, "source": r.source}
         try:
             client.send_sms_notification(
                 phone_number=r.phone_number,
                 template_id=NOTIFY_SMS_TEMPLATE_ID,
                 personalisation=build_personalisation(message, rank=r.rank, surname=r.surname),
             )
-            results.append({"phone": r.phone_number, "status": "sent"})
+            results.append({**result, "status": "sent"})
         except Exception as e:
-            results.append({"phone": r.phone_number, "status": "failed", "error": str(e)})
+            results.append({**result, "status": "failed", "error": str(e)})
 
     message.status = "sent"
     message.sent_at = datetime.now()
