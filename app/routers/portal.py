@@ -19,7 +19,7 @@ from texts.phone import clean_mobile
 from texts.settings import community_invite_url
 from routers.cadets import attendance_to_dict
 from routers.stores import order_to_dict, issuance_to_dict
-from routers.badges import badge_order_to_dict
+from routers.badges import badge_order_to_dict, _parse_timestamp
 
 router = APIRouter()
 
@@ -38,6 +38,10 @@ class OrderBody(BaseModel):
 class BadgeOrderItemIn(BaseModel):
     badgeName: str
     replacement: bool = False  # replacement badges carry a £2 fee
+    gainedWhere: str | None = None  # "camp" | "sector_training_weekend" | "wing_training_weekend" | "on_sqn" | "other"
+    gainedWhereDetail: str | None = None  # free text when gainedWhere == "other"
+    gainedDateFrom: str | None = None  # camp / sector training weekend dates
+    gainedDateTo: str | None = None
 
 
 class BadgeOrderBody(BaseModel):
@@ -238,7 +242,16 @@ def cadet_create_badge_order(
 
     for item in body.items:
         if item.badgeName:
-            db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, replacement=item.replacement, qm_notes="[]"))
+            db.add(BadgeOrderItem(
+                order_id            = order.id,
+                badge_name          = item.badgeName,
+                replacement         = item.replacement,
+                qm_notes            = "[]",
+                gained_where        = item.gainedWhere,
+                gained_where_detail = item.gainedWhereDetail,
+                gained_date_from    = _parse_timestamp(item.gainedDateFrom),
+                gained_date_to      = _parse_timestamp(item.gainedDateTo),
+            ))
 
     db.commit()
     db.refresh(order)
@@ -262,7 +275,16 @@ def cadet_patch_badge_order(
     def add_items():
         for item in body.items:
             if item.badgeName:
-                db.add(BadgeOrderItem(order_id=order.id, badge_name=item.badgeName, replacement=item.replacement, qm_notes="[]"))
+                db.add(BadgeOrderItem(
+                    order_id            = order.id,
+                    badge_name          = item.badgeName,
+                    replacement         = item.replacement,
+                    qm_notes            = "[]",
+                    gained_where        = item.gainedWhere,
+                    gained_where_detail = item.gainedWhereDetail,
+                    gained_date_from    = _parse_timestamp(item.gainedDateFrom),
+                    gained_date_to      = _parse_timestamp(item.gainedDateTo),
+                ))
 
     _replace_pending_items(db, order, add_items)
     return badge_order_to_dict(order)
