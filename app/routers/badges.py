@@ -85,6 +85,10 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
                 "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
+                "gainedWhere":       oi.gained_where,
+                "gainedWhereDetail": oi.gained_where_detail,
+                "gainedDateFrom":    oi.gained_date_from.isoformat() if oi.gained_date_from else None,
+                "gainedDateTo":      oi.gained_date_to.isoformat() if oi.gained_date_to else None,
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -329,10 +333,14 @@ def badge_orders_create(
         if not raw.get("badgeName"):
             continue
         db.add(BadgeOrderItem(
-            order_id    = order.id,
-            badge_name  = raw["badgeName"],
-            replacement = bool(raw.get("replacement", False)),
-            qm_notes    = "[]",
+            order_id            = order.id,
+            badge_name          = raw["badgeName"],
+            replacement         = bool(raw.get("replacement", False)),
+            qm_notes            = "[]",
+            gained_where        = raw.get("gainedWhere"),
+            gained_where_detail = raw.get("gainedWhereDetail"),
+            gained_date_from    = _parse_timestamp(raw.get("gainedDateFrom")),
+            gained_date_to      = _parse_timestamp(raw.get("gainedDateTo")),
         ))
 
     db.commit()
@@ -368,11 +376,24 @@ def badge_orders_update(
                     oi.given_at = _parse_timestamp(raw["givenAt"])
                 if "givenBy" in raw:
                     oi.given_by = raw["givenBy"]
+                if "gainedWhere" in raw:
+                    oi.gained_where = raw["gainedWhere"]
+                if "gainedWhereDetail" in raw:
+                    oi.gained_where_detail = raw["gainedWhereDetail"]
+                if "gainedDateFrom" in raw:
+                    oi.gained_date_from = _parse_timestamp(raw["gainedDateFrom"])
+                if "gainedDateTo" in raw:
+                    oi.gained_date_to = _parse_timestamp(raw["gainedDateTo"])
             else:
                 db.add(BadgeOrderItem(
-                    order_id   = order.id,
-                    badge_name = raw.get("badgeName", ""),
-                    qm_notes   = "[]",
+                    order_id            = order.id,
+                    badge_name          = raw.get("badgeName", ""),
+                    qm_notes            = "[]",
+                    replacement         = bool(raw.get("replacement", False)),
+                    gained_where        = raw.get("gainedWhere"),
+                    gained_where_detail = raw.get("gainedWhereDetail"),
+                    gained_date_from    = _parse_timestamp(raw.get("gainedDateFrom")),
+                    gained_date_to      = _parse_timestamp(raw.get("gainedDateTo")),
                 ))
         for removed in existing.values():
             db.delete(removed)
