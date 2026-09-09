@@ -992,6 +992,11 @@ class BadgeOrderItem(Base):
     ready_to_collect = Column(DateTime, nullable=True)
     # See StoresOrderItem.stock_events — same append-only log, against the badge grid
     stock_events     = Column(Text, nullable=False, default="[]", server_default="[]")
+    # Where the badge was gained: "camp" | "sector_training_weekend" | "wing_training_weekend" | "on_sqn" | "other"
+    gained_where        = Column(Text,     nullable=True)
+    gained_where_detail = Column(Text,     nullable=True)  # free text when gained_where == "other"
+    gained_date_from    = Column(DateTime, nullable=True)  # camp / sector training weekend dates
+    gained_date_to      = Column(DateTime, nullable=True)
 
     order = relationship("BadgeOrder", back_populates="order_items")
 
