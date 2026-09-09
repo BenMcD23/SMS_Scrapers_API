@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from database.models import (
     Cadet, BadgeGridConfig, BadgeGridCell, BadgeItem, BadgeOrder, BadgeOrderItem,
-    BadgeOrderList, BadgeOrderListEntry,
+    BadgeOrderListEntry,
 )
 
 from core.db import get_db
@@ -523,22 +523,24 @@ def badge_order_item_stock(
     return {"order": badge_order_to_dict(order), "badges": _badge_full_response(db)}
 
 
-# ── Badge order lists (supplier order batches) ────────────────────────────────
+# ── Badge order list (supplier ordering queue) ────────────────────────────────
+#
+# Each entry tracks its own progress through queued → ordered → received, one
+# badge at a time (rather than the whole queue moving together), and every
+# transition is stamped with who made it so the list works as an audit trail.
 
-def _order_list_to_dict(order_list: BadgeOrderList) -> dict:
+def _order_list_entry_to_dict(entry: BadgeOrderListEntry) -> dict:
     return {
-        "id":        str(order_list.id),
-        "createdAt": order_list.created_at.isoformat(),
-        "orderedAt": order_list.ordered_at.isoformat() if order_list.ordered_at else None,
-        "entries": [
-            {
-                "id":          str(e.id),
-                "orderItemId": str(e.order_item_id) if e.order_item_id is not None else None,
-                "badgeName":   e.badge_name,
-                "cadetName":   e.cadet_name,
-            }
-            for e in sorted(order_list.entries, key=lambda x: x.id)
-        ],
+        "id":          str(entry.id),
+        "orderItemId": str(entry.order_item_id) if entry.order_item_id is not None else None,
+        "badgeName":   entry.badge_name,
+        "cadetName":   entry.cadet_name,
+        "addedAt":     entry.created_at.isoformat(),
+        "addedBy":     entry.added_by,
+        "orderedAt":   entry.ordered_at.isoformat() if entry.ordered_at else None,
+        "orderedBy":   entry.ordered_by,
+        "receivedAt":  entry.received_at.isoformat() if entry.received_at else None,
+        "receivedBy":  entry.received_by,
     }
 
 
@@ -547,8 +549,8 @@ def badge_order_lists_list(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    lists = db.query(BadgeOrderList).order_by(BadgeOrderList.created_at.desc()).all()
-    return [_order_list_to_dict(l) for l in lists]
+    entries = db.query(BadgeOrderListEntry).order_by(BadgeOrderListEntry.id).all()
+    return [_order_list_entry_to_dict(e) for e in entries]
 
 
 @router.post("/stores/badges/order-lists/entries", status_code=201)
@@ -565,25 +567,20 @@ def badge_order_lists_add_entry(
 
     existing = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.order_item_id == item.id).first()
     if existing:
-        raise HTTPException(status_code=409, detail="Badge is already on an order list")
+        raise HTTPException(status_code=409, detail="Badge is already on the order list")
 
     cadet = item.order.cadet
-    order_list = db.query(BadgeOrderList).filter(BadgeOrderList.ordered_at.is_(None)).first()
-    if not order_list:
-        order_list = BadgeOrderList(created_at=datetime.now())
-        db.add(order_list)
-        db.flush()
-
-    db.add(BadgeOrderListEntry(
-        list_id       = order_list.id,
+    entry = BadgeOrderListEntry(
         order_item_id = item.id,
         badge_name    = item.badge_name,
         cadet_name    = f"{cadet.first_name} {cadet.last_name}",
         created_at    = datetime.now(),
-    ))
+        added_by      = body.get("by") or idinfo.get("email"),
+    )
+    db.add(entry)
     db.commit()
-    db.refresh(order_list)
-    return _order_list_to_dict(order_list)
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
 
 
 @router.delete("/stores/badges/order-lists/entries/{entry_id}", status_code=204)
@@ -595,24 +592,47 @@ def badge_order_lists_delete_entry(
     entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    if entry.order_list.ordered_at is not None:
-        raise HTTPException(status_code=400, detail="List has been ordered and cannot be edited")
+    if entry.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="Entry has already been ordered and cannot be removed")
     db.delete(entry)
     db.commit()
 
 
-@router.post("/stores/badges/order-lists/{list_id}/mark-ordered")
-def badge_order_lists_mark_ordered(
-    list_id: int,
+@router.post("/stores/badges/order-lists/entries/{entry_id}/mark-ordered")
+def badge_order_lists_mark_entry_ordered(
+    entry_id: int,
+    body: dict,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    order_list = db.query(BadgeOrderList).filter(BadgeOrderList.id == list_id).first()
-    if not order_list:
-        raise HTTPException(status_code=404, detail="Order list not found")
-    if order_list.ordered_at is not None:
-        raise HTTPException(status_code=400, detail="List is already marked as ordered")
-    order_list.ordered_at = datetime.now()
+    entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.ordered_at is not None:
+        raise HTTPException(status_code=400, detail="Entry is already marked as ordered")
+    entry.ordered_at = datetime.now()
+    entry.ordered_by = body.get("by") or idinfo.get("email")
     db.commit()
-    db.refresh(order_list)
-    return _order_list_to_dict(order_list)
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
+
+
+@router.post("/stores/badges/order-lists/entries/{entry_id}/mark-received")
+def badge_order_lists_mark_entry_received(
+    entry_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.ordered_at is None:
+        raise HTTPException(status_code=400, detail="Entry has not been marked as ordered yet")
+    if entry.received_at is not None:
+        raise HTTPException(status_code=400, detail="Entry is already marked as received")
+    entry.received_at = datetime.now()
+    entry.received_by = body.get("by") or idinfo.get("email")
+    db.commit()
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
