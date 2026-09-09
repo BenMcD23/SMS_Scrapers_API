@@ -1025,27 +1025,22 @@ class LogsFormEntry(Base):
     form = relationship("LogsForm", back_populates="entries")
 
 
-class BadgeOrderList(Base):
-    __tablename__ = "Badge_Order_Lists"
-
-    id         = Column(Integer,  primary_key=True, autoincrement=True)
-    created_at = Column(DateTime, nullable=False)
-    ordered_at = Column(DateTime, nullable=True)  # null = the current open list
-
-    entries = relationship("BadgeOrderListEntry", back_populates="order_list", cascade="all, delete-orphan")
-
-
 class BadgeOrderListEntry(Base):
+    """A single badge queued for the supplier order. Moves through its own
+    queued → ordered → received stages, each stamped with who did it — so the
+    QM order list doubles as an audit trail rather than just a checklist."""
     __tablename__ = "Badge_Order_List_Entries"
 
     id            = Column(Integer,  primary_key=True, autoincrement=True)
-    list_id       = Column(Integer,  ForeignKey("Badge_Order_Lists.id", ondelete="CASCADE"), nullable=False)
     order_item_id = Column(Integer,  ForeignKey("Badge_Order_Items.id", ondelete="SET NULL"), nullable=True, unique=True)
     badge_name    = Column(Text,     nullable=False)
     cadet_name    = Column(Text,     nullable=False)
     created_at    = Column(DateTime, nullable=False)
-
-    order_list = relationship("BadgeOrderList", back_populates="entries")
+    added_by      = Column(Text,     nullable=True)
+    ordered_at    = Column(DateTime, nullable=True)
+    ordered_by    = Column(Text,     nullable=True)
+    received_at   = Column(DateTime, nullable=True)
+    received_by   = Column(Text,     nullable=True)
 
 
 # ─── Parade Night Texts ───────────────────────────────────────────────────────
