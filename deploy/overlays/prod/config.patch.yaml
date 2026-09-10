@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sms-api-config
+data:
+  # The nightly Drive dump runs here and nowhere else.
+  DB_BACKUP_ENABLED: "true"

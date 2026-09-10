@@ -1,0 +1,69 @@
+# PostgreSQL managed by the CloudNativePG operator: one primary plus streaming
+# replicas spread across zones, with automatic failover and a read-write
+# Service (`sms-db-rw`) that always points at the current primary. The
+# operator also creates the `sms-db-app` Secret whose `uri` key is the
+# application's DATABASE_URL.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: sms-db
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: 317_SMS
+      owner: sms_user
+      # Import the existing server's data on first boot instead of starting
+      # empty: uncomment and point at the old database (reachable over
+      # Tailscale) — see README "Migrating the data".
+      # import:
+      #   type: microservice
+      #   databases: ["317_SMS"]
+      #   source:
+      #     externalCluster: legacy-server
+
+  # externalClusters:
+  #   - name: legacy-server
+  #     connectionParameters:
+  #       host: 100.x.y.z
+  #       user: sms_user
+  #       dbname: 317_SMS
+  #     password:
+  #       name: legacy-db-credentials
+  #       key: password
+
+  storage:
+    size: 10Gi
+    # storageClass: local-path   # set per overlay if the default isn't right
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  # One instance per zone, so losing a site loses at most one instance.
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+    podAntiAffinityType: required
+
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "128MB"
+
+  # Point-in-time backups to object storage (Backblaze B2 / any S3) — the
+  # Drive dump job in the API keeps running regardless, so this is optional.
+  # backup:
+  #   barmanObjectStore:
+  #     destinationPath: s3://sms-db-backups/
+  #     endpointURL: https://s3.eu-central-003.backblazeb2.com
+  #     s3Credentials:
+  #       accessKeyId: { name: db-backup-s3, key: ACCESS_KEY_ID }
+  #       secretAccessKey: { name: db-backup-s3, key: SECRET_ACCESS_KEY }
+  #   retentionPolicy: "30d"

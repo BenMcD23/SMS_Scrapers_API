@@ -1,0 +1,33 @@
+# Dev doesn't need HA: a single Postgres instance, one tunnel connector, and a
+# smaller API footprint.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: sms-db
+spec:
+  instances: 1
+  storage:
+    size: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sms-api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 3Gi

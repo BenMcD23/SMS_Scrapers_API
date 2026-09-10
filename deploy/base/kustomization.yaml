@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sms
+
+resources:
+  - configmap.yaml
+  - database.yaml
+  - migrate-job.yaml
+  - deployment.yaml
+  - service.yaml
+  - cloudflared.yaml
+
+images:
+  - name: ghcr.io/benmcd23/sms-api
+    newTag: latest
