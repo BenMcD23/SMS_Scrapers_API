@@ -1,16 +1,17 @@
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
-from datetime import date
 import json
+from datetime import date
 
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader
-from scripts.scraper_utils import init_scraper, login, match_email
-from scripts.profiles import STAFF, collect_profile_links, open_profile
-from scripts.tables import ensure_all_rows_shown, read_rows, wait_for_full_draw
-from scripts.attendance import get_attendance
-from core.attendance import attendance_state, PRESENT
+from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from core.attendance import PRESENT, attendance_state
+from core.directory import get_workspace_users
 from database.models import Staff, StaffAttendance
-from google_admin_api.get_all_users import get_workspace_users
+from scripts.attendance import get_attendance
+from scripts.profiles import STAFF, collect_profile_links, open_profile
+from scripts.scraper_utils import init_scraper, login, match_email
+from scripts.tables import ensure_all_rows_shown, read_rows, wait_for_full_draw
+from scripts.waiter import wait_for_aspx_load, wait_for_preloader
 
 
 def remove_departed_staff(db_session, scraped_cins):
@@ -165,10 +166,14 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
         if on_context_ready:
             on_context_ready(context)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         staff, profile_links = get_staff(page)
 
         with scraper_lock:
@@ -178,7 +183,8 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
             page, staff, scraper_messages, scraper_lock, stop_event=stop_event,
             profile_links=profile_links,
         )
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+            return
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Matching emails..."}))
@@ -196,7 +202,9 @@ def staff_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_even
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "warning", "value": f"[WARN] Could not fetch workspace emails: {str(e)}. Continuing without emails."}))
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         saved = 0
         skipped = 0

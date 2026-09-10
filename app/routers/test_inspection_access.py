@@ -12,7 +12,10 @@ import pytest
 
 from api import app
 from core.security import (
-    require_staff, require_staff_or_snco, require_staff_or_nco, require_user,
+    require_staff,
+    require_staff_or_nco,
+    require_staff_or_snco,
+    require_user,
 )
 
 # Who each dependency lets through.

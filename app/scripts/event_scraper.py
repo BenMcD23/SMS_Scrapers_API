@@ -1,15 +1,17 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import httpx
 from bs4 import BeautifulSoup
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page
 
 from database.database import SessionLocal
-from database.models import Location, Event317
-
+from database.models import Event317, Location
 from scripts.tables import ensure_all_rows_shown
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+
+logger = logging.getLogger(__name__)
 
 # Unit label the events table uses for our squadron — the marker for which rows
 # get their full event details pulled as well as their attendees.
@@ -381,7 +383,7 @@ def _soup_field(soup, label_text: str, tag: str) -> str:
     Playwright xpath would, off the first matching label on the page.
     """
     label = next(
-        (l for l in soup.find_all("label") if label_text in l.get_text()),
+        (lbl for lbl in soup.find_all("label") if label_text in lbl.get_text()),
         None,
     )
     if not label:
@@ -548,7 +550,7 @@ def get_317_event_info(page: Page, event_links_317, scraper_messages, scraper_lo
 
     except Exception as e:
         session.rollback()
-        print(f"Error during event sync: {e}")
+        logger.error(f"Error during event sync: {e}")
         raise
     finally:
         session.close()

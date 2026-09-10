@@ -16,7 +16,7 @@ from here.
 """
 
 import io
-import os
+import logging
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -26,25 +26,30 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session, selectinload
 
-from database.models import (
-    APPRAISAL_SECTIONS, NEXT_REVIEW_MONTHS, Cadet, CadetAttendance, NcoAppraisal,
-    NcoAppraisalReminder, User,
-)
-
 from core.attendance import ABSENT, PRESENT, count_states
 from core.db import get_db, get_or_create_user
 from core.emailer import EMAIL_RE, nco_appraisal_email_html, send_email
 from core.llm import PRIMARY_MODEL, model_label
+from core.paths import TEMPLATES_DIR
 from core.ranks import is_nco_rank, nco_team
 from core.security import require_staff
+from database.models import (
+    APPRAISAL_SECTIONS,
+    NEXT_REVIEW_MONTHS,
+    Cadet,
+    CadetAttendance,
+    NcoAppraisal,
+    NcoAppraisalReminder,
+    User,
+)
 from form_generators.nco_appraisal_gen import build_appraisal_docx, next_review_label
 from form_generators.nco_appraisal_pdf import build_appraisal_pdf
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
-TEMPLATE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "word_templates", "nco_appraisal_template.docx"
-)
+TEMPLATE_PATH = str(TEMPLATES_DIR / "nco_appraisal_template.docx")
 
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -507,7 +512,7 @@ def draft_with_ai(  # sync on purpose — the slow AI call runs in the threadpoo
             points=points[:MAX_AI_POINTS],
         )
     except Exception as e:
-        print(f"[draft_with_ai] generation failed: {e}")
+        logger.error(f"generation failed: {e}")
         raise HTTPException(
             status_code=502,
             detail="The AI writer couldn't be reached. Try again, or write the sections by hand.",

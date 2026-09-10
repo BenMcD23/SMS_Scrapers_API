@@ -1,17 +1,19 @@
 """Event data scraped from Bader, plus JI/AO document generation."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
+from core.db import get_db
+from core.security import require_staff
 from database.models import AllEvent, Cadet, CadetEvent, Event317
-
 from scripts.ji_ao_ai import generate_ao_description_ai, generate_ji_description_ai
 from scripts.ji_ao_generator import ao_fields, generate_ao, generate_ji, ji_fields
 
-from core.db import get_db
-from core.security import require_staff
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -33,7 +35,7 @@ def get_cadet_events(
     # one query per event, per sub-app, and per attending cadet.
     parent_events = (
         db.query(AllEvent)
-        .filter(AllEvent.parent_id == None)
+        .filter(AllEvent.parent_id.is_(None))
         .options(
             selectinload(AllEvent.cadet_events).selectinload(CadetEvent.cadet),
             selectinload(AllEvent.sub_apps)
@@ -146,7 +148,7 @@ def generate_ai_description(
             else generate_ao_description_ai(event)
         )
     except Exception as e:
-        print(f"Error generating AI description: {e}")
+        logger.error(f"Error generating AI description: {e}")
         raise HTTPException(status_code=502, detail="AI generation failed — try again or write it yourself")
     return {"description": description}
 
@@ -181,5 +183,5 @@ def generate_doc_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error generating document: {e}")
+        logger.error(f"Error generating document: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate document")

@@ -1,4 +1,7 @@
-name: Deploy API
+# Legacy single-server deploy (docker compose over Tailscale). Superseded by
+# release.yml + Argo CD once the cluster is live — see deploy/README.md for the
+# cutover checklist. Kept until the old server is decommissioned.
+name: Deploy API (legacy compose)
 
 on:
   push:
@@ -66,6 +69,6 @@ jobs:
             # migration aborts the deploy with the old api still serving.
             $DC build api
             $DC up -d --wait db
-            $DC run --rm api alembic -c database/alembic.ini upgrade head
+            $DC run --rm api alembic -c app/database/alembic.ini upgrade head
             $DC up -d --wait api
             docker image prune -f

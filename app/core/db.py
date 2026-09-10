@@ -1,13 +1,12 @@
 """DB session dependency and user lookup helpers."""
 
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.database import SessionLocal
-from database.models import User, Cadet
-
 from core.security import require_user
+from database.database import SessionLocal
+from database.models import Cadet, User
 
 
 def get_db():

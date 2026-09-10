@@ -21,14 +21,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database.models import NcoHoliday, User
-
 from core.calendar import (
-    calendar_configured, create_holiday_event, delete_holiday_event,
+    calendar_configured,
+    create_holiday_event,
+    delete_holiday_event,
     update_holiday_event,
 )
 from core.db import get_db, get_or_create_user
 from core.security import get_user_role, require_staff_or_nco
+from database.models import NcoHoliday, User
 
 router = APIRouter()
 

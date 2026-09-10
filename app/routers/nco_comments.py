@@ -17,10 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from database.models import Cadet, NcoComment, NcoCommentReply, User
-
 from core.db import get_db, get_or_create_user
 from core.security import get_user_role, require_staff_or_nco
+from database.models import Cadet, NcoComment, NcoCommentReply, User
 
 router = APIRouter()
 

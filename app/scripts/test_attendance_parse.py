@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from scripts.attendance import _parse_attendance_row, _expected_total
+from scripts.attendance import _expected_total, _parse_attendance_row
 
 
 def test_parse_attendance_row():

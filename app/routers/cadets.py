@@ -2,24 +2,27 @@
 
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_, exists
+from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session, selectinload
-
-from database.models import (
-    AssessmentSheet, Cadet, CadetAttendance, CadetMedical, CadetDietary,
-    CadetQualification, CadetEvent, CadetTheoryProgress,
-)
 
 from core import cache
 from core.attendance import attendance_state
 from core.db import get_db
-from core.qualifications import BADGE_TYPES, BADGE_TYPE_BY_KEY, held_level
-from core.theory_lessons import THEORY_LESSONS, THEORY_LESSON_BY_KEY, lesson_qual_held
+from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
+from core.theory_lessons import THEORY_LESSON_BY_KEY, THEORY_LESSONS, lesson_qual_held
+from database.models import (
+    AssessmentSheet,
+    Cadet,
+    CadetAttendance,
+    CadetDietary,
+    CadetEvent,
+    CadetMedical,
+    CadetTheoryProgress,
+)
 from texts.phone import clean_mobile
 
 router = APIRouter()
@@ -36,11 +39,11 @@ def invalidate_cadet_caches():
 
 
 class CadetPatch(BaseModel):
-    email: Optional[str] = None
-    banned: Optional[bool] = None
+    email: str | None = None
+    banned: bool | None = None
     # The mobile the cadet gets parade-night texts on. Staff can set it here for
     # a cadet who won't set it themselves; the same number the portal writes.
-    phone_number: Optional[str] = None
+    phone_number: str | None = None
 
 
 def _cadet_summary(c: Cadet) -> dict:
@@ -296,8 +299,8 @@ def theory_lessons(idinfo: dict = Depends(require_staff)):
     """The theory-lesson catalog — key, label and grouping category — so the
     frontend can build the record/progress UI dynamically."""
     return [
-        {"key": l.key, "name": l.name, "category": l.category}
-        for l in THEORY_LESSONS
+        {"key": lesson.key, "name": lesson.name, "category": lesson.category}
+        for lesson in THEORY_LESSONS
     ]
 
 
@@ -421,7 +424,7 @@ def theory_check(
     # Cadets with theory done but the qualification still outstanding come first —
     # they're the ones needing an assessment booked; name order within each group.
     results.sort(key=lambda r: not any(
-        l["has"] and not l["has_qualification"] for l in r["lessons_check"]
+        check["has"] and not check["has_qualification"] for check in r["lessons_check"]
     ))
     return results
 

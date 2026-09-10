@@ -1,18 +1,23 @@
-import io
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.colors import HexColor, black
-from pypdf import PdfReader, PdfWriter
 import base64
-from reportlab.lib.utils import ImageReader
-from PIL import Image as PILImage
-from datetime import datetime
-from pathlib import Path
+import io
+import logging
 import textwrap
+from datetime import datetime
+
+from PIL import Image as PILImage
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.colors import HexColor, black
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
+
+from core.paths import ASSESSMENT_SHEETS_DIR
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-TEMPLATE_PATH = str(Path(__file__).parent.parent / "assessment_sheets" / "Blue_Leadership.pdf")
+TEMPLATE_PATH = str(ASSESSMENT_SHEETS_DIR / "Blue_Leadership.pdf")
 PAGE_W, PAGE_H = 595.28, 841.89
-CIRCLE_RADIUS = 10 
+CIRCLE_RADIUS = 10
 
 SCORE_POSITIONS = {
     1:  {1: (354, 633), 2: (398, 633), 3: (426, 633), 4: (454, 633), 5: (500, 633)},
@@ -65,14 +70,14 @@ def _build_overlay(
     # -- 1. Hollow Circles & Column Calculation --
     c.setLineWidth(1.5)
     col_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-    
+
     for q_id, score in scores.items():
         q_id = int(q_id)
         score = int(score)
         if q_id in SCORE_POSITIONS and score in SCORE_POSITIONS[q_id]:
             x, y = SCORE_POSITIONS[q_id][score]
             col_counts[score] += 1
-            
+
             stroke_color = HexColor("#ef4444") if score == 1 else HexColor("#22c55e") if score == 5 else HexColor("#3b82f6")
             c.setStrokeColor(stroke_color)
             c.circle(x, y, CIRCLE_RADIUS, stroke=1, fill=0)
@@ -141,7 +146,7 @@ def _build_overlay(
                 mask="auto",
             )
         except Exception as e:
-            print(f"[PDF] Signature image error: {e}")
+            logger.error(f"Signature image error: {e}")
             c.setFont("Helvetica", 10)
             c.drawString(182, 200, "[signature error]")
     elif sig:
@@ -208,29 +213,29 @@ def process_assessment_data(payload: dict) -> dict:
     Ensures backend logic matches the UI requirements.
     """
     scores = payload.get("scores", {})
-    
+
     # 1. Convert score keys to ints if they are strings (common in JSON)
     # and filter out any None values
     clean_scores = {int(k): v for k, v in scores.items() if v is not None}
-    
+
     # 2. Calculate Total Score
     total_score = sum(clean_scores.values())
-    
+
     # 3. Determine Pass/Fail Status
     # Rule A: Must have all 10 questions answered
     # Rule B: Total score must be 30 or above
     # Rule C: Automatic fail if any single score is a 1
     has_a_one = any(v == 1 for v in clean_scores.values())
     all_answered = len(clean_scores) == 10
-    
+
     passed = all_answered and total_score >= 30 and not has_a_one
-    
+
     raw_date = payload.get("date", "")
     try:
         date = datetime.strptime(raw_date, "%Y-%m-%d").strftime("%d/%m/%y")
     except (ValueError, TypeError):
         date = raw_date  # fallback to whatever was sent if parsing fails
-        
+
     # 4. Map back to the expected PDF builder format
     return {
         "cadet_name": payload.get("cadet_name", "Unknown"),

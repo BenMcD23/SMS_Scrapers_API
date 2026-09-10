@@ -1,7 +1,6 @@
 """User settings — Bader credentials, signature image, profile details."""
 
 import io
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -9,36 +8,35 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import BaderCredentials, Cadet, Staff, User, UserProfile, UserSignature
-
+from core.crypto import decrypt_password, encrypt_password
 from core.db import get_db, get_or_create_user
 from core.security import require_staff, require_staff_or_nco
+from database.models import BaderCredentials, Cadet, Staff, UserProfile, UserSignature
 from texts.phone import clean_mobile
 from texts.settings import community_invite_url
-from utils.crypto import encrypt_password, decrypt_password
 
 router = APIRouter()
 
 
 class UserProfilePatch(BaseModel):
     # Fixed fields
-    rank:        Optional[str] = None
-    initials:    Optional[str] = None
-    surname:     Optional[str] = None
-    jpa_number:  Optional[str] = None
-    appointment: Optional[str] = None
-    sqn_vgs_no:  Optional[str] = None
-    wing_ccf:    Optional[str] = None
+    rank:        str | None = None
+    initials:    str | None = None
+    surname:     str | None = None
+    jpa_number:  str | None = None
+    appointment: str | None = None
+    sqn_vgs_no:  str | None = None
+    wing_ccf:    str | None = None
     # Editable fields
-    home_address: Optional[str] = None
-    car_reg:      Optional[str] = None
+    home_address: str | None = None
+    car_reg:      str | None = None
     # Bank details for committee-request reimbursements (encrypted at rest)
-    bank_account_name:   Optional[str] = None
-    bank_sort_code:      Optional[str] = None
-    bank_account_number: Optional[str] = None
+    bank_account_name:   str | None = None
+    bank_sort_code:      str | None = None
+    bank_account_number: str | None = None
     # User table fields
-    first_name: Optional[str] = None
-    last_name:  Optional[str] = None
+    first_name: str | None = None
+    last_name:  str | None = None
 
 
 class AssessorNamePatch(BaseModel):

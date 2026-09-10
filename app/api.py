@@ -1,149 +1,67 @@
 """App entrypoint — wires up middleware, background jobs, and the routers.
 
-Endpoint logic lives in routers/, shared helpers in core/.
+Endpoint logic lives in routers/, shared helpers in core/, scheduled work in
+core/jobs.py.
 """
 
-import os
+import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
 
-from apscheduler.triggers.cron import CronTrigger
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import func
+from sqlalchemy import text
 
-from database.database import SessionLocal
-from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
-
-from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
-from core.emailer import send_email, quali_expiry_email_html
-from core.qualifications import quali_expiry_cutoff
+from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, SCHEDULER_ENABLED
+from core.jobs import register_jobs
+from core.logging import configure_logging
 from core.scheduler import scheduler
 from core.security import require_user
-from scripts.db_backup import run_db_backup
-from texts.sender import scheduled_send_job
+from database.database import engine
 from routers import (
-    assessments, attendance, backups, badges, cadets, committee, events,
-    form_generators, inspections, leaving, nco_appraisals, nco_holidays, newsletters,
-    oc, portal, programme, scrapers, session_plans, settings, stats, stores, texts, nco_comments
+    assessments,
+    attendance,
+    backups,
+    badges,
+    cadets,
+    committee,
+    events,
+    form_generators,
+    inspections,
+    leaving,
+    nco_appraisals,
+    nco_comments,
+    nco_holidays,
+    newsletters,
+    oc,
+    portal,
+    programme,
+    reference,
+    scrapers,
+    session_plans,
+    settings,
+    stats,
+    stores,
+    texts,
 )
 
-
-def _cleanup_old_completed_orders():
-    cutoff = datetime.now() - timedelta(days=182)
-    db = SessionLocal()
-    try:
-        orders = (
-            db.query(StoresOrder)
-            .filter(StoresOrder.completed == True, StoresOrder.created_at < cutoff)
-            .all()
-        )
-        for order in orders:
-            db.delete(order)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
-def _cleanup_old_completed_assessments():
-    cutoff = datetime.now() - timedelta(days=182)
-    db = SessionLocal()
-    try:
-        sheets = (
-            db.query(AssessmentSheet)
-            .filter(
-                AssessmentSheet.uploaded == True,
-                func.coalesce(AssessmentSheet.uploaded_at, AssessmentSheet.created_at) < cutoff,
-            )
-            .all()
-        )
-        for sheet in sheets:
-            db.delete(sheet)
-        db.commit()
-    except Exception:
-        db.rollback()
-    finally:
-        db.close()
-
-
-def _quali_expiry_alert():
-    """Weekly (Friday) email of cadet qualifications now within 3 months of expiry.
-
-    Each cadet+qualification is emailed exactly once: the first time it falls in
-    the window it's stamped with ``expiry_alert_sent_at`` and skipped thereafter.
-    """
-    now = datetime.now()
-    today = datetime(now.year, now.month, now.day)
-    db = SessionLocal()
-    try:
-        quals = (
-            db.query(CadetQualification)
-            .join(Cadet)
-            .filter(
-                CadetQualification.expiry_alert_sent_at.is_(None),
-                CadetQualification.date_expires >= today,
-                CadetQualification.date_expires <= quali_expiry_cutoff(today),
-            )
-            .order_by(CadetQualification.date_expires)
-            .all()
-        )
-        if not quals:
-            return
-        rows = [
-            (
-                f"{q.cadet.first_name} {q.cadet.last_name}",
-                q.qual_type,
-                q.date_expires.strftime("%d/%m/%Y"),
-                (q.date_expires - now).days,
-            )
-            for q in quals
-        ]
-        send_email(
-            QUALI_EXPIRY_ALERT_EMAIL,
-            f"Qualifications expiring in 3 months ({len(rows)})",
-            quali_expiry_email_html(rows),
-        )
-        # Only stamp as notified after the send is attempted, so a qualification
-        # is never marked without an email having gone out for it.
-        for q in quals:
-            q.expiry_alert_sent_at = now
-        db.commit()
-    finally:
-        db.close()
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Schema is managed exclusively by Alembic migrations (run on deploy via the
-    # container command), not create_all — see README "Database Migrations".
-    scheduler.add_job(_cleanup_old_completed_orders, "interval", hours=24)
-    scheduler.add_job(_cleanup_old_completed_assessments, "interval", hours=24)
-    scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
-    # Friday alert for qualifications now within 3 months of expiry — each
-    # cadet+qualification is emailed once (deduped via expiry_alert_sent_at).
-    scheduler.add_job(
-        _quali_expiry_alert,
-        CronTrigger(day_of_week="fri", hour=7, minute=0, timezone="Europe/London"),
-    )
-    # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri)
-    scheduler.add_job(
-        scheduled_send_job,
-        CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone="Europe/London"),
-    )
-    scrapers.register_schedule_jobs()
-    # Daily DB backup to Google Drive — prod only (gated by the env flag).
-    if DB_BACKUP_ENABLED:
-        scheduler.add_job(
-            run_db_backup,
-            CronTrigger(hour=3, minute=0, timezone="Europe/London"),
-            id="db_backup",
-        )
-    scheduler.start()
+    # Schema is managed exclusively by Alembic migrations, run before the app
+    # starts (deploy job / compose step), never by create_all here.
+    if SCHEDULER_ENABLED:
+        register_jobs(scheduler)
+        scheduler.start()
+        logger.info("background scheduler started")
+    else:
+        logger.info("background scheduler disabled on this replica")
     yield
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -152,18 +70,11 @@ app = FastAPI(lifespan=lifespan)
 # the bottleneck, so shrinking the body cuts transfer time noticeably.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Allow the Next.js frontends to talk to us. localhost is only allowed when
-# CORS_ALLOW_LOCALHOST is set (dev), never in prod.
-_cors_origins = ["https://sms.317atc.co.uk", "https://317-sms-site.vercel.app"]
-if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
-    _cors_origins.append("http://localhost:3000")
-
+# Allow the Next.js frontends to talk to us (origins come from config/env).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    # Anchored to Vercel preview deploys of exactly this project — an unanchored
-    # ".*" would also match attacker-registered 317-sms-site-*.vercel.app origins.
-    allow_origin_regex=r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$",
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -171,11 +82,34 @@ app.add_middleware(
 )
 
 
-@app.get("/ping")
+# ── Probes ────────────────────────────────────────────────────────────────────
+# /ping and /healthz answer as soon as the process is up (liveness). /readyz
+# also checks the database, so Kubernetes only routes traffic once the app can
+# actually serve it. /health is the authenticated check the SMS site uses to
+# confirm its token is accepted.
+
+
+@app.get("/ping", include_in_schema=False)
 def ping():
-    """Unauthenticated liveness probe — polled by the frontend's API-down
-    overlay. Returns nothing sensitive, just proof the API is reachable."""
+    """Unauthenticated liveness probe — polled by the frontends' API-down overlay."""
     return {"ok": True}
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"ok": True}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz(response: Response):
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:  # pragma: no cover - exercised against a real DB
+        logger.warning(f"readiness check failed: {e}")
+        response.status_code = 503
+        return {"ok": False, "database": "unreachable"}
+    return {"ok": True, "database": "ok"}
 
 
 @app.get("/health")
@@ -207,3 +141,4 @@ app.include_router(nco_appraisals.router)
 app.include_router(nco_comments.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
+app.include_router(reference.router)

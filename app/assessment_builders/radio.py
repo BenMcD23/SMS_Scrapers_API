@@ -1,15 +1,20 @@
-import io
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.colors import HexColor, black
-from pypdf import PdfReader, PdfWriter
 import base64
-from reportlab.lib.utils import ImageReader
-from PIL import Image as PILImage
+import io
+import logging
 from datetime import datetime
-from pathlib import Path
+
+from PIL import Image as PILImage
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.colors import HexColor, black
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
+
+from core.paths import ASSESSMENT_SHEETS_DIR
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-TEMPLATE_PATH = str(Path(__file__).parent.parent / "assessment_sheets" / "Blue_Radio.pdf")
+TEMPLATE_PATH = str(ASSESSMENT_SHEETS_DIR / "Blue_Radio.pdf")
 PAGE_W, PAGE_H = 595.28, 841.89
 
 # X position of the "Initial" column
@@ -173,7 +178,7 @@ def _build_overlay(
                 mask="auto",
             )
         except Exception as e:
-            print(f"[PDF] Signature image error: {e}")
+            logger.error(f"Signature image error: {e}")
             c.setFont("Helvetica", 10)
             c.drawString(346, 67, "[signature error]")
     elif sig:

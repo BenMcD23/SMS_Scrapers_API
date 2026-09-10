@@ -2,8 +2,14 @@
 from datetime import datetime, timedelta
 
 from core.leaving import (
-    FLAGGED, WAITING, START_LEAVING, LAPSE_DAYS, RESPONSE_DAYS,
-    gap_days, is_lapsed, leaving_status,
+    FLAGGED,
+    LAPSE_DAYS,
+    RESPONSE_DAYS,
+    START_LEAVING,
+    WAITING,
+    gap_days,
+    is_lapsed,
+    leaving_status,
 )
 
 PARADE = datetime(2026, 8, 6)

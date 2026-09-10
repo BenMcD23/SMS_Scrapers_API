@@ -9,8 +9,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pdf2image import convert_from_bytes
 
-from core.config import GITHUB_REPO, GITHUB_BRANCH, PROGRAMME_APPS_SCRIPT_URL
-from core.github import github_headers, commit_files_to_github
+from core.config import GITHUB_BRANCH, GITHUB_REPO, PROGRAMME_APPS_SCRIPT_URL
+from core.github import commit_files_to_github, github_headers
 from core.security import require_staff
 
 router = APIRouter()

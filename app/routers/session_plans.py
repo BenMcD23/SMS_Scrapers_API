@@ -18,20 +18,22 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from database.models import (
-    SESSION_PLAN_SECTIONS, SessionPlan, SessionPlanAttachment,
-    SessionPlanComment, User,
-)
-
 from core.config import SESSION_PLAN_ALERT_EMAIL
 from core.db import get_db, get_or_create_user
 from core.emailer import (
     send_email,
-    session_plan_submitted_html,
     session_plan_amendments_html,
     session_plan_approved_html,
+    session_plan_submitted_html,
 )
 from core.security import get_user_role, require_staff, require_staff_or_nco
+from database.models import (
+    SESSION_PLAN_SECTIONS,
+    SessionPlan,
+    SessionPlanAttachment,
+    SessionPlanComment,
+    User,
+)
 from form_generators.session_plan_pdf import build_session_plan_pdf
 
 router = APIRouter()

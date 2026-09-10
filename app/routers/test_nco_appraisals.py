@@ -12,10 +12,10 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.database import Base
-from database.models import Cadet, CadetAttendance, NcoAppraisal
 import routers.nco_appraisals as na
 from core.db import get_or_create_user
+from database.database import Base
+from database.models import Cadet, CadetAttendance, NcoAppraisal
 
 
 def _idinfo(name: str) -> dict:

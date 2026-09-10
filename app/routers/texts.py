@@ -6,7 +6,7 @@ import csv
 import io
 import json
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import Literal
 
 import openpyxl
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -16,20 +16,23 @@ from sqlalchemy import extract
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from database.database import SessionLocal
-from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
-
 from core.db import get_db
 from core.security import require_staff
+from database.database import SessionLocal
+from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
 from texts.ai import PRIMARY_MODEL, format_uniform, generate_message, model_label
 from texts.matching import Roster
 from texts.phone import clean_mobile, normalise_phone
 from texts.programme_parser import parse_programme
 from texts.recipients import (
-    Recipient, extra_recipient, list_recipients, parse_key, person_recipient,
+    Recipient,
+    extra_recipient,
+    list_recipients,
+    parse_key,
+    person_recipient,
 )
-from texts.settings import clean_invite_url, community_invite_url, get_text_settings
 from texts.sender import send_parade_message, send_test_sms
+from texts.settings import clean_invite_url, community_invite_url, get_text_settings
 
 router = APIRouter(prefix="/texts")
 
@@ -341,11 +344,11 @@ def list_messages(
 
 
 class MessagePatch(BaseModel):
-    uniform: Optional[str] = None
-    dnco: Optional[str] = None
-    main_message: Optional[str] = None
-    c_flight_message: Optional[str] = None
-    status: Optional[str] = None  # "draft" | "ready"
+    uniform: str | None = None
+    dnco: str | None = None
+    main_message: str | None = None
+    c_flight_message: str | None = None
+    status: str | None = None  # "draft" | "ready"
 
 
 @router.patch("/messages/{message_id}")
@@ -379,7 +382,7 @@ class RegenerateBody(BaseModel):
 @router.post("/messages/{message_id}/regenerate")
 async def regenerate_message(
     message_id: int,
-    data: Optional[RegenerateBody] = None,
+    data: RegenerateBody | None = None,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -447,7 +450,7 @@ def test_send_message(
 # ─── Settings ─────────────────────────────────────────────────────────────────
 
 class TextSettingsPatch(BaseModel):
-    whatsapp_invite_url: Optional[str] = None
+    whatsapp_invite_url: str | None = None
 
 
 @router.get("/settings")
@@ -495,9 +498,9 @@ class RecipientBody(BaseModel):
 
 
 class RecipientPatch(BaseModel):
-    rank: Optional[str] = None
-    surname: Optional[str] = None
-    phone_number: Optional[str] = None
+    rank: str | None = None
+    surname: str | None = None
+    phone_number: str | None = None
 
 
 def _recipient_json(r: Recipient) -> dict:
