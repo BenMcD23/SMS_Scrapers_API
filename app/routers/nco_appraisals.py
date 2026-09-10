@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session, selectinload
 from core.attendance import ABSENT, PRESENT, count_states
 from core.db import get_db, get_or_create_user
 from core.emailer import EMAIL_RE, nco_appraisal_email_html, send_email
+from core.http import content_disposition
 from core.llm import PRIMARY_MODEL, model_label
 from core.paths import TEMPLATES_DIR
 from core.ranks import is_nco_rank, nco_team
@@ -630,7 +631,7 @@ def download_appraisal(
     return StreamingResponse(
         buffer,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition("attachment", filename)},
     )
 
 

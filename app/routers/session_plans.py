@@ -26,6 +26,7 @@ from core.emailer import (
     session_plan_approved_html,
     session_plan_submitted_html,
 )
+from core.http import content_disposition
 from core.security import get_user_role, require_staff, require_staff_or_nco
 from database.models import (
     SESSION_PLAN_SECTIONS,
@@ -306,7 +307,7 @@ async def export_plan_pdf(
     return StreamingResponse(
         io.BytesIO(pdf),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+        headers={"Content-Disposition": content_disposition("attachment", f"{safe_name}.pdf")},
     )
 
 
@@ -586,7 +587,7 @@ async def get_attachment(
     return StreamingResponse(
         io.BytesIO(att.data),
         media_type=att.mime_type,
-        headers={"Content-Disposition": f'inline; filename="{att.filename}"'},
+        headers={"Content-Disposition": content_disposition("inline", att.filename, "attachment")},
     )
 
 
