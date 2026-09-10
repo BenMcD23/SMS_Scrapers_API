@@ -100,8 +100,8 @@ SIZING_FIELDS: dict[str, tuple[str, ...]] = {
     "Working Blue Female": ("chest", "collar"),
     "Jumper": ("chest",),
     "Trousers": ("waist", "leg", "seat"),
-    "Slacks": ("waist", "leg"),
-    "Skirts": ("waist", "leg"),
+    "Slacks": ("waist", "leg", "hips"),
+    "Skirts": ("waist", "leg", "hips"),
 }
 
 # C Flight initial kitting: both gendered variants are added and the QM
