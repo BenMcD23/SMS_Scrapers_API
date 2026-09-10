@@ -7,6 +7,7 @@ job_id so any number can run simultaneously (subject to the RAM guard).
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import traceback
@@ -19,20 +20,24 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from core.config import SCHEDULER_ENABLED
+from core.db import get_db, get_or_create_user
+from core.scheduler import scheduler
+from core.security import require_owner, require_staff
 from database.database import SessionLocal, engine
-from database.models import ScraperRun, ScraperSchedule, StatsSnapshot, AttachmentCheckQual
-
+from database.models import AttachmentCheckQual, ScraperRun, ScraperSchedule, StatsSnapshot
+from routers.cadets import invalidate_cadet_caches
+from routers.stats import compute_stats
 from scripts.scraper_calls import (
-    info_and_quali_scraper, cadet_event_scraper, medical_scraper,
-    upload_qualifications_scraper, absence_scraper,
+    absence_scraper,
+    cadet_event_scraper,
+    info_and_quali_scraper,
+    medical_scraper,
+    upload_qualifications_scraper,
 )
 from scripts.staff_scraper import staff_scraper
 
-from core.db import get_db, get_or_create_user
-from core.scheduler import scheduler
-from core.security import require_staff, require_owner
-from routers.cadets import invalidate_cadet_caches
-from routers.stats import compute_stats
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -100,10 +105,9 @@ def start_watchdog(state: dict, label: str, on_timeout, is_current=None) -> None
             if idle >= SCRAPER_IDLE_TIMEOUT_SECONDS or now - started >= SCRAPER_MAX_RUNTIME_SECONDS:
                 # Killing a run is otherwise invisible outside the SSE log, which
                 # makes "Scraper timed out." impossible to chase in the API logs.
-                print(
-                    f"[scraper watchdog] {label} killed after {now - started:.0f}s "
+                logger.warning(
+                    f"watchdog killed {label} after {now - started:.0f}s "
                     f"({idle:.0f}s since its last log line)",
-                    flush=True,
                 )
                 on_timeout()
                 return
@@ -174,7 +178,7 @@ def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: l
                 state["messages"].append(json.dumps({"type": "status", "value": "done"}))
                 success = True
     except Exception as e:
-        print(f"[upload-job {job_id}] CRASH:\n" + traceback.format_exc(), flush=True)
+        logger.error(f"upload job {job_id} crashed:\n" + traceback.format_exc())
         with state["lock"]:
             state["messages"].append(json.dumps({"type": "error", "value": f"Crash: {type(e).__name__}: {str(e)}"}))
     finally:
@@ -190,7 +194,7 @@ def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: l
             run_db.commit()
             run_db.close()
         except Exception as rec_err:
-            print(f"[scraper run record] failed: {rec_err}", flush=True)
+            logger.error(f"could not record scraper run: {rec_err}")
         db.close()
         state["running"] = False
         state["context"] = None
@@ -213,7 +217,7 @@ def _save_stats_snapshot(db: Session):
         db.add(snapshot)
         db.commit()
     except Exception as snap_err:
-        print(f"[stats snapshot] failed: {snap_err}")
+        logger.error(f"stats snapshot failed: {snap_err}")
 
 
 def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: str):
@@ -276,7 +280,7 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
                 run_db.commit()
                 run_db.close()
             except Exception as rec_err:
-                print(f"[scraper run record] failed: {rec_err}")
+                logger.error(f"could not record scraper run: {rec_err}")
         db.close()
         state["running"] = False
         state["started_by"] = None
@@ -594,10 +598,10 @@ def cleanup_old_run_logs():
         )
         db.commit()
         if deleted:
-            print(f"[cleanup_old_run_logs] purged {deleted} run record(s) older than {RUN_LOG_RETENTION_DAYS} days", flush=True)
+            logger.info(f"run-log cleanup purged {deleted} run record(s) older than {RUN_LOG_RETENTION_DAYS} days")
     except Exception as e:
         db.rollback()
-        print(f"[cleanup_old_run_logs] failed: {e}", flush=True)
+        logger.error(f"run-log cleanup failed: {e}")
     finally:
         db.close()
 
@@ -615,14 +619,14 @@ def _run_scheduled_scraper(name: str):
         if not sched or not sched.enabled or not sched.user:
             return
         if not sched.user.bader_credentials:
-            print(f"[scheduled scraper] {name}: {sched.user.email} has no Bader credentials saved, skipping")
+            logger.warning(f"scheduled {name}: {sched.user.email} has no Bader credentials saved, skipping")
             return
 
         user_id, email = sched.user.id, sched.user.email
         state = named_scraper_states[name]
         with state["lock"]:
             if state["running"]:
-                print(f"[scheduled scraper] {name}: already running, skipping")
+                logger.warning(f"scheduled {name}: already running, skipping")
                 return
             state["running"] = True
             state["started_by"] = f"schedule ({email})"
@@ -640,6 +644,13 @@ def _run_scheduled_scraper(name: str):
 
 
 def register_schedule_jobs():
+    """Sync the scheduler's scraper jobs with the ScraperSchedule rows.
+
+    Idempotent: called at startup, after every schedule edit, and on a timer
+    (core/jobs.py). A replica without the scheduler has nothing to sync.
+    """
+    if not SCHEDULER_ENABLED:
+        return
     db = SessionLocal()
     try:
         schedules = {s.scraper_id: s for s in db.query(ScraperSchedule).all()}

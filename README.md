@@ -258,13 +258,13 @@ Set the database URL to point at the local Docker db and run migrations:
 
 ```bash
 export DATABASE_URL="postgresql+psycopg2://sms_user:<POSTGRES_PASSWORD>@localhost:5432/317_SMS"
-alembic -c database/alembic.ini upgrade head
+alembic -c app/database/alembic.ini upgrade head
 ```
 
 Start the dev server:
 
 ```bash
-PYTHONPATH=app:. uvicorn api:app --reload
+PYTHONPATH=app uvicorn api:app --reload
 ```
 
 The API will be available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
@@ -296,7 +296,7 @@ Real auth needs a Google login plus a Workspace service account, which can't be
 automated (e.g. for Playwright UI sweeps). A flag-gated bypass sidesteps it:
 
 ```bash
-DEV_FAKE_AUTH=1 PYTHONPATH=app:. uvicorn api:app --reload
+DEV_FAKE_AUTH=1 PYTHONPATH=app uvicorn api:app --reload
 ```
 
 When `DEV_FAKE_AUTH=1`, `verify_token` accepts `Bearer dev-fake-token` as the
@@ -357,13 +357,13 @@ Drops the whole schema and rebuilds it empty.
 ```bash
 # Local (Docker db + host venv)
 docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-PYTHONPATH=app:. python -c "from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)"
-alembic -c database/alembic.ini stamp head
+PYTHONPATH=app python -c "from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)"
+alembic -c app/database/alembic.ini stamp head
 
 # Dev Docker stack (run the rebuild inside a one-off api container, then boot)
 docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
 docker compose -p sms-dev run --rm --entrypoint sh api -c \
-  "PYTHONPATH=app:. python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)' && alembic -c database/alembic.ini stamp head"
+  "PYTHONPATH=app python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)' && alembic -c app/database/alembic.ini stamp head"
 docker compose -p sms-dev restart api
 ```
 
@@ -384,7 +384,7 @@ out-of-band.
 2. Autogenerate a migration:
 
    ```bash
-   alembic -c database/alembic.ini revision --autogenerate -m "<description>"
+   alembic -c app/database/alembic.ini revision --autogenerate -m "<description>"
    ```
 
 3. **Review the generated file** in `database/alembic/versions/` — autogenerate
@@ -392,7 +392,7 @@ out-of-band.
 4. Apply it locally to test:
 
    ```bash
-   alembic -c database/alembic.ini upgrade head
+   alembic -c app/database/alembic.ini upgrade head
    ```
 
 5. Commit the model change **and** the migration file together. Deploying the
@@ -401,9 +401,9 @@ out-of-band.
 ### Useful commands
 
 ```bash
-alembic -c database/alembic.ini current     # what revision the DB is on
-alembic -c database/alembic.ini history      # full migration graph
-alembic -c database/alembic.ini downgrade -1 # roll back one revision
+alembic -c app/database/alembic.ini current     # what revision the DB is on
+alembic -c app/database/alembic.ini history      # full migration graph
+alembic -c app/database/alembic.ini downgrade -1 # roll back one revision
 ```
 
 ### Fixing "relation already exists" / DuplicateTable
@@ -414,7 +414,7 @@ still points at an older revision (e.g. a table was created out-of-band by an ol
 migration is already applied, without re-running its `CREATE TABLE`:
 
 ```bash
-alembic -c database/alembic.ini stamp head
+alembic -c app/database/alembic.ini stamp head
 ```
 
 Only use `stamp` when the existing table actually matches the migration. If it

@@ -5,9 +5,9 @@ back into records, which is where the old per-cell logic lived.
 """
 from datetime import datetime
 
-from scripts.quali_scraper import _parse_qual_rows
-from scripts.alergies import _parse_allergy_rows, _parse_dietary_rows
 from scripts.absence_scraper import _parse_absence_rows
+from scripts.alergies import _parse_allergy_rows, _parse_dietary_rows
+from scripts.quali_scraper import _parse_qual_rows
 
 
 def qual_row(cells, class_name="", attachment=False):

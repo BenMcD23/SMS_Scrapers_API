@@ -33,5 +33,8 @@ jobs:
         # requirements-dev.txt pulls in requirements.txt itself.
         run: pip install -r requirements-dev.txt
 
+      - name: Lint
+        run: ruff check app
+
       - name: Run tests
         run: pytest

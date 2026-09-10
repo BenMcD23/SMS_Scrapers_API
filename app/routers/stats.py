@@ -1,18 +1,17 @@
 """Squadron stats — live numbers plus historical snapshots."""
 
-from datetime import datetime, timedelta, date as date_type
+from collections import defaultdict
+from datetime import date as date_type
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-
-from collections import defaultdict
-
-from database.models import Cadet, CadetQualification, StatsSnapshot
 
 from core import cache
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, LEVELED, held_level
 from core.security import require_staff, require_staff_or_nco
+from database.models import Cadet, CadetQualification, StatsSnapshot
 
 router = APIRouter()
 

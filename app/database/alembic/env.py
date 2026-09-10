@@ -1,15 +1,14 @@
-import sys
 import os
+import sys
 from logging.config import fileConfig
 
-from sqlalchemy import pool
 from alembic import context
 
 # Point to app/ so `from database.x import y` works
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-from database.models import Base
 from database.database import engine
+from database.models import Base
 
 config = context.config
 

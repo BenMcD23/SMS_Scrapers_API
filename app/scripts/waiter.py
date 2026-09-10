@@ -1,4 +1,5 @@
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 
 def wait_for_aspx_load(page: Page, timeout: int = 30000):

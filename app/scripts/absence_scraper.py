@@ -1,5 +1,6 @@
-from playwright.sync_api import Page
 from datetime import datetime
+
+from playwright.sync_api import Page
 
 from scripts.tables import ensure_all_rows_shown, read_rows, wait_for_full_draw
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader

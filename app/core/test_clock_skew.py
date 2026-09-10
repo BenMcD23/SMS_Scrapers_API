@@ -10,9 +10,10 @@ everything working after a manual refresh a few seconds later.
 import time
 
 import pytest
-from google.auth import crypt, jwt as google_jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from google.auth import crypt
+from google.auth import jwt as google_jwt
 
 from core.security import CLOCK_SKEW_S
 

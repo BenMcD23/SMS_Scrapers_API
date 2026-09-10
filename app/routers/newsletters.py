@@ -7,13 +7,13 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from core.config import (
-    NEWSLETTER_REPO,
+    GITHUB_BRANCH,
+    GITHUB_REPO,
     NEWSLETTER_BRANCH,
     NEWSLETTER_JSON_PATH,
-    GITHUB_REPO,
-    GITHUB_BRANCH,
+    NEWSLETTER_REPO,
 )
-from core.github import github_headers, commit_files_to_github
+from core.github import commit_files_to_github, github_headers
 from core.security import require_staff
 
 router = APIRouter()

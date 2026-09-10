@@ -3,12 +3,15 @@
 Cadet and staff profiles use the same tab dropdown and the same #attendance
 DataTable, so both scrapers share this.
 """
+import logging
 from datetime import datetime
 
 from playwright.sync_api import Page
 
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_attendance_row(cells):
@@ -76,8 +79,8 @@ def get_attendance(page: Page):
         info_el = page.query_selector("#attendance_info")
         expected = _expected_total(info_el.inner_text() if info_el else None)
         if expected is not None and len(records) < expected:
-            print(f"Warning: attendance read {len(records)} of {expected} rows — table may not have finished rendering")
+            logger.warning(f"Warning: attendance read {len(records)} of {expected} rows — table may not have finished rendering")
 
     except Exception as e:
-        print(f"Warning: Could not extract attendance: {e}")
+        logger.error(f"Warning: Could not extract attendance: {e}")
     return records

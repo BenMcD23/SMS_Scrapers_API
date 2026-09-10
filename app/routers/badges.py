@@ -6,15 +6,19 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from database.models import (
-    Cadet, BadgeGridConfig, BadgeGridCell, BadgeItem, BadgeOrder, BadgeOrderItem,
-    BadgeOrderListEntry,
-)
-
-from core.db import get_db
-from core.emailer import send_email, ready_to_collect_email_html
-from core.security import require_staff
 from core import stock_events
+from core.db import get_db
+from core.emailer import ready_to_collect_email_html, send_email
+from core.security import require_staff
+from database.models import (
+    BadgeGridCell,
+    BadgeGridConfig,
+    BadgeItem,
+    BadgeOrder,
+    BadgeOrderItem,
+    BadgeOrderListEntry,
+    Cadet,
+)
 
 router = APIRouter()
 

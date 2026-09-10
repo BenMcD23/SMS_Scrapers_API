@@ -16,7 +16,7 @@ import re
 from playwright.sync_api import Page
 
 from scripts.tables import ensure_all_rows_shown, fire_postback, postback_target
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
 
 CADETS_URL = "https://sms.bader.mod.uk/cadets/default.aspx"
 STAFF_URL = "https://sms.bader.mod.uk/staff/default.aspx"

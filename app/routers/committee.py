@@ -16,21 +16,20 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from database.models import CommitteeRequest, CommitteeRequestReceipt, User
-
 from core.config import COMMITTEE_EMAIL, OC_EMAIL
+from core.crypto import decrypt_password
 from core.db import get_db, get_or_create_user
 from core.emailer import (
-    send_email,
-    committee_request_submitted_html,
-    committee_request_to_committee_html,
     committee_request_decision_html,
     committee_request_payment_html,
+    committee_request_submitted_html,
+    committee_request_to_committee_html,
     committee_request_withdrawn_html,
+    send_email,
 )
 from core.security import is_oc, require_oc, require_staff
+from database.models import CommitteeRequest, CommitteeRequestReceipt, User
 from form_generators.committee_request_pdf import build_committee_request_pdf
-from utils.crypto import decrypt_password
 
 router = APIRouter()
 

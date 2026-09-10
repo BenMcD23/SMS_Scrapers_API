@@ -1,24 +1,23 @@
 """Assessment sheets — creation, overview, PDFs, and uploading to Bader."""
 
+import io
 from collections import defaultdict
 from datetime import datetime
-import io
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, defer, joinedload
 
-from database.models import AssessmentSheet, Cadet, User
-
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
+from assessment_builders.moi import generate_moi_pdf
+from assessment_builders.moi import process_assessment_data as process_moi_data
+from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
-from assessment_builders.moi import generate_moi_pdf, process_assessment_data as process_moi_data
-from assessment_builders.pdf_utils import merge_pdfs, decode_pdf_data_url
-
 from core.db import get_db, get_or_create_user
-from core.emailer import send_email, assessment_email_html
+from core.emailer import assessment_email_html, send_email
 from core.security import require_staff, require_staff_or_nco
+from database.models import AssessmentSheet, Cadet, User
 from routers import scrapers
 
 router = APIRouter()

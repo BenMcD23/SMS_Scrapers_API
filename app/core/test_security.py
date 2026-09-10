@@ -4,7 +4,7 @@ without DEV_FAKE_AUTH=1."""
 import pytest
 from fastapi import HTTPException
 
-from core.security import verify_token, get_user_role
+from core.security import get_user_role, verify_token
 
 
 def test_dev_token_roles(monkeypatch):

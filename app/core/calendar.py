@@ -11,14 +11,20 @@ already booked, so every function reports success as a return value and the
 caller records what happened.
 """
 
+import logging
 from datetime import datetime, timedelta
 
 from googleapiclient.discovery import build as google_build
 
 from core.config import (
-    IMPERSONATE_EMAIL, NCO_HOLIDAY_CALENDAR_ID, SA_EMAIL, SA_PRIVATE_KEY,
+    IMPERSONATE_EMAIL,
+    NCO_HOLIDAY_CALENDAR_ID,
+    SA_EMAIL,
+    SA_PRIVATE_KEY,
 )
 from core.security import _service_account_creds
+
+logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
@@ -56,7 +62,7 @@ def create_holiday_event(name: str, email: str, date_from: datetime,
     """Push a booked holiday to the calendar. Returns the Google event id, or
     None if the calendar isn't configured or the call failed."""
     if not calendar_configured():
-        print("[calendar] skipped: NCO_HOLIDAY_CALENDAR_ID or service account not configured")
+        logger.warning("skipped: NCO_HOLIDAY_CALENDAR_ID or service account not configured")
         return None
     try:
         event = _service().events().insert(
@@ -65,7 +71,7 @@ def create_holiday_event(name: str, email: str, date_from: datetime,
         ).execute()
         return event.get("id")
     except Exception as e:
-        print(f"[calendar] create failed for {email}: {e}")
+        logger.error(f"create failed for {email}: {e}")
         return None
 
 
@@ -84,7 +90,7 @@ def update_holiday_event(event_id: str, name: str, email: str, date_from: dateti
         ).execute()
         return True
     except Exception as e:
-        print(f"[calendar] update failed for {event_id}: {e}")
+        logger.error(f"update failed for {event_id}: {e}")
         return False
 
 
@@ -101,5 +107,5 @@ def delete_holiday_event(event_id: str) -> bool:
     except Exception as e:
         if getattr(getattr(e, "resp", None), "status", None) in (404, 410):
             return True
-        print(f"[calendar] delete failed for {event_id}: {e}")
+        logger.error(f"delete failed for {event_id}: {e}")
         return False

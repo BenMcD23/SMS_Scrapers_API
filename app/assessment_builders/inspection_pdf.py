@@ -4,15 +4,19 @@ on the diagram and listed alongside, echoing the paper Flight Inspection Sheet.
 """
 
 import io
+import logging
 import textwrap
-from pathlib import Path
 
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.colors import HexColor, black, white
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
 
-FIGURE_PATH = Path(__file__).resolve().parent.parent / "assets" / "inspection-figure.png"
+from core.paths import ASSETS_DIR
+
+logger = logging.getLogger(__name__)
+
+FIGURE_PATH = ASSETS_DIR / "inspection-figure.png"
 
 # Uniform regions as fractions of the figure height (top, height) — mirrors the
 # clickable bands on the inspection marking page so markers land in the right place.
@@ -86,7 +90,7 @@ def _draw_cadet(c, cadet, ox, oy_top):
             width=FIG_W, height=FIG_H, preserveAspectRatio=True, mask="auto",
         )
     except Exception as e:  # pragma: no cover - asset should always be present
-        print(f"[inspection_pdf] figure draw failed: {e}")
+        logger.error(f"figure draw failed: {e}")
 
     # Collect comments with a running number, grouped by region for placement.
     comments = [("fault", f) for f in cadet["faults"]] + [

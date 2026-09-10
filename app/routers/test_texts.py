@@ -12,14 +12,13 @@ import time
 from datetime import datetime
 
 import pytest
+from fastapi import UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import routers.texts as tx
 from database.database import Base
 from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
-from fastapi import UploadFile
-import routers.texts as tx
-
 
 STAFF = {"sub": "staff", "email": "staff@317atc.co.uk"}
 

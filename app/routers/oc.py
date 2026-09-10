@@ -9,15 +9,18 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from database.models import (
-    Cadet, CadetAttendance, CadetQualification, Staff, StaffAttendance,
-)
-
 from core import cache
-from core.attendance import attendance_state, PRESENT, AUTHORISED, ABSENT
+from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.db import get_db
 from core.qualifications import quali_expiry_cutoff
 from core.security import require_oc
+from database.models import (
+    Cadet,
+    CadetAttendance,
+    CadetQualification,
+    Staff,
+    StaffAttendance,
+)
 from routers.stats import STATS_CACHE_KEY, STATS_CACHE_TTL, compute_stats
 
 router = APIRouter()

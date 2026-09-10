@@ -13,7 +13,6 @@ from playwright.sync_api import Page
 
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader
 
-
 # ASP.NET renders a LinkButton as
 # href="javascript:__doPostBack('ctl00$...$lvCadets$ctrl0$lbFamilyName','')".
 _POSTBACK_RE = re.compile(

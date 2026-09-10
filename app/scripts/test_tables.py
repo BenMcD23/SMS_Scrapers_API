@@ -4,8 +4,8 @@ These cover the postback fast path — the browser fallback in profiles.py is wh
 handles anything these get wrong, but a silently wrong postback target would
 open the wrong person's profile, so the extraction is pinned here.
 """
-from scripts.tables import entries_total, postback_target
 from scripts.profiles import link_index
+from scripts.tables import entries_total, postback_target
 
 
 def test_reads_the_target_and_argument_off_a_linkbutton():

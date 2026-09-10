@@ -13,14 +13,13 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import Cadet, CadetAttendance, CadetLeavingProcess
-
-from core.attendance import attendance_state, ABSENT
+from core.attendance import ABSENT, attendance_state
 from core.config import LEAVING_PROCESS_REPLY_TO
 from core.db import get_db
 from core.emailer import EMAIL_RE, leaving_process_email_html, send_email
 from core.leaving import gap_days, is_lapsed, leaving_status
 from core.security import require_staff
+from database.models import Cadet, CadetAttendance, CadetLeavingProcess
 
 router = APIRouter()
 

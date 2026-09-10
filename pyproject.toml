@@ -1,0 +1,29 @@
+[project]
+name = "sms-scrapers-api"
+version = "0.0.0"  # release versions live in VERSION; this is not a published package
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["app"]
+extend-exclude = ["app/database/alembic/versions"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: import order, B: bugbear (likely bugs),
+# UP: modernise syntax for the target Python.
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = [
+  # Long lines are common in the scrapers' selectors and SQL; wrapping them
+  # hurts more than it helps. The formatter is not enforced either.
+  "E501",
+  # `x == True` is SQLAlchemy's boolean filter idiom, not a comparison bug.
+  "E712",
+  # Raising inside `except` without `from` is fine for HTTPException translation.
+  "B904",
+  # Function calls in argument defaults are FastAPI's Depends()/Header() pattern.
+  "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "routers", "scripts", "texts", "database", "assessment_builders", "form_generators"]

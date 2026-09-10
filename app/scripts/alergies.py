@@ -1,9 +1,13 @@
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 import json
+import logging
+
+from playwright.sync_api import Page
 
 from scripts.profiles import CADETS, open_profile
 from scripts.tables import read_rows
 from scripts.waiter import wait_for_aspx_load, wait_for_preloader
+
+logger = logging.getLogger(__name__)
 
 
 ALLERGIES_TABLE = "#ctl00_ctl00_cphBaseBody_cphBody_allergies_gvAllergies"
@@ -54,7 +58,7 @@ def get_cadet_medical(page: Page, cadetNames, numberOfCadets, scraper_messages, 
     fast_opens = 0
 
     def dbg(msg, stream=False):
-        print(f"[MEDICAL DEBUG] {msg}")
+        logger.info(f"{msg}")
         if stream and scraper_messages is not None and scraper_lock is not None:
             with scraper_lock:
                 scraper_messages.append(json.dumps({"type": "info", "value": f"[debug] {msg}"}))

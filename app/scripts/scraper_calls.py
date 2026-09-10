@@ -1,28 +1,41 @@
-from scripts.scraper_utils import init_scraper, push_to_google_apps_script, login, match_email
-from scripts.quali_scraper import *
-from scripts.event_scraper import *
-from scripts.alergies import *
-from scripts.add_quali import add_qualification_with_attachment
-from scripts.absence_scraper import get_absences
-from assessment_builders.pdf_utils import merge_pdfs
-
 import json
+import logging
+import os
+import tempfile
 from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from database.models import (
-    Cadet, CadetQualification, AllEvent, CadetEvent, CadetMedical, CadetDietary,
-    AttachmentCheckQual, BanNotification, CadetAbsence, CadetAttendance, CadetTheoryProgress,
-    AssessmentSheet, StoresOrder, StoresOrderItem, StoresItemIssuance,
-    BadgeOrder, BadgeOrderItem,
-)
-from google_admin_api.get_all_users import get_workspace_users
-from core.emailer import send_email, ban_alert_email_html
+from assessment_builders.pdf_utils import merge_pdfs
 from core.config import BAN_ALERT_EMAIL
-
-import os
-import tempfile
+from core.directory import get_workspace_users
+from core.emailer import ban_alert_email_html, send_email
+from core.qualifications import BLUE, YES, bader_quals_for
+from database.models import (
+    AllEvent,
+    AssessmentSheet,
+    AttachmentCheckQual,
+    BadgeOrder,
+    BadgeOrderItem,
+    BanNotification,
+    Cadet,
+    CadetAbsence,
+    CadetAttendance,
+    CadetDietary,
+    CadetEvent,
+    CadetMedical,
+    CadetQualification,
+    CadetTheoryProgress,
+    StoresItemIssuance,
+    StoresOrder,
+    StoresOrderItem,
+)
+from scripts.absence_scraper import get_absences
+from scripts.add_quali import add_qualification_with_attachment
+from scripts.alergies import get_cadet_medical
+from scripts.event_scraper import get_317_event_info, get_event_attendees, get_event_names_and_317_links
+from scripts.quali_scraper import get_cadet_info_and_qualifications, get_cadet_names
+from scripts.scraper_utils import init_scraper, login, match_email, push_to_google_apps_script
 
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
@@ -72,11 +85,15 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         if on_context_ready:
             on_context_ready(context)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
@@ -120,13 +137,13 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         for entry in cadet_data:
             cin = entry.get("cin")
             if not cin:
-                print(f"[Scraper] Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found")
+                logger.warning(f"Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found")
                 skipped += 1
                 continue
             try:
                 cin = int(cin)
             except (ValueError, TypeError):
-                print(f"[Scraper] Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer")
+                logger.warning(f"Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer")
                 skipped += 1
                 continue
 
@@ -276,18 +293,24 @@ def absence_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
         if on_context_ready:
             on_context_ready(context)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Fetching absences..."}))
 
         absences = get_absences(page)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
 
         # {(FIRST_UPPER, LAST_UPPER): cin} for name matching (reuses match_email tiers).
         cin_map = {
@@ -400,10 +423,14 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
         if on_context_ready:
             on_context_ready(context)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         event_names, number_of_events, event_links_317 = get_event_names_and_317_links(page)
 
         with scraper_lock:
@@ -445,7 +472,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 if not cin:
                     initial = first[0] if first else ""
                     cin = next(
-                        (v for (f, l), v in cadet_lookup.items() if l == last and f.startswith(initial)),
+                        (v for (first, surname), v in cadet_lookup.items() if surname == last and first.startswith(initial)),
                         None,
                     )
                 if cin:
@@ -577,10 +604,14 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
         if on_context_ready:
             on_context_ready(context)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         login(page, credentials, scraper_messages=scraper_messages, scraper_lock=scraper_lock)
 
-        if stop_event.is_set(): return
+        if stop_event.is_set():
+
+            return
         cadetNames, numberOfCadets, profile_links = get_cadet_names(page)
 
         with scraper_lock:
@@ -676,11 +707,12 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
 
 
 
+
+logger = logging.getLogger(__name__)
+
 # Map assessment_type → (badge_key, level) in core.qualifications, the single
 # source of truth for the Bader dropdown name + option id. bader_quals_for()
 # resolves these to BaderQual(name, bader_id); we upload using the first entry.
-from core.qualifications import bader_quals_for, BLUE, YES
-
 ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
     "Blue Leadership": ("leadership", BLUE),
     "Blue Radio":      ("radio", BLUE),
@@ -704,7 +736,7 @@ def upload_qualifications_scraper(
     context = None
 
     def log(msg: str, level: str = "info"):
-        print(f"[upload-to-bader] {level}: {msg}", flush=True)
+        logger.info(f"{level}: {msg}")
         payload = json.dumps({"type": level, "value": msg})
         if scraper_messages is not None and scraper_lock is not None:
             with scraper_lock:

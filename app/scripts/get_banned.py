@@ -1,13 +1,17 @@
-import requests
 import json
+import logging
 import os
+
+import requests
+
+logger = logging.getLogger(__name__)
 
 APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbxCZG-4ZudtBRL-TGRIsxD2QDWBa1rxZuZVZ_1L8YwI3Yb2hlkkuZNnof0y-Y7f_2S9/exec"
 NOTIFIED_FILE = "notifications.json"
 
 def load_notified():
     if os.path.exists(NOTIFIED_FILE):
-        with open(NOTIFIED_FILE, "r") as f:
+        with open(NOTIFIED_FILE) as f:
             return set(json.load(f))
     return set()
 
@@ -26,8 +30,8 @@ def get_event_bans(event_data):
             # Parse the JSON response
             banned_names = response.json()
         else:
-            print(f"Error: Received status code {response.status_code}")
-    except:
+            logger.error(f"Error: Received status code {response.status_code}")
+    except Exception:
         # didnt work, so just leave it for now
         return 404
 
