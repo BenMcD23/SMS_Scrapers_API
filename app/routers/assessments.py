@@ -278,6 +278,7 @@ def assessments_overview(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
+    viewer = get_or_create_user(db, idinfo)
     sheets = (
         db.query(AssessmentSheet)
         .join(Cadet, AssessmentSheet.cadet_id == Cadet.cin)
@@ -318,6 +319,8 @@ def assessments_overview(
                     "total_score":     s.fields.get("total_score")   if s.fields else None,
                     "exercise_name":   s.fields.get("exercise_name") if s.fields else None,
                     "assessor_name":   s.fields.get("assessor_name") if s.fields else None,
+                    # Only the assessor (or staff) may edit — see edit_assessment.
+                    "is_mine":         s.assessor_id == viewer.id,
                 }
                 for s in type_sheets
             ]
