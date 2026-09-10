@@ -75,9 +75,9 @@ class InspectionSubmit(BaseModel):
     date: str
     marks: list[InspectionMark]
     # Uniform the sheet was marked against — one per parade date, since the whole
-    # night is inspected in the same order of dress. Defaults to No.1 Dress for
+    # night is inspected in the same order of dress. Defaults to Blues for
     # callers that predate the MTP option.
-    uniform: str = "no1"
+    uniform: str = "blues"
 
 
 # Penalty applied to a flight's total for every AWOL cadet (marked absent with
@@ -417,7 +417,7 @@ async def list_sheets(
             "submitted_at": s.submitted_at.isoformat() if s.submitted_at else None,
             "cadet_count":  len(marks),
             "present":      present,
-            "uniform":      (s.data or {}).get("uniform", "no1"),
+            "uniform":      (s.data or {}).get("uniform", "blues"),
         })
     return out
 
@@ -437,7 +437,7 @@ async def sheet_detail(
         "date":         sheet.date.date().isoformat(),
         "submitted_by": sheet.submitted_by,
         "submitted_at": sheet.submitted_at.isoformat() if sheet.submitted_at else None,
-        "uniform":      (sheet.data or {}).get("uniform", "no1"),
+        "uniform":      (sheet.data or {}).get("uniform", "blues"),
         "flights":      _grouped_sheet(db, sheet),
     }
 
@@ -472,7 +472,7 @@ async def sheet_pdf(
         raise HTTPException(status_code=404, detail="Inspection not found")
 
     date_str = sheet.date.date().isoformat()
-    uniform = (sheet.data or {}).get("uniform", "no1")
+    uniform = (sheet.data or {}).get("uniform", "blues")
     pdf = build_inspection_pdf(date_str, _grouped_sheet(db, sheet), uniform)
     return StreamingResponse(
         io.BytesIO(pdf),

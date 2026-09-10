@@ -14,18 +14,29 @@ from reportlab.lib.utils import ImageReader
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 FIGURE_PATHS = {
-    "no1": ASSETS_DIR / "inspection-figure.png",
-    "mtp": ASSETS_DIR / "inspection-figure-mtp.png",
+    "blues": ASSETS_DIR / "inspection-figure.png",
+    "mtp":   ASSETS_DIR / "inspection-figure-mtp.png",
 }
 
 # Uniform regions as fractions of the figure height (top, height) — mirrors the
-# clickable bands on the inspection marking page so markers land in the right place.
-REGIONS = {
-    "Beret / Headdress":    (0.00, 0.14),
-    "Hair / Face":          (0.14, 0.06),
-    "Jumper / Shirt / Tie": (0.20, 0.27),
-    "Trousers":             (0.47, 0.42),
-    "Shoes":                (0.89, 0.11),
+# clickable bands on the inspection marking page so markers land in the right
+# place. Positions are the same for either uniform; only the shirt/footwear
+# labels differ.
+REGIONS_BY_UNIFORM = {
+    "blues": {
+        "Beret / Headdress":    (0.00, 0.14),
+        "Hair / Face":          (0.14, 0.06),
+        "Jumper / Shirt / Tie": (0.20, 0.27),
+        "Trousers":             (0.47, 0.42),
+        "Shoes":                (0.89, 0.11),
+    },
+    "mtp": {
+        "Beret / Headdress":      (0.00, 0.14),
+        "Hair / Face":            (0.14, 0.06),
+        "Undershirt / Overshirt": (0.20, 0.27),
+        "Trousers":               (0.47, 0.42),
+        "Boots":                  (0.89, 0.11),
+    },
 }
 
 FAULT_COLOR = HexColor("#dc2626")
@@ -62,7 +73,7 @@ def _draw_marker(c, x, y, n, color):
     c.drawCentredString(x, y - 2.3, str(n))
 
 
-def _draw_cadet(c, cadet, ox, oy_top, figure_path):
+def _draw_cadet(c, cadet, ox, oy_top, figure_path, regions):
     """One cadet cell with its top-left corner at (ox, oy_top)."""
     # Header: name with the score / status sitting just after it.
     c.setFillColor(black)
@@ -102,7 +113,7 @@ def _draw_cadet(c, cadet, ox, oy_top, figure_path):
 
     # Markers on the diagram, spread down each region band.
     for region, items in by_region.items():
-        top, height = REGIONS.get(region, (0.45, 0.1))
+        top, height = regions.get(region, (0.45, 0.1))
         band_top_y = fig_bottom + FIG_H * (1 - top)
         band_h = FIG_H * height
         for j, (n, kind, _com) in enumerate(items):
@@ -241,13 +252,14 @@ def _draw_list_page_header(c, flight: str, date_str: str):
     c.line(MARGIN, PAGE_H - 54, PAGE_W - MARGIN, PAGE_H - 54)
 
 
-def build_inspection_pdf(date_str: str, flights: list[dict], uniform: str = "no1") -> bytes:
+def build_inspection_pdf(date_str: str, flights: list[dict], uniform: str = "blues") -> bytes:
     """`flights` is the grouped sheet detail: a list of
     {flight, present, awol, penalty, total, average, cadets:[...]} in display
     order. Present cadets are drawn as full cells; AWOL and excused-absent cadets
     are listed compactly beneath them. `uniform` selects which figure a sheet's
-    inspection was marked against (e.g. No.1 Dress vs MTP combats)."""
-    figure_path = FIGURE_PATHS.get(uniform, FIGURE_PATHS["no1"])
+    inspection was marked against (e.g. Blues vs MTP combats)."""
+    figure_path = FIGURE_PATHS.get(uniform, FIGURE_PATHS["blues"])
+    regions = REGIONS_BY_UNIFORM.get(uniform, REGIONS_BY_UNIFORM["blues"])
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
 
@@ -270,7 +282,7 @@ def build_inspection_pdf(date_str: str, flights: list[dict], uniform: str = "no1
                 row = i // COLS
                 ox = MARGIN + col * CELL_W
                 oy_top = PAGE_H - TITLE_H - row * CELL_H
-                _draw_cadet(c, cadet, ox, oy_top, figure_path)
+                _draw_cadet(c, cadet, ox, oy_top, figure_path, regions)
 
             # On the last present page, append the AWOL / absent roll-call — below
             # the grid if it fits, otherwise on a fresh page.
