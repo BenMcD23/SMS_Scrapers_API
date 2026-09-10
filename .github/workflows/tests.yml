@@ -15,7 +15,7 @@ jobs:
       # in-memory SQLite DB or a stub. These only exist because importing the app
       # reads them at module level.
       #
-      # A throwaway Fernet key: utils/crypto.py refuses to import without one,
+      # A throwaway Fernet key: core/crypto.py refuses to import without one,
       # and nothing here encrypts anything worth protecting.
       ENCRYPTION_KEY: "5-6ZgtVJdBRAJfCPIhLdyUFqGgb0ChZfBGB4fL0jTOo="
       DATABASE_URL: "sqlite:///:memory:"
