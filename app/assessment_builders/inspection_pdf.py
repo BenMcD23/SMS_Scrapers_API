@@ -12,7 +12,11 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.colors import HexColor, black, white
 from reportlab.lib.utils import ImageReader
 
-FIGURE_PATH = Path(__file__).resolve().parent.parent / "assets" / "inspection-figure.png"
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+FIGURE_PATHS = {
+    "no1": ASSETS_DIR / "inspection-figure.png",
+    "mtp": ASSETS_DIR / "inspection-figure-mtp.png",
+}
 
 # Uniform regions as fractions of the figure height (top, height) — mirrors the
 # clickable bands on the inspection marking page so markers land in the right place.
@@ -58,7 +62,7 @@ def _draw_marker(c, x, y, n, color):
     c.drawCentredString(x, y - 2.3, str(n))
 
 
-def _draw_cadet(c, cadet, ox, oy_top):
+def _draw_cadet(c, cadet, ox, oy_top, figure_path):
     """One cadet cell with its top-left corner at (ox, oy_top)."""
     # Header: name with the score / status sitting just after it.
     c.setFillColor(black)
@@ -82,7 +86,7 @@ def _draw_cadet(c, cadet, ox, oy_top):
     fig_bottom = oy_top - 20 - FIG_H
     try:
         c.drawImage(
-            ImageReader(str(FIGURE_PATH)), fig_x, fig_bottom,
+            ImageReader(str(figure_path)), fig_x, fig_bottom,
             width=FIG_W, height=FIG_H, preserveAspectRatio=True, mask="auto",
         )
     except Exception as e:  # pragma: no cover - asset should always be present
@@ -237,11 +241,13 @@ def _draw_list_page_header(c, flight: str, date_str: str):
     c.line(MARGIN, PAGE_H - 54, PAGE_W - MARGIN, PAGE_H - 54)
 
 
-def build_inspection_pdf(date_str: str, flights: list[dict]) -> bytes:
+def build_inspection_pdf(date_str: str, flights: list[dict], uniform: str = "no1") -> bytes:
     """`flights` is the grouped sheet detail: a list of
     {flight, present, awol, penalty, total, average, cadets:[...]} in display
     order. Present cadets are drawn as full cells; AWOL and excused-absent cadets
-    are listed compactly beneath them."""
+    are listed compactly beneath them. `uniform` selects which figure a sheet's
+    inspection was marked against (e.g. No.1 Dress vs MTP combats)."""
+    figure_path = FIGURE_PATHS.get(uniform, FIGURE_PATHS["no1"])
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
 
@@ -264,7 +270,7 @@ def build_inspection_pdf(date_str: str, flights: list[dict]) -> bytes:
                 row = i // COLS
                 ox = MARGIN + col * CELL_W
                 oy_top = PAGE_H - TITLE_H - row * CELL_H
-                _draw_cadet(c, cadet, ox, oy_top)
+                _draw_cadet(c, cadet, ox, oy_top, figure_path)
 
             # On the last present page, append the AWOL / absent roll-call — below
             # the grid if it fits, otherwise on a fresh page.
