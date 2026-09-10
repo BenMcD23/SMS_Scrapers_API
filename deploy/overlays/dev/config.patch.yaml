@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sms-api-config
+data:
+  LOG_LEVEL: "DEBUG"
+  SITE_BASE_URL: "https://sms-dev.317atc.co.uk"
+  CORS_ORIGINS: "https://sms-dev.317atc.co.uk,https://317-sms-site.vercel.app"

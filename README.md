@@ -8,7 +8,14 @@ FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, an
 
 ## Environments
 
-Two stacks run on the server simultaneously:
+**Kubernetes (current target).** The API is deployed to the three-site cluster
+by Argo CD from `deploy/`; a `VERSION` bump on `main` releases to prod and any
+push to `development` deploys to dev. Everything about that — cluster setup,
+secrets, data migration, the cutover checklist — is in
+[`deploy/README.md`](deploy/README.md).
+
+**Legacy single server.** Until cutover, two compose stacks still run on the
+old server:
 
 - **prod** — `main` branch, port 8000, exposed via `tailscale-prod`
 - **dev**  — `development` branch, port 8001, exposed via `tailscale-dev`
@@ -232,6 +239,8 @@ docker compose -p sms-dev  logs -f api
 ```
 
 ## Local dev (without Docker)
+
+Lint and tests: `ruff check app` and `pytest` (see below).
 
 You still need a running PostgreSQL instance. Use the local override to publish the port to `localhost:5432`:
 

@@ -41,8 +41,17 @@ jobs:
           fi
 
   # This push was made with GITHUB_TOKEN, which deliberately doesn't trigger
-  # further workflows, so deploy has to be called rather than waited for.
-  deploy:
+  # further workflows, so the builds have to be called rather than waited for.
+  release:
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: development
+    secrets: inherit
+
+  # Legacy compose server — drop this job with deploy.yml at cutover.
+  deploy-legacy:
     needs: merge
     if: needs.merge.outputs.merged == 'true'
     uses: ./.github/workflows/deploy.yml
