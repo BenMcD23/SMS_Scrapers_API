@@ -16,7 +16,7 @@ from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
 from core.db import get_db, get_or_create_user
 from core.emailer import assessment_email_html, send_email
-from core.security import require_staff, require_staff_or_nco
+from core.security import get_user_role, require_staff, require_staff_or_nco
 from database.models import AssessmentSheet, Cadet, User
 from routers import scrapers
 
@@ -197,6 +197,18 @@ def _validate_moi(data: dict) -> None:
             raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
 
 
+def _is_assessor_or_staff(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
+    return sheet.assessor_id == user.id or get_user_role(idinfo.get("email", "")) == "staff"
+
+
+def _can_edit(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
+    return (
+        sheet.assessment_type in EDITABLE_TYPES
+        and not sheet.uploaded
+        and _is_assessor_or_staff(sheet, user, idinfo)
+    )
+
+
 # ── Creating assessments ────────────────────────────────────────────────────
 
 @router.post("/assessments/leadership/add-assessment")
@@ -353,11 +365,13 @@ def get_assessment_detail(
     fields.pop("cadet_signature", None)
 
     cadet = sheet.cadet
+    user = get_or_create_user(db, idinfo)
     return {
         "id":              sheet.id,
         "assessment_type": sheet.assessment_type,
         "uploaded":        sheet.uploaded,
-        "editable":        sheet.assessment_type in EDITABLE_TYPES and not sheet.uploaded,
+        "is_mine":         sheet.assessor_id == user.id,
+        "editable":        _can_edit(sheet, user, idinfo),
         "cadet": {
             "cin":        cadet.cin,
             "first_name": cadet.first_name,
@@ -386,6 +400,12 @@ def edit_assessment(
             status_code=409,
             detail="This assessment is marked complete and cannot be edited. Reopen it first.",
         )
+
+    # The sheet carries the original assessor's name and signature, so an edit
+    # is made in their name: only they (or staff) may change the marks.
+    user = get_or_create_user(db, idinfo)
+    if not _is_assessor_or_staff(sheet, user, idinfo):
+        raise HTTPException(status_code=403, detail="Only the assessor who created this sheet can edit it")
 
     atype = sheet.assessment_type
     if atype not in EDITABLE_TYPES:
