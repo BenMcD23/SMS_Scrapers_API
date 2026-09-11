@@ -259,6 +259,58 @@ def _split_comments(comments: list[dict]) -> tuple[list[dict], list[dict]]:
     return faults, positives
 
 
+def _timeline_entry(date: str, uniform: str, mark: dict) -> dict:
+    """One night of a cadet's history: what they scored and every note left on
+    them, faults and positives split out."""
+    faults, positives = _split_comments(mark.get("comments") or [])
+    return {
+        "date":      date,
+        "uniform":   uniform,
+        "score":     mark.get("score"),
+        "absent":    bool(mark.get("absent")),
+        "awol":      bool(mark.get("awol")),
+        "faults":    faults,
+        "positives": positives,
+    }
+
+
+def summarise_timeline(timeline: list[dict]) -> dict:
+    """Averages over one cadet's timeline.
+
+    The attendance denominator is the nights this cadet's flight was inspected —
+    i.e. the sheets they appear on — not every parade night. Overall is the
+    attendance fraction x the score average, the squadron's own metric."""
+    present = [e for e in timeline if not e["absent"]]
+    scored = [e["score"] for e in present if e["score"] is not None]
+    attendance = (len(present) / len(timeline)) if timeline else 0.0
+    score_avg = (sum(scored) / len(scored)) if scored else 0.0
+    return {
+        "present_count":  len(present),
+        "attendance_avg": round(attendance * 100, 2),
+        "score_avg":      round(score_avg, 2),
+        "overall":        round(attendance * score_avg, 2),
+    }
+
+
+def cadet_timeline(db: Session, cin: int) -> list[dict]:
+    """One cadet's inspection history, oldest first — every sheet they were
+    recorded on. Kept separate from the history table above so the cadet portal
+    can serve a cadet their own history without reading anyone else's."""
+    sheets = db.query(InspectionSheet).order_by(InspectionSheet.date).all()
+    out = []
+    for s in sheets:
+        data = s.data or {}
+        mark = next(
+            (m for m in data.get("marks", []) if m.get("cin") == cin), None
+        )
+        if mark is None:
+            continue  # cadet wasn't recorded on this sheet
+        out.append(
+            _timeline_entry(s.date.date().isoformat(), data.get("uniform", "blues"), mark)
+        )
+    return out
+
+
 @router.get("/inspections/history")
 async def inspection_history(
     db: Session = Depends(get_db),
@@ -284,46 +336,30 @@ async def inspection_history(
     timelines: dict[int, list[dict]] = {c.cin: [] for c in cadets}
     for s in sheets:
         d = s.date.date().isoformat()
+        data = s.data or {}
+        uniform = data.get("uniform", "blues")
         by_cin = {
             m.get("cin"): m
-            for m in (s.data or {}).get("marks", [])
+            for m in data.get("marks", [])
             if m.get("cin") is not None
         }
         for c in cadets:
             m = by_cin.get(c.cin)
             if m is None:
                 continue  # cadet wasn't recorded on this sheet
-            faults, positives = _split_comments(m.get("comments") or [])
-            timelines[c.cin].append({
-                "date":      d,
-                "score":     m.get("score"),
-                "absent":    bool(m.get("absent")),
-                "awol":      bool(m.get("awol")),
-                "faults":    faults,
-                "positives": positives,
-            })
+            timelines[c.cin].append(_timeline_entry(d, uniform, m))
 
     rows = []
     for c in cadets:
         tl = timelines[c.cin]
-        present = [e for e in tl if not e["absent"]]
-        scored = [e["score"] for e in present if e["score"] is not None]
-        # Denominator is the nights this cadet's flight was inspected — i.e. the
-        # sheets they appear on — not every parade night.
-        attendance = (len(present) / len(tl)) if tl else 0.0
-        score_avg = (sum(scored) / len(scored)) if scored else 0.0
-        overall = attendance * score_avg
         rows.append({
-            "cin":            c.cin,
-            "first_name":     c.first_name,
-            "last_name":      c.last_name,
-            "rank":           c.rank,
-            "flight":         c.flight,
-            "timeline":       tl,
-            "present_count":  len(present),
-            "attendance_avg": round(attendance * 100, 2),
-            "score_avg":      round(score_avg, 2),
-            "overall":        round(overall, 2),
+            "cin":        c.cin,
+            "first_name": c.first_name,
+            "last_name":  c.last_name,
+            "rank":       c.rank,
+            "flight":     c.flight,
+            "timeline":   tl,
+            **summarise_timeline(tl),
         })
 
     att_ranks = _competition_ranks([r["attendance_avg"] for r in rows])
