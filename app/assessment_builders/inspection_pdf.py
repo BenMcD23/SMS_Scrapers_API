@@ -5,7 +5,6 @@ on the diagram and listed alongside, echoing the paper Flight Inspection Sheet.
 
 import io
 import logging
-from pathlib import Path
 import textwrap
 
 from reportlab.lib.colors import HexColor, black, white
@@ -17,7 +16,6 @@ from core.paths import ASSETS_DIR
 
 logger = logging.getLogger(__name__)
 
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 FIGURE_PATHS = {
     "blues": ASSETS_DIR / "inspection-figure.png",
     "mtp":   ASSETS_DIR / "inspection-figure-mtp.png",
