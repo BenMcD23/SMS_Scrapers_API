@@ -1,15 +1,20 @@
-import io
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.colors import HexColor, black
-from pypdf import PdfReader, PdfWriter
 import base64
-from reportlab.lib.utils import ImageReader
-from PIL import Image as PILImage
+import io
+import logging
 from datetime import datetime
-from pathlib import Path
+
+from PIL import Image as PILImage
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.colors import HexColor, black
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
+
+from core.paths import ASSESSMENT_SHEETS_DIR
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-TEMPLATE_PATH = str(Path(__file__).parent.parent / "assessment_sheets" / "MOI.pdf")
+TEMPLATE_PATH = str(ASSESSMENT_SHEETS_DIR / "MOI.pdf")
 PAGE_W, PAGE_H = 842.00, 596.00  # landscape A4
 CIRCLE_RADIUS = 8
 
@@ -146,7 +151,7 @@ def _draw_signature(c, sig: str, box: tuple):
                         width=draw_w, height=draw_h,
                         preserveAspectRatio=False, mask="auto")
         except Exception as e:
-            print(f"[PDF] Signature error: {e}")
+            logger.error(f"Signature error: {e}")
             c.setFont("Helvetica", 9)
             c.drawString(x1, y1 + 5, "[signature error]")
     elif sig:
@@ -270,7 +275,7 @@ def generate_moi_pdf(data: dict) -> bytes:
         writer.write(out)
         return out.getvalue()
     except Exception as e:
-        print(f"[PDF] Template merge error: {e}")
+        logger.error(f"Template merge error: {e}")
         return p1_overlay
 
 

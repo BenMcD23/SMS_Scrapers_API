@@ -1,18 +1,21 @@
 """Outbound email via the Gmail API, plus the HTML templates we send."""
 
 import base64
-import html
-import os
-import re
+import email.encoders
+import email.mime.base
 import email.mime.multipart
 import email.mime.text
-import email.mime.base
-import email.encoders
+import html
+import logging
+import os
+import re
 
 from googleapiclient.discovery import build as google_build
 
-from core.config import SA_EMAIL, SA_PRIVATE_KEY, NOREPLY_EMAIL, SITE_BASE_URL
+from core.config import NOREPLY_EMAIL, SA_EMAIL, SA_PRIVATE_KEY, SITE_BASE_URL
 from core.security import _service_account_creds
+
+logger = logging.getLogger(__name__)
 
 # Enough to catch a typo before we hand an address to Gmail. Deliberately not
 # pydantic's EmailStr — that pulls in email-validator for a couple of fields,
@@ -40,10 +43,10 @@ def send_email(to: str, subject: str, html_body: str, attachment: bytes | None =
     template used with it must drop the standard "do not reply" FOOTER.
     """
     if os.getenv("EMAIL_DISABLED", "").lower() in ("1", "true", "yes"):
-        print(f"[send_email] skipped (EMAIL_DISABLED): would send to {to}: {subject}")
+        logger.warning(f"skipped (EMAIL_DISABLED): would send to {to}: {subject}")
         return
     if not SA_EMAIL or not SA_PRIVATE_KEY or not NOREPLY_EMAIL:
-        print("[send_email] skipped: service account or noreply email not configured")
+        logger.warning("skipped: service account or noreply email not configured")
         return
 
     # Normalise the legacy single attachment into the list form.
@@ -74,9 +77,9 @@ def send_email(to: str, subject: str, html_body: str, attachment: bytes | None =
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         gmail.users().messages().send(userId="me", body={"raw": raw}).execute()
-        print(f"[send_email] sent to {to}: {subject}")
+        logger.info(f"sent to {to}: {subject}")
     except Exception as e:
-        print(f"[send_email] error sending to {to}: {e}")
+        logger.error(f"error sending to {to}: {e}")
 
 
 def assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, date: str, assessor_name: str) -> str:

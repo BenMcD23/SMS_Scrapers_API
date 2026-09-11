@@ -1,8 +1,18 @@
 from sqlalchemy import (
-    Column, Integer, BigInteger, Float, Boolean, Text, DateTime,
-    ForeignKey, LargeBinary, JSON, UniqueConstraint,
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy.orm import backref, relationship
+
 from database.database import Base
 
 
@@ -409,7 +419,7 @@ class UserProfile(Base):
     assessor_name = Column(Text, nullable=True)
 
     # Bank details for committee-request reimbursements. Fernet-encrypted at rest
-    # (see utils.crypto), like Bader_Credentials — never returned outside the
+    # (see core.crypto), like Bader_Credentials — never returned outside the
     # owner's own /settings/user-profile response or the payment email body.
     bank_account_name   = Column(Text, nullable=True)
     bank_sort_code      = Column(Text, nullable=True)

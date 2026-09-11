@@ -1,14 +1,14 @@
-from docx import Document
-from docx.shared import Inches
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-import os
 import io
+import logging
+import os
 from datetime import datetime, timedelta
 
+from docx import Document
+from docx.shared import Inches
 
-from database.database import SessionLocal
-from database.models import Event317
+from core.paths import SIGNATURES_DIR, TEMPLATES_DIR
+
+logger = logging.getLogger(__name__)
 
 
 contacts = {
@@ -53,12 +53,12 @@ contacts = {
 # Path helpers
 def get_template_path(filename):
     return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "word_templates", filename)
+        str(TEMPLATES_DIR / filename)
     )
 
 def get_signature_path(last_name):
     return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "signatures", f"{last_name}.png")
+        str(SIGNATURES_DIR / f"{last_name}.png")
     )
 
 
@@ -93,9 +93,9 @@ def replace_placeholder_with_signature(paragraph, placeholder, name, email, sign
         # Add the signature image
         run.add_picture(signature_path, width=width)
     except Exception as e:
-        print(f"Could not add signature image for {name}: {e}")
+        logger.error(f"Could not add signature image for {name}: {e}")
         return
-    
+
     # Add a line break before the text
     paragraph.add_run().add_break()
 

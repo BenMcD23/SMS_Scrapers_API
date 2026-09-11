@@ -1,24 +1,23 @@
 """Assessment sheets — creation, overview, PDFs, and uploading to Bader."""
 
+import io
 from collections import defaultdict
 from datetime import datetime
-import io
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, defer, joinedload
 
-from database.models import AssessmentSheet, Cadet, User
-
 from assessment_builders.leadership import generate_leadership_pdf, process_assessment_data
+from assessment_builders.moi import generate_moi_pdf
+from assessment_builders.moi import process_assessment_data as process_moi_data
+from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
-from assessment_builders.moi import generate_moi_pdf, process_assessment_data as process_moi_data
-from assessment_builders.pdf_utils import merge_pdfs, decode_pdf_data_url
-
 from core.db import get_db, get_or_create_user
-from core.emailer import send_email, assessment_email_html
-from core.security import require_staff, require_staff_or_nco
+from core.emailer import assessment_email_html, send_email
+from core.security import get_user_role, require_staff, require_staff_or_nco
+from database.models import AssessmentSheet, Cadet, User
 from routers import scrapers
 
 router = APIRouter()
@@ -198,6 +197,18 @@ def _validate_moi(data: dict) -> None:
             raise HTTPException(status_code=400, detail=f"Section comment '{key}' must be {limit} characters or fewer.")
 
 
+def _is_assessor_or_staff(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
+    return sheet.assessor_id == user.id or get_user_role(idinfo.get("email", "")) == "staff"
+
+
+def _can_edit(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
+    return (
+        sheet.assessment_type in EDITABLE_TYPES
+        and not sheet.uploaded
+        and _is_assessor_or_staff(sheet, user, idinfo)
+    )
+
+
 # ── Creating assessments ────────────────────────────────────────────────────
 
 @router.post("/assessments/leadership/add-assessment")
@@ -267,6 +278,7 @@ def assessments_overview(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
+    viewer = get_or_create_user(db, idinfo)
     sheets = (
         db.query(AssessmentSheet)
         .join(Cadet, AssessmentSheet.cadet_id == Cadet.cin)
@@ -307,6 +319,8 @@ def assessments_overview(
                     "total_score":     s.fields.get("total_score")   if s.fields else None,
                     "exercise_name":   s.fields.get("exercise_name") if s.fields else None,
                     "assessor_name":   s.fields.get("assessor_name") if s.fields else None,
+                    # Only the assessor (or staff) may edit — see edit_assessment.
+                    "is_mine":         s.assessor_id == viewer.id,
                 }
                 for s in type_sheets
             ]
@@ -354,11 +368,13 @@ def get_assessment_detail(
     fields.pop("cadet_signature", None)
 
     cadet = sheet.cadet
+    user = get_or_create_user(db, idinfo)
     return {
         "id":              sheet.id,
         "assessment_type": sheet.assessment_type,
         "uploaded":        sheet.uploaded,
-        "editable":        sheet.assessment_type in EDITABLE_TYPES and not sheet.uploaded,
+        "is_mine":         sheet.assessor_id == user.id,
+        "editable":        _can_edit(sheet, user, idinfo),
         "cadet": {
             "cin":        cadet.cin,
             "first_name": cadet.first_name,
@@ -387,6 +403,12 @@ def edit_assessment(
             status_code=409,
             detail="This assessment is marked complete and cannot be edited. Reopen it first.",
         )
+
+    # The sheet carries the original assessor's name and signature, so an edit
+    # is made in their name: only they (or staff) may change the marks.
+    user = get_or_create_user(db, idinfo)
+    if not _is_assessor_or_staff(sheet, user, idinfo):
+        raise HTTPException(status_code=403, detail="Only the assessor who created this sheet can edit it")
 
     atype = sheet.assessment_type
     if atype not in EDITABLE_TYPES:

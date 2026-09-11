@@ -11,15 +11,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
-from database.models import Cadet, Staff, StaffAttendance, User, StoresOrder, StoresOrderItem, StoresItemIssuance, BadgeOrder, BadgeOrderItem
-
-from core.db import get_db, get_current_cadet, get_current_user
-from core.security import require_staff, get_roles_for_emails
+from core.db import get_current_cadet, get_current_user, get_db
+from core.security import get_roles_for_emails, require_staff
+from database.models import (
+    BadgeOrder,
+    BadgeOrderItem,
+    Cadet,
+    Staff,
+    StaffAttendance,
+    StoresItemIssuance,
+    StoresOrder,
+    StoresOrderItem,
+    User,
+)
+from routers.badges import _parse_timestamp, badge_order_to_dict
+from routers.cadets import attendance_to_dict
+from routers.stores import issuance_to_dict, order_to_dict
 from texts.phone import clean_mobile
 from texts.settings import community_invite_url
-from routers.cadets import attendance_to_dict
-from routers.stores import order_to_dict, issuance_to_dict
-from routers.badges import badge_order_to_dict, _parse_timestamp
 
 router = APIRouter()
 

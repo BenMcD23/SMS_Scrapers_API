@@ -12,10 +12,10 @@ from pydantic import BaseModel
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from database.models import Cadet, CadetAbsence, InspectionSheet
 from core.config import GROQ_API_KEY
 from core.db import get_db
 from core.security import require_staff_or_snco
+from database.models import Cadet, CadetAbsence, InspectionSheet
 
 router = APIRouter()
 
@@ -329,7 +329,7 @@ async def inspection_history(
     att_ranks = _competition_ranks([r["attendance_avg"] for r in rows])
     score_ranks = _competition_ranks([r["score_avg"] for r in rows])
     overall_ranks = _competition_ranks([r["overall"] for r in rows])
-    for r, ar, sr, orank in zip(rows, att_ranks, score_ranks, overall_ranks):
+    for r, ar, sr, orank in zip(rows, att_ranks, score_ranks, overall_ranks, strict=True):
         r["attendance_rank"] = ar
         r["score_rank"] = sr
         r["overall_rank"] = orank
@@ -465,6 +465,7 @@ async def sheet_pdf(
 ):
     """Export a whole inspection (all flights) as a printable PDF."""
     from fastapi.responses import StreamingResponse
+
     from assessment_builders.inspection_pdf import build_inspection_pdf
 
     sheet = db.query(InspectionSheet).filter(InspectionSheet.id == sheet_id).first()

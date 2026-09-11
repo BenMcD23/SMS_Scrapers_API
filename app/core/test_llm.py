@@ -12,7 +12,11 @@ import pytest
 
 import core.llm as llm
 from core.llm import (
-    GROQ_MODEL, MODEL_LABELS, MODEL_PREFERENCE, NVIDIA_MODEL, PRIMARY_MODEL,
+    GROQ_MODEL,
+    MODEL_LABELS,
+    MODEL_PREFERENCE,
+    NVIDIA_MODEL,
+    PRIMARY_MODEL,
     model_label,
 )
 

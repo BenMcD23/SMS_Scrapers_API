@@ -14,11 +14,14 @@ the quota fallback and the model labels are defined once. Callers get back the
 model id that actually answered, so the UI can say a fallback was used.
 """
 
+import logging
 import time
 
 import httpx
 
 from core.config import GEMINI_API_KEY, GROQ_API_KEY, NVIDIA_API_KEY
+
+logger = logging.getLogger(__name__)
 
 GEMINI_MODELS = ["gemini-3.5-flash", "gemini-2.5-flash"]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -128,7 +131,7 @@ def generate(prompt: str, system_prompt: str, *, temperature: float = 0.6,
                                max_tokens, groq_max_tokens), model
         except Exception as e:
             last_error = e
-            print(f"[llm.generate] {model} failed, trying next: {e}")
+            logger.error(f"{model} failed, trying next: {e}")
     raise RuntimeError(f"every model in the chain failed; last error: {last_error}")
 
 

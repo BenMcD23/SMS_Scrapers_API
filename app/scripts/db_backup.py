@@ -10,6 +10,7 @@ straight over the live database with psql.
 """
 
 import gzip
+import logging
 import os
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ from core.config import (
     DB_BACKUP_RETENTION,
 )
 from core.security import _service_account_creds
+
+logger = logging.getLogger(__name__)
 
 # Drive scope to list, upload, download and delete backups (and see manually
 # uploaded copies) on the Shared Drive. The service account uses its OWN
@@ -120,9 +123,9 @@ def _enforce_retention(drive) -> None:
     for f in backups[DB_BACKUP_RETENTION:]:
         try:
             drive.files().delete(fileId=f["id"], supportsAllDrives=True).execute()
-            print(f"[db_backup] pruned old backup {f['name']}", flush=True)
+            logger.info(f"pruned old backup {f['name']}")
         except Exception as e:  # pragma: no cover - best effort
-            print(f"[db_backup] failed to prune {f['name']}: {e}", flush=True)
+            logger.error(f"failed to prune {f['name']}: {e}")
 
 
 # ── dump / upload ─────────────────────────────────────────────────────────────
@@ -163,7 +166,7 @@ def run_db_backup() -> dict:
     tmp_dir = tempfile.mkdtemp(prefix="dbbackup_")
     local_path = os.path.join(tmp_dir, name)
     try:
-        print(f"[db_backup] dumping database -> {name}", flush=True)
+        logger.info(f"dumping database -> {name}")
         _dump_to_file(local_path)
 
         drive = _drive_client()
@@ -174,7 +177,7 @@ def run_db_backup() -> dict:
             fields="id, name, size, createdTime",
             supportsAllDrives=True,
         ).execute()
-        print(f"[db_backup] uploaded {name} ({created.get('size')} bytes)", flush=True)
+        logger.info(f"uploaded {name} ({created.get('size')} bytes)")
 
         _enforce_retention(drive)
         return {
@@ -213,9 +216,9 @@ def restore_backup(file_id: str) -> dict:
     path = os.path.join(tmp_dir, "backup.sql.gz")
     try:
         name = _download_backup(file_id, path)
-        print(f"[db_backup] restoring {name} over live database", flush=True)
+        logger.info(f"restoring {name} over live database")
         _run_psql(_pg_url(), path)
-        print(f"[db_backup] restore of {name} complete", flush=True)
+        logger.info(f"restore of {name} complete")
         return {"restored": name}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

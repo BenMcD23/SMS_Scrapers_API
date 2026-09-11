@@ -4,18 +4,18 @@ The per-person register lives on the cadet/staff detail endpoints; this is the
 other direction, pivoting the same two tables by night instead of by person.
 """
 
-from datetime import date as Date, datetime, timedelta
+from datetime import date as Date
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import Cadet, CadetAttendance, Staff, StaffAttendance
-
-from core.attendance import attendance_state, PRESENT, AUTHORISED, ABSENT
+from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.db import get_db
 from core.ranks import is_nco_rank, nco_team
 from core.security import require_staff
+from database.models import Cadet, CadetAttendance, Staff, StaffAttendance
 
 router = APIRouter()
 
