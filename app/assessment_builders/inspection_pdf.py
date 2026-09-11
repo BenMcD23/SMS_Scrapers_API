@@ -5,6 +5,7 @@ on the diagram and listed alongside, echoing the paper Flight Inspection Sheet.
 
 import io
 import logging
+from pathlib import Path
 import textwrap
 
 from reportlab.lib.colors import HexColor, black, white
