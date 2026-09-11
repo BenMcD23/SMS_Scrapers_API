@@ -1,12 +1,16 @@
-import time
-import os
 import json
+import logging
+import os
+import time
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.profiles import CADETS, link_index
 from scripts.tables import ensure_all_rows_shown, wait_for_full_draw
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+
+logger = logging.getLogger(__name__)
 
 
 def add_qualification_with_attachment(
@@ -41,7 +45,7 @@ def add_qualification_with_attachment(
     """
 
     def log(msg, level="info"):
-        print(f"[add_quali] {level}: {msg}", flush=True)
+        logger.info(f"{level}: {msg}")
         payload = json.dumps({"type": level, "value": msg})
         if scraper_messages is not None and scraper_lock is not None:
             with scraper_lock:

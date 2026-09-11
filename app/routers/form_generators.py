@@ -12,16 +12,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.db import get_db, get_or_create_user
+from core.paths import TEMPLATES_DIR
 from core.security import require_staff
 
 router = APIRouter()
 
-TEMPLATE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "word_templates", "F1771e_template.docx"
-)
-HTD_TEMPLATE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "word_templates", "7101_HTD.docx"
-)
+TEMPLATE_PATH = str(TEMPLATES_DIR / "F1771e_template.docx")
+HTD_TEMPLATE_PATH = str(TEMPLATES_DIR / "7101_HTD.docx")
 
 
 class MileageRequest(BaseModel):
@@ -179,7 +176,7 @@ def generate_htd(
     data: HTDRequest,
     idinfo: dict = Depends(require_staff),
 ):
-    from form_generators.HTD_gen import fill_form, compute_htd
+    from form_generators.HTD_gen import compute_htd, fill_form
 
     calc = compute_htd(data.distance, [m.journeys for m in data.months])
 

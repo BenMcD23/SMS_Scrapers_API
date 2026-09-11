@@ -6,7 +6,7 @@ prompt and the parsing of what comes back.
 
 import re
 
-from core.llm import PRIMARY_MODEL, model_label, generate  # noqa: F401  (re-exported for the texts router)
+from core.llm import PRIMARY_MODEL, generate, model_label  # noqa: F401  (re-exported for the texts router)
 
 SYSTEM_PROMPT = "You generate structured squadron SMS messages."
 

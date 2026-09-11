@@ -1,5 +1,6 @@
 """GOV.UK Notify sending plus the Tue/Thu scheduled send job."""
 
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -7,12 +8,13 @@ from notifications_python_client.notifications import NotificationsAPIClient
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from core.config import ALERT_EMAIL, NOTIFY_API_KEY, NOTIFY_SMS_TEMPLATE_ID
+from core.emailer import FOOTER, send_email
 from database.database import SessionLocal
 from database.models import ParadeNightMessage
 from texts.recipients import list_recipients
 
-from core.config import NOTIFY_API_KEY, NOTIFY_SMS_TEMPLATE_ID, ALERT_EMAIL
-from core.emailer import send_email, FOOTER
+logger = logging.getLogger(__name__)
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -126,6 +128,6 @@ def scheduled_send_job() -> None:
                          "not sent — the message exists but was not marked as ready")
         # already "sent" — nothing to do
     except Exception as e:
-        print(f"[scheduled_send_job] error: {e}")
+        logger.error(f"scheduled parade-night send failed: {e}")
     finally:
         db.close()

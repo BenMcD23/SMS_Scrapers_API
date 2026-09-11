@@ -1,12 +1,17 @@
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
-from datetime import datetime
 import json
+import logging
 import threading
+from datetime import datetime
 
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from scripts.attendance import get_attendance
 from scripts.profiles import CADETS, collect_profile_links, open_profile
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+
+logger = logging.getLogger(__name__)
 
 scraper_lock = threading.Lock()
 
@@ -86,7 +91,7 @@ def get_classification(page: Page):
         return "Junior Cadet"
 
     except Exception as e:
-        print(f"Warning: Could not extract classification: {e}")
+        logger.error(f"Warning: Could not extract classification: {e}")
         return None
 
 
@@ -157,14 +162,14 @@ def get_all_classifications(page: Page):
                     timeout=30000,
                 )
             except PlaywrightTimeoutError:
-                print(f"Warning: classification report stopped advancing at page {pages}")
+                logger.warning(f"Warning: classification report stopped advancing at page {pages}")
                 break
             wait_for_aspx_load(page)
 
-        print(f"Classification report: {pages} page(s), {len(result)} cadets matched")
+        logger.info(f"Classification report: {pages} page(s), {len(result)} cadets matched")
 
     except Exception as e:
-        print(f"Warning: Could not load classification report: {e}")
+        logger.error(f"Warning: Could not load classification report: {e}")
     return result
 
 
@@ -317,7 +322,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             page.wait_for_selector("tbody", timeout=10000)
             cadetQualifications = _parse_qual_rows(_read_qual_rows(page), attachment_check_quals)
         except Exception as e:
-            print(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
+            logger.error(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
 
         cadetAttendance = get_attendance(page)
 

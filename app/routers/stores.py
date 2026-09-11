@@ -10,17 +10,26 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from database.models import (
-    Cadet, User, ITEM_GENDER_MAP, ISSUANCE_ITEM_TYPE_MAP,
-    StoresBox, StoresSection, StoresItem, StoresOrder, StoresOrderItem, StoresItemIssuance,
-    LogsForm, LogsFormEntry,
-)
-
+from core import stock_events
+from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
-from core.emailer import send_email, ready_to_collect_email_html
+from core.emailer import ready_to_collect_email_html, send_email
 from core.security import require_staff
-from core import stock_events
+from database.models import (
+    ISSUANCE_ITEM_TYPE_MAP,
+    ITEM_GENDER_MAP,
+    Cadet,
+    LogsForm,
+    LogsFormEntry,
+    StoresBox,
+    StoresItem,
+    StoresItemIssuance,
+    StoresOrder,
+    StoresOrderItem,
+    StoresSection,
+    User,
+)
 
 router = APIRouter()
 
@@ -584,12 +593,6 @@ def stores_update_order(
     return order_to_dict(order)
 
 
-# C Flight initial kitting: both gendered variants added — QM deletes what doesn't apply.
-KIT_FLIGHT_ITEMS = [
-    "Beret", "Brassard", "Jumper", "Tie", "Belt",
-    "Wedgewood Male", "Wedgewood Female", "Working Blue Male", "Working Blue Female",
-    "Trousers", "Slacks", "Skirts",
-]
 
 
 @router.post("/stores/orders/kit-flight", status_code=201)
@@ -928,7 +931,6 @@ def stores_delete_issuance(
 
 # ── Logs Form (RAFAC demand batches) ─────────────────────────────────────────
 
-TIE_VARIANTS = {"Short", "Standard"}
 
 
 def _logs_form_to_dict(form: LogsForm) -> dict:

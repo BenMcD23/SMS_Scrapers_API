@@ -1,15 +1,13 @@
-import os
 import json
 import threading
-import requests
-from dotenv import load_dotenv
 
 import psutil
-from playwright.sync_api import sync_playwright, BrowserContext, Page
+import requests
+from playwright.sync_api import BrowserContext, Page, sync_playwright
 
+from core.crypto import decrypt_password
 from database.models import User
-from utils.crypto import decrypt_password
-from scripts.waiter import wait_for_aspx_load, wait_for_preloader, safe_click
+from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
 
 MIN_FREE_RAM_MB = 500
 
@@ -117,13 +115,13 @@ def match_email(first_key, last_key, email_map):
 
     initial_key = first_key[0] if first_key else ""
     email = next(
-        (v for (f, l), v in email_map.items() if l == last_key and f.startswith(initial_key)),
+        (v for (first, last), v in email_map.items() if last == last_key and first.startswith(initial_key)),
         None,
     )
     if email:
         return email
 
-    last_matches = [v for (_, l), v in email_map.items() if l == last_key]
+    last_matches = [v for (_, last), v in email_map.items() if last == last_key]
     if len(last_matches) == 1:
         return last_matches[0]
     return None

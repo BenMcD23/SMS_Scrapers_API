@@ -12,10 +12,10 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.database import Base
-from database.models import NcoHoliday
 import routers.nco_holidays as nh
 from core.db import get_or_create_user
+from database.database import Base
+from database.models import NcoHoliday
 
 
 def _day(offset: int) -> str:
@@ -201,7 +201,7 @@ def test():
     )
     base = run(nh.create_holiday(
         nh.HolidayBody(date_from=_day(200), date_to=_day(204), reason="Trip"), db, alice))
-    base_id, base_event = base["id"], "evt-%d" % len(created)
+    base_id, base_event = base["id"], f"evt-{len(created)}"
 
     # Dates already booked off change nothing, so they're refused rather than
     # silently duplicated — the message names the booking that already covers it.

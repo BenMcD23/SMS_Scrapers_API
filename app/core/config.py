@@ -1,25 +1,30 @@
 """Central place for env vars and constants shared across the API."""
 
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Google OAuth client used by both the SMS site and the cadet portal
-GOOGLE_CLIENT_ID = "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
+# Google OAuth client used by both the SMS site and the cadet portal. ID tokens
+# are only accepted if they were issued to this client.
+GOOGLE_CLIENT_ID = os.getenv(
+    "GOOGLE_CLIENT_ID", "490734276503-9s44s89sdhgct8ismqnsm7s1d4v6e4uv.apps.googleusercontent.com"
+)
 
 # Only tokens from this Google Workspace are accepted — outside Google accounts
 # (personal Gmail etc.) are rejected before any role check.
 GOOGLE_DOMAIN = os.getenv("GOOGLE_DOMAIN", "317atc.co.uk")
 
-# Google Workspace groups that decide roles
-STAFF_GROUP = "staff@317atc.co.uk"
-NOTIFY_GROUP = "notifications@317atc.co.uk"
-SNCO_GROUP = "snco@317atc.co.uk"
-NCO_GROUP = "ncoteam@317atc.co.uk"
+# Google Workspace groups that decide roles. The SMS site resolves roles from
+# the same groups (auth.ts), so change both together.
+STAFF_GROUP = os.getenv("STAFF_GROUP", f"staff@{GOOGLE_DOMAIN}")
+NOTIFY_GROUP = os.getenv("NOTIFY_GROUP", f"notifications@{GOOGLE_DOMAIN}")
+SNCO_GROUP = os.getenv("SNCO_GROUP", f"snco@{GOOGLE_DOMAIN}")
+NCO_GROUP = os.getenv("NCO_GROUP", f"ncoteam@{GOOGLE_DOMAIN}")
 
 # Sole owner/maintainer — has access to developer-only views (e.g. API logs)
-OWNER_EMAIL = "ci.mcdonald@317atc.co.uk"
+OWNER_EMAIL = os.getenv("OWNER_EMAIL", f"ci.mcdonald@{GOOGLE_DOMAIN}")
 
 # Officer Commanding — gates the OC dashboard and the committee-request approval
 # actions (send-to-committee / approve / reject / mark-paid). Identified by email
@@ -31,7 +36,7 @@ COMMITTEE_EMAIL = os.getenv("COMMITTEE_EMAIL", "")
 # Service account used for the admin directory lookups and sending email
 SA_EMAIL = os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL")
 SA_PRIVATE_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY", "").replace("\\n", "\n").strip('"')
-IMPERSONATE_EMAIL = os.getenv("GOOGLE_IMPERSONATE_EMAIL", "ci.mcdonald@317atc.co.uk")
+IMPERSONATE_EMAIL = os.getenv("GOOGLE_IMPERSONATE_EMAIL", OWNER_EMAIL)
 NOREPLY_EMAIL = os.getenv("NOREPLY_EMAIL")
 
 # Pre-shared key for the Google Form uniform order importer
@@ -87,4 +92,22 @@ SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
 # Where replies to the leaving-process email land. It goes out from the
 # unmonitored noreply account, so this is the mailbox a cadet actually reaches.
 # Staff can override it per send.
-LEAVING_PROCESS_REPLY_TO = os.getenv("LEAVING_PROCESS_REPLY_TO", "ci.mcdonald@317atc.co.uk")
+LEAVING_PROCESS_REPLY_TO = os.getenv("LEAVING_PROCESS_REPLY_TO", OWNER_EMAIL)
+
+# Browser origins allowed to call the API directly (the SMS site does; the cadet
+# portal proxies through its own server). Comma-separated; localhost is added
+# for local development when CORS_ALLOW_LOCALHOST is true.
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "https://sms.317atc.co.uk,https://317-sms-site.vercel.app").split(",")
+    if o.strip()
+]
+if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
+    CORS_ORIGINS.append("http://localhost:3000")
+# Vercel preview deploys of the SMS site. Anchored to this project's slug — an
+# unanchored pattern would also match attacker-registered *.vercel.app hosts.
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$")
+
+# Whether this process runs the background scheduler (cleanups, parade-night
+# texts, scheduled scrapers, backups). Exactly one process may have it on.
+SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"

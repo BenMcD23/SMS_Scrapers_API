@@ -6,14 +6,14 @@ comment on plans they can't approve.
 """
 import asyncio
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.database import Base
-from database.models import SessionPlan
 import routers.session_plans as sp
 from core.db import get_or_create_user
-from fastapi import HTTPException
+from database.database import Base
+from database.models import SessionPlan
 
 
 def _idinfo(name: str) -> dict:

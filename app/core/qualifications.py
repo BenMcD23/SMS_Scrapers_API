@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 
 def quali_expiry_cutoff(today: datetime) -> datetime:
@@ -68,7 +68,7 @@ BOOLEAN = "boolean"
 class BaderQual(NamedTuple):
     """One concrete qualification as it exists in the Bader dropdown."""
     name: str                 # exact dropdown text (trimmed)
-    bader_id: Optional[int]   # <option value> in the Add-Qualification dropdown
+    bader_id: int | None   # <option value> in the Add-Qualification dropdown
 
 
 class Level(NamedTuple):
@@ -251,7 +251,7 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
 BADGE_TYPE_BY_KEY: dict[str, BadgeType] = {b.key: b for b in BADGE_TYPES}
 
 
-def held_level(badge: BadgeType, qual_names) -> Optional[str]:
+def held_level(badge: BadgeType, qual_names) -> str | None:
     """The level of ``badge`` held by a cadet, given an iterable of their raw
     ``qual_type`` strings. Returns the highest-priority level whose pattern
     matches (mirroring the spreadsheet cascade), or ``None`` if none match."""

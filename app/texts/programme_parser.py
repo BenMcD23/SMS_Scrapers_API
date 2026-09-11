@@ -23,7 +23,7 @@ from datetime import datetime
 
 from googleapiclient.discovery import build as google_build
 
-from core.config import PROGRAMME_DRIVE_FOLDER_ID, IMPERSONATE_EMAIL
+from core.config import IMPERSONATE_EMAIL, PROGRAMME_DRIVE_FOLDER_ID
 from core.security import _service_account_creds
 
 WEEKDAY_RE = re.compile(
@@ -241,7 +241,9 @@ def parse_programme(month: int, year: int) -> list[dict]:
         cells = table_row.get("tableCells", [])
 
         def at(col: int) -> str:
-            return _cell_text(cells[col]) if col < len(cells) else ""
+            # Only ever called within this iteration, so binding the loop's
+            # `cells` late is intended.
+            return _cell_text(cells[col]) if col < len(cells) else ""  # noqa: B023
 
         date_raw = WEEKDAY_RE.sub("", at(columns.date)).strip()
         uniform = at(columns.uniform)
@@ -257,7 +259,7 @@ def parse_programme(month: int, year: int) -> list[dict]:
             continue
 
         c_parts, main_parts = [], []
-        for label, (c_col, a_cols, b_cols) in zip(["1st Period", "2nd Period"], columns.periods):
+        for label, (c_col, a_cols, b_cols) in zip(["1st Period", "2nd Period"], columns.periods, strict=False):
             c_text, main_section = _parse_period(cells, c_col, a_cols, b_cols)
             if c_text:
                 c_parts.append(f"{label}:\n{c_text}")

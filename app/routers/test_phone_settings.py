@@ -9,10 +9,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.database import Base
-from database.models import Cadet, Staff, TextSettings
 import routers.portal as portal
 import routers.settings as settings
+from database.database import Base
+from database.models import Cadet, Staff, TextSettings
 
 
 @pytest.fixture

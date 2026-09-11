@@ -23,7 +23,7 @@ services:
     command: uvicorn api:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/ping')"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/readyz')"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -33,11 +33,8 @@ services:
       resources:
         limits:
           memory: 6gb
-    volumes:
-      - ./data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/app/app:/app
       - DATABASE_URL=postgresql+psycopg2://sms_user:${POSTGRES_PASSWORD}@db:5432/317_SMS
     depends_on:
       db:

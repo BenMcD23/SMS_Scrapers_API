@@ -4,9 +4,9 @@ These cover the HTTP fast path, which never touches a browser — the browser
 fallback in get_317_event_info is what handles anything these can't read.
 """
 
-from scripts.event_scraper import _parse_detail_html, _soup_field
-
 from bs4 import BeautifulSoup
+
+from scripts.event_scraper import _parse_detail_html, _soup_field
 
 
 def _field(label, control):

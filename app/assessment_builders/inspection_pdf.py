@@ -4,13 +4,17 @@ on the diagram and listed alongside, echoing the paper Flight Inspection Sheet.
 """
 
 import io
+import logging
 import textwrap
-from pathlib import Path
 
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.colors import HexColor, black, white
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as rl_canvas
+
+from core.paths import ASSETS_DIR
+
+logger = logging.getLogger(__name__)
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 FIGURE_PATHS = {
@@ -101,7 +105,7 @@ def _draw_cadet(c, cadet, ox, oy_top, figure_path, regions):
             width=FIG_W, height=FIG_H, preserveAspectRatio=True, mask="auto",
         )
     except Exception as e:  # pragma: no cover - asset should always be present
-        print(f"[inspection_pdf] figure draw failed: {e}")
+        logger.error(f"figure draw failed: {e}")
 
     # Collect comments with a running number, grouped by region for placement.
     comments = [("fault", f) for f in cadet["faults"]] + [

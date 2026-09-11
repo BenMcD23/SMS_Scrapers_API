@@ -11,20 +11,31 @@ Roles come from Google Workspace group membership and are cached for
 5 minutes so we don't hit the admin API on every request.
 """
 
+import logging
 import os
 import threading
 import time
 
 from fastapi import Header, HTTPException
 from google.auth import exceptions as google_auth_exceptions
-from google.oauth2 import id_token, service_account
 from google.auth.transport import requests
+from google.oauth2 import id_token, service_account
 from googleapiclient.discovery import build as google_build
 
 from core.config import (
-    GOOGLE_CLIENT_ID, GOOGLE_DOMAIN, STAFF_GROUP, SNCO_GROUP, NCO_GROUP,
-    SA_EMAIL, SA_PRIVATE_KEY, IMPERSONATE_EMAIL, OWNER_EMAIL, OC_EMAIL,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_DOMAIN,
+    IMPERSONATE_EMAIL,
+    NCO_GROUP,
+    OC_EMAIL,
+    OWNER_EMAIL,
+    SA_EMAIL,
+    SA_PRIVATE_KEY,
+    SNCO_GROUP,
+    STAFF_GROUP,
 )
+
+logger = logging.getLogger(__name__)
 
 _role_cache: dict = {}
 _role_cache_lock = threading.Lock()
@@ -89,12 +100,12 @@ def verify_token(authorization: str) -> dict:
         # nothing about the token. Answering 401 here would tell the frontend
         # the session is stale and send the user round the sign-in loop again,
         # so surface it as what it is: this service is temporarily degraded.
-        print(f"[verify_token] cert fetch failed: {e}")
+        logger.error(f"token verification: Google cert fetch failed: {e}")
         raise HTTPException(status_code=503, detail="Auth check unavailable")
     except Exception as e:
         # Log the real reason — "Invalid Token" alone makes an expired token, a
         # client-ID mismatch and clock skew look identical from the outside.
-        print(f"[verify_token] rejected: {type(e).__name__}: {e}")
+        logger.warning(f"token rejected: {type(e).__name__}: {e}")
         raise HTTPException(status_code=401, detail="Invalid Token")
     if not idinfo.get("email_verified"):
         raise HTTPException(status_code=401, detail="Email not verified")
@@ -151,7 +162,7 @@ def _fetch_user_role(email: str) -> str | None:
                 continue
         return None
     except Exception as e:
-        print(f"[_fetch_user_role] error: {e}")
+        logger.error(f"role lookup failed: {e}")
         return None
 
 
@@ -197,7 +208,7 @@ def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
         snco = _fetch_group_members(admin, SNCO_GROUP)
         nco = _fetch_group_members(admin, NCO_GROUP)
     except Exception as e:
-        print(f"[get_roles_for_emails] error: {e}")
+        logger.error(f"bulk role lookup failed: {e}")
         return {**cached, **{e: None for e in missing}}
 
     resolved = {}

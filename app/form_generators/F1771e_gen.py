@@ -56,10 +56,10 @@ Column mapping for Part 4 table (13 underlying grid columns):
 """
 
 import copy
-from docx import Document
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
 
+from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 # ---------------------------------------------------------------------------
 # Valid rank values

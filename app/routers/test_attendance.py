@@ -10,9 +10,9 @@ from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import routers.attendance as att
 from database.database import Base
 from database.models import Cadet, CadetAttendance, Staff, StaffAttendance
-import routers.attendance as att
 
 
 def _idinfo() -> dict:

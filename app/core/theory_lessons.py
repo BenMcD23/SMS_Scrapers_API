@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-
 # ─── Categories ───────────────────────────────────────────────────────────────
 
 BADGES = "Badges"
@@ -71,7 +70,7 @@ THEORY_LESSONS: tuple[TheoryLesson, ...] = (
 
 # ─── Lookups ──────────────────────────────────────────────────────────────────
 
-THEORY_LESSON_BY_KEY: dict[str, TheoryLesson] = {l.key: l for l in THEORY_LESSONS}
+THEORY_LESSON_BY_KEY: dict[str, TheoryLesson] = {lesson.key: lesson for lesson in THEORY_LESSONS}
 
 
 # ─── Has the cadet earned the qualification this theory leads to? ──────────────
