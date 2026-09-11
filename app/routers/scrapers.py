@@ -646,8 +646,8 @@ def _run_scheduled_scraper(name: str):
 def register_schedule_jobs():
     """Sync the scheduler's scraper jobs with the ScraperSchedule rows.
 
-    Idempotent: called at startup, after every schedule edit, and on a timer
-    (core/jobs.py). A replica without the scheduler has nothing to sync.
+    Idempotent: called at startup (core/jobs.py) and after every schedule
+    edit. A process without the scheduler has nothing to sync.
     """
     if not SCHEDULER_ENABLED:
         return

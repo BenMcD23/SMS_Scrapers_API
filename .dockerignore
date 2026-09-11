@@ -10,6 +10,5 @@ __pycache__/
 !.env.tmpl
 data/
 tailscale_data/
-deploy/
 ops/
 docker-compose*.yml

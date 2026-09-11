@@ -8,14 +8,7 @@ FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, an
 
 ## Environments
 
-**Kubernetes (current target).** The API is deployed to the three-site cluster
-by Argo CD from `deploy/`; a `VERSION` bump on `main` releases to prod and any
-push to `development` deploys to dev. Everything about that — cluster setup,
-secrets, data migration, the cutover checklist — is in
-[`deploy/README.md`](deploy/README.md).
-
-**Legacy single server.** Until cutover, two compose stacks still run on the
-old server:
+Two stacks run on the server simultaneously:
 
 - **prod** — `main` branch, port 8000, exposed via `tailscale-prod`
 - **dev**  — `development` branch, port 8001, exposed via `tailscale-dev`

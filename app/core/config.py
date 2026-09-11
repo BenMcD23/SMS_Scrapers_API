@@ -109,6 +109,5 @@ if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
 CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$")
 
 # Whether this process runs the background scheduler (cleanups, parade-night
-# texts, scheduled scrapers, backups). Exactly one replica must have it on;
-# see deploy/README.md.
+# texts, scheduled scrapers, backups). Exactly one process may have it on.
 SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"

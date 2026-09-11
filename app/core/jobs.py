@@ -3,7 +3,7 @@
 Registered into the shared APScheduler by ``register_jobs`` at startup when
 ``SCHEDULER_ENABLED`` is true. Exactly one process may run these — two
 schedulers would send the parade-night text twice and race the cleanups — so
-in Kubernetes the API runs as a single replica (see deploy/README.md).
+the API runs as a single container.
 """
 
 import logging
@@ -124,11 +124,9 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri).
     scheduler.add_job(scheduled_send_job, CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone=LONDON))
-    # Scraper schedules live in the database and are edited through the API.
-    # Load them now and re-read them periodically so an edit made on another
-    # replica (if the scheduler is ever split out) is picked up without a restart.
+    # Scraper schedules live in the database and are edited through the API,
+    # which re-registers them on every edit; this loads them at startup.
     scrapers.register_schedule_jobs()
-    scheduler.add_job(scrapers.register_schedule_jobs, "interval", minutes=5, id="reconcile-scraper-schedules")
     # Daily DB backup to Google Drive — prod only (gated by the env flag).
     if DB_BACKUP_ENABLED:
         scheduler.add_job(run_db_backup, CronTrigger(hour=3, minute=0, timezone=LONDON), id="db_backup")

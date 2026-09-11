@@ -84,8 +84,8 @@ app.add_middleware(
 
 # ── Probes ────────────────────────────────────────────────────────────────────
 # /ping and /healthz answer as soon as the process is up (liveness). /readyz
-# also checks the database, so Kubernetes only routes traffic once the app can
-# actually serve it. /health is the authenticated check the SMS site uses to
+# also checks the database, so the container is only reported healthy once the
+# app can actually serve. /health is the authenticated check the SMS site uses to
 # confirm its token is accepted.
 
 
