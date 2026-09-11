@@ -1,7 +1,4 @@
-# Legacy single-server deploy (docker compose over Tailscale). Superseded by
-# release.yml + Argo CD once the cluster is live — see deploy/README.md for the
-# cutover checklist. Kept until the old server is decommissioned.
-name: Deploy API (legacy compose)
+name: Deploy API
 
 on:
   push:

@@ -48,6 +48,6 @@ USER app
 ENV PYTHONPATH=/app/app
 EXPOSE 8000
 
-# Migrations are NOT run here: in Kubernetes they run as a pre-sync Job, and in
-# compose as a separate step, so a failed migration never takes the API down.
+# Migrations are NOT run here: the deploy runs them as a separate step, so a
+# failed migration never takes the API down.
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
