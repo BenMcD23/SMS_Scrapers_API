@@ -26,6 +26,7 @@ from database.models import (
 )
 from routers.badges import _parse_timestamp, badge_order_to_dict
 from routers.cadets import attendance_to_dict
+from routers.inspections import cadet_timeline, summarise_timeline
 from routers.stores import issuance_to_dict, order_to_dict
 from texts.phone import clean_mobile
 from texts.settings import community_invite_url
@@ -217,6 +218,31 @@ def cadet_get_my_issuances(
         .all()
     )
     return [issuance_to_dict(i) for i in issuances]
+
+
+@router.get("/cadets/me/inspections")
+def cadet_get_my_inspections(
+    db: Session = Depends(get_db),
+    cadet: Cadet = Depends(get_current_cadet),
+):
+    """The signed-in cadet's own uniform inspection history — every sheet they
+    were marked on, with the score and the full notes (faults and positives) the
+    inspecting staff left, plus their own averages.
+
+    The CIN is taken from the token's Cadet row, never from the request, so a
+    cadet can only ever read their own. Squadron rankings are deliberately left
+    out: they are a position among the other cadets, and this is the one-cadet
+    view."""
+    timeline = cadet_timeline(db, cadet.cin)
+    return {
+        "cin":              cadet.cin,
+        "name":             f"{cadet.first_name} {cadet.last_name}",
+        "rank":             cadet.rank,
+        "flight":           cadet.flight,
+        "inspection_count": len(timeline),
+        "timeline":         timeline,
+        **summarise_timeline(timeline),
+    }
 
 
 # ── Cadet badge orders ────────────────────────────────────────────────────────
