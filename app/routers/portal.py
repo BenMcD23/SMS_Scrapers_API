@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
+from core.badge_quals import badge_qual_statuses
 from core.db import get_current_cadet, get_current_user, get_db
 from core.security import get_roles_for_emails, require_staff
 from database.models import (
@@ -255,11 +256,23 @@ def cadet_get_badge_orders(
     orders = (
         db.query(BadgeOrder)
         .filter(BadgeOrder.cadet_id == cadet.cin)
-        .options(selectinload(BadgeOrder.order_items))
+        .options(selectinload(BadgeOrder.order_items), selectinload(BadgeOrder.cadet))
         .order_by(BadgeOrder.created_at.desc())
         .all()
     )
     return [badge_order_to_dict(o) for o in orders]
+
+
+@router.get("/cadets/me/badge-qual-check")
+def cadet_badge_qual_check(
+    cadet: Cadet = Depends(get_current_cadet),
+):
+    """Which badges in the catalogue the cadet's SMS record evidences.
+
+    The whole catalogue in one response: the order form checks each selection
+    against it as the cadet picks, with no round trip per badge.
+    """
+    return badge_qual_statuses(cadet.qualifications, cadet.classification)
 
 
 @router.post("/cadets/me/badge-orders", status_code=201)

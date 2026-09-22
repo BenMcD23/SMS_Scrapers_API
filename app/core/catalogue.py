@@ -144,6 +144,68 @@ BADGE_CATEGORIES: list[BadgeCategory] = [
     {"id": "flying", "name": "Flying Badge", "prefix": "Flying", "levels": _STANDARD_LEVELS},
 ]
 
+# ── What evidences a badge ────────────────────────────────────────────────────
+# The order forms let anyone pick any badge, so each one is checked against what
+# the quali scraper has actually recorded for the cadet (see core/badge_quals.py).
+# The mapping lives here, next to the catalogue it keys off, rather than in the
+# qualification catalog — that one is about Bader's names, this one is about ours.
+
+# Badge name parts are joined with an EN DASH, matching `buildBadgeName` in both
+# frontends. Changing it renames every badge already stored on an order.
+BADGE_NAME_SEPARATOR = " – "
+
+# Category id → badge type key in core.qualifications.BADGE_TYPES. Categories
+# left out — the Core badges everyone is issued — aren't earned, so they're
+# never checked.
+BADGE_CATEGORY_QUAL_TYPE: dict[str, str] = {
+    "leadership":    "leadership",
+    "music":         "music",
+    "shooting":      "shooting",
+    "radio":         "radio",
+    "cyber":         "cyber",
+    "space":         "space",
+    "road-marching": "road_marching",
+    "first-aid":     "first_aid",
+    "dofe":          "duke_of_edinburgh",
+    "flying":        "flying",
+}
+
+# Catalogue level label → the level slug(s) in core.qualifications that evidence
+# it. A badge counts as evidenced by any of them, so Road Marching's combined
+# "Gold (Nijmegen)" badge is satisfied by either rung.
+BADGE_LEVEL_QUAL_LEVELS: dict[str, tuple[str, ...]] = {
+    "Blue":            ("blue",),
+    "Bronze":          ("bronze",),
+    "Silver":          ("silver",),
+    "Gold":            ("gold",),
+    "Gold (Nijmegen)": ("gold", "nijmegen"),
+}
+
+# Classification badges aren't qualifications — they're evidenced by the cadet's
+# classification, whose full names are what the scraper stores.
+BADGE_CLASSIFICATION: dict[str, str] = {
+    "First Class": "First Class Cadet",
+    "Leading":     "Leading Cadet",
+    "Senior":      "Senior Cadet",
+    "Master":      "Master Air Cadet",
+}
+
+
+def badge_names() -> list[str]:
+    """Every badge name the order forms can produce, in catalogue order.
+
+    The same strings `buildBadgeName` builds in the frontends, so a verdict map
+    keyed by them can be looked up directly by the form without re-parsing.
+    """
+    names: list[str] = []
+    for cat in BADGE_CATEGORIES:
+        for item in cat.get("items", []):
+            names.append(item)
+        for level in cat.get("levels", []):
+            names.append(f"{cat['prefix']}{BADGE_NAME_SEPARATOR}{level}")
+    return names
+
+
 # Replacement badges and the automatically-awarded Core/Classification badges
 # don't record where they were gained.
 BADGE_CATEGORIES_WITHOUT_GAINED_WHERE: frozenset[str] = frozenset({"core", "classification"})

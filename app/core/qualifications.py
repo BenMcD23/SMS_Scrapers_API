@@ -36,6 +36,17 @@ from datetime import datetime
 from typing import NamedTuple
 
 
+def qual_is_expired(qual, today) -> bool:
+    """True if ``qual`` has an expiry date that has already passed.
+
+    Quals with no expiry (``date_expires is None``) never expire. Compared on
+    the date, not the datetime, so a qual is only expired the day *after* it
+    lapses. Shared by the audit and the badge-order qualification check so the
+    two can never disagree about whether a cadet still holds something.
+    """
+    return qual.date_expires is not None and qual.date_expires.date() < today
+
+
 def quali_expiry_cutoff(today: datetime) -> datetime:
     """Same day 3 calendar months ahead, clamped to the target month's last day.
 
