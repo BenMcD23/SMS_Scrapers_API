@@ -1,5 +1,10 @@
 name: Deploy API
 
+# Builds the image and points the environment's overlay at it. Argo CD does
+# the actual deploy when it sees the commit - nothing here talks to the cluster.
+#   main        -> deploy/overlays/prod
+#   development -> deploy/overlays/dev
+
 on:
   push:
     branches:
@@ -17,9 +22,17 @@ on:
         type: string
         required: true
 
+# Two deploys of one branch would race on the tag-bump push.
+concurrency:
+  group: deploy-${{ inputs.ref || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
 
     steps:
       - name: Set environment
@@ -32,40 +45,52 @@ jobs:
             echo "ENV=dev" >> $GITHUB_ENV
           fi
 
-      - name: Connect to Tailscale
-        uses: tailscale/github-action@v2
+      - uses: actions/checkout@v4
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
+          ref: ${{ env.BRANCH }}
+          # Full history, for the commit count in the version.
+          fetch-depth: 0
 
-      - name: Deploy to server
-        uses: appleboy/ssh-action@v1
+      # v<major.minor from VERSION>.<commits on the branch>, e.g. v1.0.412.
+      # The count only goes up, and a rebuild of the same commit gets the same
+      # tag. Dev builds get -dev so the two never share a tag. Bump VERSION by
+      # hand for a new major/minor. Read off the checkout, not github.sha,
+      # which is main's commit when called from sync-main-to-dev.
+      - name: Version
+        run: |
+          TAG="v$(cat VERSION).$(git rev-list --count HEAD)"
+          [[ "$ENV" == "prod" ]] || TAG="$TAG-dev"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "Building $TAG ($(git rev-parse --short HEAD))"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: ENV,BRANCH
-          script: |
-            set -e
-            cd ~/sms-api/$ENV
-            # Force-pushes make `git pull` diverge; the server is a deploy target,
-            # not a workspace, so just match the remote exactly.
-            git fetch origin $BRANCH
-            git reset --hard FETCH_HEAD
-            # Only rebuild/recreate db+api. Leaving tailscale untouched keeps the
-            # ingress up during deploys and avoids the fixed-container_name conflict
-            # that the old `docker rm -f tailscale` workaround existed to paper over.
-            # ponytail: if tailscale itself ever needs updating, run a full `up -d` by hand.
-            if [[ "$ENV" == "prod" ]]; then
-              DC="docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml"
-            else
-              DC="docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml"
-            fi
-            # db first, then migrate, then swap the api. `set -e` means a failed
-            # migration aborts the deploy with the old api still serving.
-            $DC build api
-            $DC up -d --wait db
-            $DC run --rm api alembic -c app/database/alembic.ini upgrade head
-            $DC up -d --wait api
-            docker image prune -f
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/benmcd23/sms_scrapers_api:${{ env.TAG }}
+          labels: org.opencontainers.image.revision=${{ env.SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pushed with GITHUB_TOKEN, which doesn't trigger workflows, so this
+      # can't loop. Retries rebase over anything pushed meanwhile.
+      - name: Point the overlay at the new image
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          sed -i "s/^\(\s*newTag:\).*/\1 $TAG/" deploy/overlays/$ENV/kustomization.yaml
+          git commit -am "Deploy $ENV $TAG [skip ci]"
+          for i in 1 2 3; do
+            git push origin HEAD:$BRANCH && exit 0
+            git pull --rebase origin $BRANCH
+          done
+          exit 1

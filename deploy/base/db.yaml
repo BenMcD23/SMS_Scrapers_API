@@ -1,0 +1,46 @@
+# PostgreSQL, run by the CloudNativePG operator (installed from the k3s-homelab
+# repo). Two instances on different nodes with streaming replication: if the
+# primary's node drops, the replica is promoted in about a minute. Placement of
+# the primary is steered by the switchover CronJob in overlays/prod.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: sms-db
+spec:
+  instances: 2
+  # Must stay on 16: the API image's pg_dump (Drive backups) is v16 and cannot
+  # dump a newer server. Bump both together.
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      # The backup preview restores into a throwaway database, so the app
+      # role needs CREATEDB (see scripts/db_backup.py preview_backup).
+      postInitApplicationSQL:
+        - ALTER ROLE app CREATEDB
+
+  storage:
+    size: 5Gi # the database is ~30MB; the rest is WAL headroom
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required
+    # home and squadron only. oracle is left out on purpose.
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: role
+                operator: In
+                values: [interactive, batch]

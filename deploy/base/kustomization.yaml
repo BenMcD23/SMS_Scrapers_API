@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - db.yaml
+  - migrate.yaml
+  - api.yaml
+  - ingress.yaml
+
+# Non-secret settings, from config.env (plus each overlay's). The hash
+# suffix means a change rolls the API.
+configMapGenerator:
+  - name: sms-api-config
+    envs:
+      - config.env
