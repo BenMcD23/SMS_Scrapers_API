@@ -48,11 +48,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.BRANCH }}
+          # Full history, for the commit count in the version.
+          fetch-depth: 0
 
-      # github.sha is main's commit when called from sync-main-to-dev, so tag
-      # by what was actually checked out.
-      - name: Image tag
-        run: echo "TAG=$(git rev-parse --short=12 HEAD)" >> $GITHUB_ENV
+      # v<major.minor from VERSION>.<commits on the branch>, e.g. v1.0.412.
+      # The count only goes up, and a rebuild of the same commit gets the same
+      # tag. Dev builds get -dev so the two never share a tag. Bump VERSION by
+      # hand for a new major/minor. Read off the checkout, not github.sha,
+      # which is main's commit when called from sync-main-to-dev.
+      - name: Version
+        run: |
+          TAG="v$(cat VERSION).$(git rev-list --count HEAD)"
+          [[ "$ENV" == "prod" ]] || TAG="$TAG-dev"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "Building $TAG ($(git rev-parse --short HEAD))"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -67,6 +77,7 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/benmcd23/sms_scrapers_api:${{ env.TAG }}
+          labels: org.opencontainers.image.revision=${{ env.SHA }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
