@@ -5,6 +5,10 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: sms-api
+  labels:
+    # Proxy pod on oracle, not the default (home), so the public endpoint
+    # survives losing home or squadron. k3s-homelab ADR 0007.
+    tailscale.com/proxy-class: edge
   annotations:
     tailscale.com/funnel: "true"
 spec:
