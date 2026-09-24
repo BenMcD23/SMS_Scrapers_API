@@ -107,7 +107,7 @@ rules:
     verbs: [get]
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters/status]
-    verbs: [patch]
+    verbs: [get, patch]
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get, patch]
