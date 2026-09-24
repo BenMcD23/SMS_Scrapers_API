@@ -1,27 +1,22 @@
 """Inspection marking sheet — scraped absences for a parade date, sheet
 submission with AWOL detection (marked absent but no absence log), and
 per-cadet inspection history with score/attendance trends plus an optional
-Groq-powered analysis of recurring uniform faults."""
+AI analysis of recurring uniform faults."""
 
 import io
 from datetime import datetime
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from core.config import GROQ_API_KEY
 from core.db import get_db
+from core.llm import generate
 from core.security import require_staff_or_snco
 from database.models import Cadet, CadetAbsence, InspectionSheet
 
 router = APIRouter()
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "openai/gpt-oss-120b"
-
 
 def _parse_date(s: str) -> datetime:
     try:
@@ -557,37 +552,13 @@ class AnalyseRequest(BaseModel):
     cin: int
 
 
-def _call_groq(system: str, user: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not configured on the server")
-    resp = httpx.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.4,
-            "max_tokens": 1500,
-            "reasoning_effort": "low",
-        },
-        timeout=60,
-    )
-    data = resp.json()
-    if "choices" not in data:
-        raise RuntimeError(f"Groq API error: {resp.text[:300]}")
-    return data["choices"][0]["message"]["content"].strip()
-
-
 @router.post("/inspections/analyse")
-async def analyse_cadet(
+def analyse_cadet(  # sync on purpose — the slow AI call runs in the threadpool
     body: AnalyseRequest,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
 ):
-    """Groq-powered reasoning over a single cadet's inspection history, focused
+    """AI reasoning over a single cadet's inspection history, focused
     on recurring uniform faults and score trends."""
     cadet = db.query(Cadet).filter(Cadet.cin == body.cin).first()
     if not cadet:
@@ -640,8 +611,9 @@ async def analyse_cadet(
     )
 
     try:
-        analysis = _call_groq(ANALYSIS_SYSTEM_PROMPT, prompt)
+        analysis, model_id = generate(prompt, ANALYSIS_SYSTEM_PROMPT, temperature=0.4,
+                                      max_tokens=4000, groq_max_tokens=1500)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return {"cin": body.cin, "model": GROQ_MODEL, "analysis": analysis}
+    return {"cin": body.cin, "model": model_id, "analysis": analysis}
