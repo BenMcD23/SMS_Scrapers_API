@@ -1,0 +1,19 @@
+# Its own device on the tailnet via the Tailscale operator, and on the public
+# internet via Funnel - the Vercel frontends call it from outside the tailnet.
+# The device name comes from tls.hosts[0]; overlays/dev renames it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sms-api
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: sms-api
+      port:
+        number: 80
+  tls:
+    - hosts:
+        - sms-api
