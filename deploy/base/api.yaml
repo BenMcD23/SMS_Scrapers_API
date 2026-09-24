@@ -7,12 +7,17 @@ metadata:
     # leaving the old pod serving.
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  # Exactly one. APScheduler runs inside the process, so a second pod would
-  # run every scheduled job twice. Recreate for the same reason: a rolling
-  # update briefly runs two.
+  # One pod. The scheduler is safe with more (core/leader.py), but a scrape's
+  # live log and stop button live in the pod that started it.
   replicas: 1
+  # The new pod must be Ready before the old one goes, so a deploy has no
+  # downtime. The brief overlap is safe: only the pod holding the Postgres
+  # leader lock runs scheduled jobs, and the old pod releases it as it exits.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: sms-api
