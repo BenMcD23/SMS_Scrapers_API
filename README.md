@@ -18,8 +18,8 @@ Both run on the k3s homelab cluster, deployed by Argo CD from `deploy/`:
 | **dev** | `development` | `sms-dev` | `https://sms-api-dev.<tailnet>.ts.net` |
 
 A push to either branch runs `.github/workflows/deploy.yml`: build the image,
-push it to GHCR tagged with the commit, and commit that tag into the
-environment's overlay. Argo CD sees the commit and deploys it, running Alembic
+push it to GHCR with a version tag, and commit that tag into the environment's
+overlay. Argo CD sees the commit and deploys it, running Alembic
 first (`deploy/base/migrate.yaml`). A failed migration stops the deploy with
 the old pod still serving.
 
@@ -27,6 +27,7 @@ the old pod still serving.
 deploy/base/            API Deployment, Postgres (CloudNativePG), migration Job, Ingress
 deploy/overlays/prod/   config, SealedSecret, the switchover CronJob
 deploy/overlays/dev/    config, SealedSecret, one DB instance
+deploy/dev-env.py       writes a local .env from the above (see Local dev)
 ```
 
 Placement and failover are explained in the homelab repo's ADR 0007. In
@@ -34,13 +35,21 @@ short: prod's database runs as two instances, on squadron and home. The
 primary (and the API with it) lives on squadron, except 17:00–23:00 on
 Wednesday and Friday, when it moves to home.
 
+### Versions
+
+Images are tagged `v<VERSION>.<commit count>`, for example `v1.0.412`, and dev
+builds get `-dev`. `VERSION` holds the major.minor. Bump it by hand for a
+release worth naming, and the last number takes care of itself. The deployed
+version is the `newTag` in the overlay, and it also shows in Argo CD.
+
 ## Config and secrets
 
 There is no `.env` on any server.
 
-- **Plain settings** are the `configMapGenerator` literals in
-  `deploy/base/kustomization.yaml`, plus the per-environment ones in each
-  overlay. Edit them, commit, and push.
+- **Plain settings** are in `deploy/base/config.env` (shared), plus
+  `deploy/overlays/<env>/config.env` (per environment, overriding the shared
+  values). Kustomize builds them into the `sms-api-config` ConfigMap. Edit,
+  commit, and push.
 - **Secrets** are `deploy/overlays/<env>/sealed-secret.yaml`, encrypted to
   the cluster's Sealed Secrets key. To add or change one:
 
@@ -100,8 +109,7 @@ ever book their own). The rule lives in `MIN_NOTICE_DAYS` in
 `app/routers/nco_holidays.py`; the booking form reads it off the API rather than
 hardcoding it, so changing that constant is enough.
 
-Then set `NCO_HOLIDAY_CALENDAR_ID` in `deploy/base/kustomization.yaml` and
-push. Until it's set, holidays still save in the SMS and the page shows a
+Then set `NCO_HOLIDAY_CALENDAR_ID` in `deploy/base/config.env` and push. Until it's set, holidays still save in the SMS and the page shows a
 "calendar not connected" banner — nothing is lost, and the **Retry** action on
 each row pushes the backlog once the calendar is wired up.
 
@@ -177,8 +185,7 @@ Cloudflare Access policy in front of it so it is not exposed to the world. Then:
 ssh -o ProxyCommand="cloudflared access ssh --hostname ssh.317atc.co.uk" server317@localhost
 ```
 
-`CLOUDFLARE_TUNNEL_TOKEN` already exists in `.env.tmpl` but is not wired into any
-compose file — it is a leftover. The tunnel belongs on the host as a systemd
+`CLOUDFLARE_TUNNEL_TOKEN` is not used by the app or the cluster. It is a leftover. The tunnel belongs on the host as a systemd
 service, not in the stack, so that a broken deploy cannot take your recovery
 path down with it.
 
@@ -207,13 +214,7 @@ with tight permissions, or skip it.
 
 Lint and tests: `ruff check app` and `pytest` (see below).
 
-You still need a running PostgreSQL instance. Use the local override to publish the port to `localhost:5432`:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
-```
-
-Then set up the Python environment:
+Set up the Python environment:
 
 ```bash
 python -m venv venv
@@ -221,17 +222,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy the env template and fill in secrets:
+Generate `.env`. There is no template to fill in: config comes from
+`deploy/*/config.env`, and secrets are decrypted from the dev environment in the
+cluster (needs `kubectl` access). Local settings go on top: the local DB, fake
+auth, and email off.
 
 ```bash
-cp .env.tmpl .env
-# Edit .env — at minimum set POSTGRES_PASSWORD and any API keys you need
+python deploy/dev-env.py        # re-run whenever a secret or config.env changes
 ```
 
-Set the database URL to point at the local Docker db and run migrations:
+Start PostgreSQL (the local override publishes it on `localhost:5432`, and it
+reads `POSTGRES_PASSWORD` from `.env`), then run migrations:
 
 ```bash
-export DATABASE_URL="postgresql+psycopg2://sms_user:<POSTGRES_PASSWORD>@localhost:5432/317_SMS"
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
 alembic -c app/database/alembic.ini upgrade head
 ```
 

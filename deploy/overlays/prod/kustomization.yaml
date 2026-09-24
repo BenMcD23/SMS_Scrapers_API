@@ -16,11 +16,5 @@ images:
 configMapGenerator:
   - name: sms-api-config
     behavior: merge
-    literals:
-      # CUTOVER: off while the old compose stack is still live, so the two
-      # don't both run scheduled jobs (and backups of an empty DB don't land
-      # in the Drive folder). Delete this line when switching over.
-      - SCHEDULER_ENABLED=false
-      - DB_BACKUP_ENABLED=true
-      - OC_EMAIL=fg.off.barker@317atc.co.uk
-      - COMMITTEE_EMAIL=fg.off.barker@317atc.co.uk
+    envs:
+      - config.env

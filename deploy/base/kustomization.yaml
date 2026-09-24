@@ -7,19 +7,9 @@ resources:
   - api.yaml
   - ingress.yaml
 
-# Settings shared by both environments. Secrets are not here - they are the
-# SealedSecret in each overlay. Environment-specific values are merged in by
-# the overlays. The hash suffix means a change here rolls the API.
+# Non-secret settings, from config.env (plus each overlay's). The hash
+# suffix means a change rolls the API.
 configMapGenerator:
   - name: sms-api-config
-    literals:
-      - GOOGLE_DOMAIN=317atc.co.uk
-      - GOOGLE_ADMIN_EMAIL=ci.mcdonald@317atc.co.uk
-      - GOOGLE_SERVICE_ACCOUNT_EMAIL=admin-api@scraperdeployed.iam.gserviceaccount.com
-      - GOOGLE_IMPERSONATE_EMAIL=noreply@317atc.co.uk
-      - NOREPLY_EMAIL=noreply@317atc.co.uk
-      - ALERT_EMAIL=notifications@317atc.co.uk
-      - NOTIFY_SMS_TEMPLATE_ID=71134f0e-a6e5-4967-9912-5c09e2c50bb2
-      - NCO_HOLIDAY_CALENDAR_ID=c_82de82f5cdbb2d1baa6a2eb2bb072125c83c6297cc9afc942537f878813155ee@group.calendar.google.com
-      - DB_BACKUP_DRIVE_FOLDER_ID=1Bi5CmjUVObZfarx2FUqECNJvBg3R1MeQ
-      - DB_BACKUP_RETENTION=14
+    envs:
+      - config.env

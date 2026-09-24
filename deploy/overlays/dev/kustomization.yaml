@@ -15,11 +15,8 @@ images:
 configMapGenerator:
   - name: sms-api-config
     behavior: merge
-    literals:
-      - EMAIL_DISABLED=true
-      - DB_BACKUP_ENABLED=false
-      - OC_EMAIL=ci.mcdonald@317atc.co.uk
-      - COMMITTEE_EMAIL=ci.mcdonald@317atc.co.uk
+    envs:
+      - config.env
 
 patches:
   # One instance: no HA, and no switchover CronJob.
