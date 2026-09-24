@@ -1,0 +1,125 @@
+# Keeps the database primary - and the API with it - on squadron, except on
+# Wednesday and Friday evenings (17:00-23:00 London) when the building's wifi
+# is throttled and it moves to home.
+#
+# It is a reconciler, not a one-shot: every 10 minutes it works out where the
+# primary should be and moves it if it isn't there. That also covers failing
+# back to squadron after an outage, once squadron's replica has been Ready for
+# STABLE_SECONDS - so a flapping link doesn't bounce the primary back and forth.
+#
+# A switchover drops connections for a few seconds, and restarting the API
+# kills any scrape that is running at that moment.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-switchover
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 540
+      template:
+        spec:
+          serviceAccountName: db-switchover
+          restartPolicy: Never
+          # Not pinned. It must run even when one of the nodes is the problem.
+          containers:
+            - name: switchover
+              image: alpine/k8s:1.33.5
+              env:
+                - { name: CLUSTER, value: sms-db }
+                - { name: PREFERRED_NODE, value: squadron }
+                - { name: BUSY_NODE, value: home }
+                - { name: STABLE_SECONDS, value: "1800" }
+              command: [sh, -euc]
+              args:
+                - |
+                  # Europe/London as a POSIX TZ rule, so the image needs no tzdata.
+                  now=$(TZ='GMT0BST,M3.5.0/1,M10.5.0' date +%u%H)
+                  day=${now%??}; hour=${now#?}
+                  want=$PREFERRED_NODE
+                  if { [ "$day" = 3 ] || [ "$day" = 5 ]; } && [ "$hour" -ge 17 ] && [ "$hour" -lt 23 ]; then
+                    want=$BUSY_NODE
+                  fi
+
+                  phase=$(kubectl get cluster "$CLUSTER" -o jsonpath='{.status.phase}')
+                  if [ "$phase" != "Cluster in healthy state" ]; then
+                    echo "cluster is '$phase'; leaving it alone"; exit 0
+                  fi
+                  primary=$(kubectl get cluster "$CLUSTER" -o jsonpath='{.status.currentPrimary}')
+                  primary_node=$(kubectl get pod "$primary" -o jsonpath='{.spec.nodeName}')
+
+                  if [ "$primary_node" != "$want" ]; then
+                    target=$(kubectl get pods -l "cnpg.io/cluster=$CLUSTER,cnpg.io/instanceRole=replica" -o json | jq -r \
+                      --arg node "$want" --argjson stable "$STABLE_SECONDS" '
+                      .items[] | select(.spec.nodeName == $node)
+                      | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"
+                          and (now - (.lastTransitionTime | fromdateiso8601)) > $stable))
+                      | .metadata.name' | head -n1)
+                    if [ -z "$target" ]; then
+                      echo "want primary on $want but no replica there has been Ready for ${STABLE_SECONDS}s; staying on $primary_node"
+                    else
+                      echo "switchover: $primary ($primary_node) -> $target ($want)"
+                      # What `kubectl cnpg promote` does.
+                      kubectl patch cluster "$CLUSTER" --subresource=status --type=merge -p \
+                        "{\"status\":{\"targetPrimary\":\"$target\",\"targetPrimaryTimestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"phase\":\"Switchover in progress\",\"phaseReason\":\"Switching over to $target\"}}"
+                      i=0
+                      until [ "$(kubectl get cluster "$CLUSTER" -o jsonpath='{.status.currentPrimary}')" = "$target" ]; do
+                        i=$((i + 1)); [ "$i" -le 60 ] || { echo "switchover did not complete in 5m"; exit 1; }
+                        sleep 5
+                      done
+                      primary=$target; primary_node=$want
+                    fi
+                  fi
+
+                  # The API follows the primary (podAffinity), but only when it
+                  # is rescheduled. Skip a pod that has only just started, so a
+                  # pod the scheduler can't place next to the primary isn't
+                  # restarted every run.
+                  api=$(kubectl get pods -l app=sms-api -o json | jq -r --argjson stable "$STABLE_SECONDS" '
+                    .items[] | select(.status.phase == "Running")
+                    | select((now - (.status.startTime | fromdateiso8601)) > $stable)
+                    | .spec.nodeName' | head -n1)
+                  if [ -n "$api" ] && [ "$api" != "$primary_node" ]; then
+                    echo "api on $api, primary on $primary_node; restarting api"
+                    kubectl rollout restart deployment/sms-api
+                  fi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: db-switchover
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: db-switchover
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters/status]
+    verbs: [patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: db-switchover
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: db-switchover
+subjects:
+  - kind: ServiceAccount
+    name: db-switchover

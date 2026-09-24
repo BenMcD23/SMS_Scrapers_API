@@ -1,0 +1,61 @@
+# Alembic migrations, run by Argo CD on every sync before the Deployment is
+# touched (wave 1, the Deployment is wave 2). If this fails the sync stops and
+# the old API keeps serving.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sms-api-migrate
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  # On the very first sync the database is still initialising; retries cover it.
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: role
+                    operator: In
+                    values: [interactive, batch]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: migrate
+          image: ghcr.io/benmcd23/sms_scrapers_api
+          # The migration history has no initial create-tables migration (see
+          # README "Wiping the dev database"), so a brand-new database is built
+          # from the models and stamped instead. Exit 3 means "no
+          # alembic_version table"; any other failure (DB not up yet) exits
+          # non-zero and the Job retries, rather than being mistaken for empty.
+          command:
+            - sh
+            - -ec
+            - |
+              rc=0
+              python -c 'import sys; from sqlalchemy import inspect; from database.database import engine; sys.exit(0 if inspect(engine).has_table("alembic_version") else 3)' || rc=$?
+              case $rc in
+                0) alembic -c app/database/alembic.ini upgrade head ;;
+                3) echo "empty database: creating tables from models, then stamping head"
+                   python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)'
+                   alembic -c app/database/alembic.ini stamp head ;;
+                *) exit $rc ;;
+              esac
+          envFrom:
+            - configMapRef:
+                name: sms-api-config
+            - secretRef:
+                name: sms-api-secrets
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sms-db-app
+                  key: uri

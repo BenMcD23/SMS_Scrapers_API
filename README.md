@@ -4,79 +4,78 @@ FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, an
 
 ## Prerequisites
 
-- Docker & Docker Compose
+- Docker & Docker Compose (local dev only)
+- `kubectl` and `kubeseal` with the homelab kubeconfig, for anything touching
+  the deployed environments
 
 ## Environments
 
-Two stacks run on the server simultaneously:
+Both run on the k3s homelab cluster, deployed by Argo CD from `deploy/`:
 
-- **prod** — `main` branch, port 8000, exposed via `tailscale-prod`
-- **dev**  — `development` branch, port 8001, exposed via `tailscale-dev`
+| | Branch | Namespace | URL (Tailscale Funnel) |
+|-|--------|-----------|------------------------|
+| **prod** | `main` | `sms-prod` | `https://sms-api.<tailnet>.ts.net` |
+| **dev** | `development` | `sms-dev` | `https://sms-api-dev.<tailnet>.ts.net` |
 
-Deployments are handled automatically by GitHub Actions on push to either branch.
+A push to either branch runs `.github/workflows/deploy.yml`: build the image,
+push it to GHCR tagged with the commit, and commit that tag into the
+environment's overlay. Argo CD sees the commit and deploys it, running Alembic
+first (`deploy/base/migrate.yaml`). A failed migration stops the deploy with
+the old pod still serving.
 
-## Server setup (one-time)
-
-```bash
-# Prod
-mkdir -p ~/sms-api/prod && cd ~/sms-api/prod
-git clone https://github.com/BenMcD23/SMS_Scrapers_API.git .
-git checkout main
-cp .env.tmpl .env  # fill in secrets
-
-# Dev
-mkdir -p ~/sms-api/dev && cd ~/sms-api/dev
-git clone https://github.com/BenMcD23/SMS_Scrapers_API.git .
-git checkout development
-cp .env.tmpl .env  # fill in secrets
+```
+deploy/base/            API Deployment, Postgres (CloudNativePG), migration Job, Ingress
+deploy/overlays/prod/   config, SealedSecret, the switchover CronJob
+deploy/overlays/dev/    config, SealedSecret, one DB instance
 ```
 
-## Starting the stacks
+Placement and failover are explained in the homelab repo's ADR 0007. In
+short: prod's database runs as two instances, on squadron and home. The
+primary (and the API with it) lives on squadron, except 17:00–23:00 on
+Wednesday and Friday, when it moves to home.
+
+## Config and secrets
+
+There is no `.env` on any server.
+
+- **Plain settings** are the `configMapGenerator` literals in
+  `deploy/base/kustomization.yaml`, plus the per-environment ones in each
+  overlay. Edit them, commit, and push.
+- **Secrets** are `deploy/overlays/<env>/sealed-secret.yaml`, encrypted to
+  the cluster's Sealed Secrets key. To add or change one:
+
+  ```bash
+  echo -n 'the-value' | kubectl create secret generic sms-api-secrets -n sms-prod \
+    --dry-run=client --from-file=NEW_KEY=/dev/stdin -o yaml \
+    | kubeseal -o yaml --merge-into deploy/overlays/prod/sealed-secret.yaml
+  ```
+
+  Then commit and push. The API reads both as environment variables, and a
+  config change rolls the pod.
+- **`DATABASE_URL`** is written by CloudNativePG (secret `sms-db-app`) and
+  never set by hand.
+
+`NEXT_PUBLIC_*` vars like `NEXT_PUBLIC_OC_EMAIL` live with the frontend host
+and are baked in at build time. Set them there and redeploy the UI.
+
+## Operating it
 
 ```bash
-# Prod
-cd ~/sms-api/prod
-docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+export KUBECONFIG=~/.kube/k3s-homelab.yaml
 
-# Dev
-cd ~/sms-api/dev
-docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+kubectl -n sms-prod logs deploy/sms-api -f          # API logs
+kubectl -n sms-prod get pods -o wide                # what runs where
+kubectl -n sms-prod get cluster sms-db              # DB health + current primary
+kubectl -n sms-prod logs job/sms-api-migrate        # last migration
+kubectl -n sms-prod rollout restart deploy/sms-api  # restart the API
+kubectl -n sms-prod top pod                         # memory - tune the 6Gi limit from this
+
+# psql as the app user
+kubectl -n sms-prod exec -it deploy/sms-api -- sh -c 'psql "$DATABASE_URL"'
 ```
 
-## Stopping the stacks
-
-```bash
-# Prod
-cd ~/sms-api/prod && docker compose -p sms-prod down
-
-# Dev
-cd ~/sms-api/dev && docker compose -p sms-dev down
-```
-
-## Updating environment variables
-
-The `api` service reads its config from `.env` via `env_file`, and that file is
-loaded only when the container is **created** — a plain `docker compose restart
-api` keeps the old values. After editing `.env` on the server, recreate the api
-container so it picks up the new values:
-
-```bash
-# Prod
-cd ~/sms-api/prod
-nano .env   # e.g. set OC_EMAIL / COMMITTEE_EMAIL
-docker compose -p sms-prod -f docker-compose.yml -f docker-compose.prod.yml up -d --force-recreate --wait api
-
-# Dev
-cd ~/sms-api/dev
-nano .env
-docker compose -p sms-dev -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate --wait api
-```
-
-`--force-recreate` is required — a change to the *contents* of `.env` doesn't
-reliably trigger a recreate on its own. `.env` is not in git, so a code deploy
-alone never adds new vars; edit it on the server first. (`NEXT_PUBLIC_*` vars like
-`NEXT_PUBLIC_OC_EMAIL` live with the frontend host and are baked in at build time
-— set them there and redeploy the UI.)
+Backups work as before: the 03:00 job dumps to Google Drive, and the owner-only
+`/backups` endpoints list, preview and restore those dumps.
 
 ## NCO Holidays calendar (one-time setup)
 
@@ -101,25 +100,10 @@ ever book their own). The rule lives in `MIN_NOTICE_DAYS` in
 `app/routers/nco_holidays.py`; the booking form reads it off the API rather than
 hardcoding it, so changing that constant is enough.
 
-Then set `NCO_HOLIDAY_CALENDAR_ID` in `.env` and recreate the api container as
-above. Until it's set, holidays still save in the SMS and the page shows a
+Then set `NCO_HOLIDAY_CALENDAR_ID` in `deploy/base/kustomization.yaml` and
+push. Until it's set, holidays still save in the SMS and the page shows a
 "calendar not connected" banner — nothing is lost, and the **Retry** action on
 each row pushes the backlog once the calendar is wired up.
-
-## Authorising Tailscale (first run)
-
-After starting, the Tailscale containers need to be logged in once:
-
-```bash
-docker exec tailscale-prod tailscale up --accept-dns=false
-docker exec tailscale-dev  tailscale up --accept-dns=false
-```
-
-Open the printed login URLs in a browser. State is persisted in `./tailscale_data` so this only needs to be done once per container.
-
-Note these containers keep their own Tailscale state, entirely separate from the
-**host's** Tailscale node (the one SSH uses). Logging one out does not affect the
-other.
 
 ## Never getting locked out again
 
@@ -218,18 +202,6 @@ with tight permissions, or skip it.
 - Do long or risky host work inside `tmux` so a dropped connection never strands
   a half-finished command.
 - Disable key expiry on the server node in the admin console.
-
-## Logs
-
-```bash
-# All containers
-cd ~/sms-api/prod && docker compose -p sms-prod logs -f
-cd ~/sms-api/dev  && docker compose -p sms-dev logs -f
-
-# Single container (api, db, tailscale-prod, tailscale-dev)
-docker compose -p sms-prod logs -f api
-docker compose -p sms-dev  logs -f api
-```
 
 ## Local dev (without Docker)
 
@@ -362,11 +334,11 @@ docker exec sms_scrapers_api-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA pu
 PYTHONPATH=app python -c "from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)"
 alembic -c app/database/alembic.ini stamp head
 
-# Dev Docker stack (run the rebuild inside a one-off api container, then boot)
-docker exec sms-dev-db-1 psql -U sms_user -d 317_SMS -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-docker compose -p sms-dev run --rm --entrypoint sh api -c \
-  "PYTHONPATH=app python -c 'from database.models import Base; from database.database import engine; Base.metadata.create_all(engine)' && alembic -c app/database/alembic.ini stamp head"
-docker compose -p sms-dev restart api
+# Deployed dev: drop the schema, then re-sync. The migration Job sees an empty
+# database and does the create_all + stamp itself.
+kubectl -n sms-dev exec deploy/sms-api -- sh -c 'psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"'
+kubectl -n argocd patch application sms-api-dev --type merge -p '{"operation":{"sync":{}}}'
+kubectl -n sms-dev rollout restart deploy/sms-api
 ```
 
 Only ever run this against dev — it is irreversible and takes the whole schema with it.
@@ -374,11 +346,11 @@ Only ever run this against dev — it is irreversible and takes the whole schema
 ## Database Migrations (Alembic)
 
 **Alembic is the single source of truth for the schema.** The app no longer
-calls `Base.metadata.create_all()` on startup — the deployed containers run
-`alembic upgrade head` automatically before launching uvicorn (see the `command`
-in `docker-compose.yml` / the Dockerfile `CMD`). So on every deploy the schema
-is brought up to date from the migration history, and nothing creates tables
-out-of-band.
+calls `Base.metadata.create_all()` on startup. Every deploy runs
+`alembic upgrade head` as a Job before the new API pod starts
+(`deploy/base/migrate.yaml`), so the schema is brought up to date from the
+migration history and nothing creates tables out-of-band. The one exception is a
+brand-new empty database, which that Job builds from the models and stamps.
 
 ### Adding a schema change
 
