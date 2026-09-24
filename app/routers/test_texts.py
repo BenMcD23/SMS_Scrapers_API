@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import routers.texts as tx
+from core.llm import PRIMARY_MODEL, model_label
 from database.database import Base
 from database.models import Cadet, ParadeNightMessage, SmsRecipient, Staff
 
@@ -65,7 +66,7 @@ def _writer(delays: dict[str, float] | None = None, failures: set[str] = frozens
             time.sleep((delays or {}).get(main_body, 0.05))
             if main_body in failures:
                 raise RuntimeError(f"model refused {main_body}")
-            return f"MAIN {main_body}", f"C {c_flight}", "nvidia/nemotron-3-ultra-550b-a55b"
+            return f"MAIN {main_body}", f"C {c_flight}", PRIMARY_MODEL
         finally:
             with lock:
                 state["inflight"] -= 1
@@ -95,7 +96,7 @@ def test_batch_generates_every_night_concurrently(db, monkeypatch):
     assert result["generated"] == 6
     assert result["failed"] == 0
     assert result["models_used"] == [
-        {"model": "nvidia/nemotron-3-ultra-550b-a55b", "label": "Nemotron 3 Ultra",
+        {"model": PRIMARY_MODEL, "label": model_label(PRIMARY_MODEL),
          "count": 6, "fallback": False}
     ]
     # The point of the rewrite: nights are written several at a time, capped at

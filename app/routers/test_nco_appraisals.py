@@ -16,6 +16,7 @@ import routers.nco_appraisals as na
 from core.db import get_or_create_user
 from database.database import Base
 from database.models import Cadet, CadetAttendance, NcoAppraisal
+from scripts.nco_appraisal_ai import short_name
 
 
 def _idinfo(name: str) -> dict:
@@ -264,3 +265,10 @@ def test():
         raise AssertionError("expected a malformed address to be rejected")
     except ValueError:
         pass
+
+
+def test_ai_short_name():
+    assert short_name("Corporal Isabella Wiggett") == "Cpl Wiggett"
+    assert short_name("Flight Sergeant Jo Mullery-McCourt") == "FS Mullery-McCourt"
+    assert short_name("Cpl Sawczuk") == "Cpl Sawczuk"
+    assert short_name("Jo Bloggs") == "Jo Bloggs"
