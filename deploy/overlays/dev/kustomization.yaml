@@ -10,7 +10,7 @@ resources:
 # newTag is rewritten by .github/workflows/deploy.yml on every push to development.
 images:
   - name: ghcr.io/benmcd23/sms_scrapers_api
-    newTag: initial
+    newTag: f6edeb7386a5
 
 configMapGenerator:
   - name: sms-api-config
