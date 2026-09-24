@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sms-dev
+
+resources:
+  - ../../base
+  - sealed-secret.yaml
+
+# newTag is rewritten by .github/workflows/deploy.yml on every push to development.
+images:
+  - name: ghcr.io/benmcd23/sms_scrapers_api
+    newTag: initial
+
+configMapGenerator:
+  - name: sms-api-config
+    behavior: merge
+    literals:
+      - EMAIL_DISABLED=true
+      - DB_BACKUP_ENABLED=false
+      - OC_EMAIL=ci.mcdonald@317atc.co.uk
+      - COMMITTEE_EMAIL=ci.mcdonald@317atc.co.uk
+
+patches:
+  # One instance: no HA, and no switchover CronJob.
+  - target: { kind: Cluster, name: sms-db }
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+  - target: { kind: Ingress, name: sms-api }
+    patch: |-
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: sms-api-dev
