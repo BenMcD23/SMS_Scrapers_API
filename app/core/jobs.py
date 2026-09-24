@@ -3,7 +3,7 @@
 Registered into the shared APScheduler by ``register_jobs`` at startup when
 ``SCHEDULER_ENABLED`` is true. Exactly one process may run these — two
 schedulers would send the parade-night text twice and race the cleanups — so
-the API runs as a single container.
+they only run in the process holding the leader lock (core/leader.py).
 """
 
 import logging

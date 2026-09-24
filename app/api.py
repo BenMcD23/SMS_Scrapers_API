@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 
+from core import leader
 from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, SCHEDULER_ENABLED
 from core.jobs import register_jobs
 from core.logging import configure_logging
@@ -55,11 +56,14 @@ async def lifespan(app: FastAPI):
     # starts (deploy job / compose step), never by create_all here.
     if SCHEDULER_ENABLED:
         register_jobs(scheduler)
-        scheduler.start()
-        logger.info("background scheduler started")
+        # Jobs run only in the process holding the leader lock, so a rolling
+        # deploy never has two schedulers going at once. Scraper schedules are
+        # re-read on takeover, in case the old process saw an edit this one missed.
+        leader.start(scheduler, on_acquire=scrapers.register_schedule_jobs)
     else:
         logger.info("background scheduler disabled on this replica")
     yield
+    leader.stop()
     if scheduler.running:
         scheduler.shutdown()
 
