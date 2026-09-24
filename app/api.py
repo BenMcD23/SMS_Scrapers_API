@@ -5,9 +5,10 @@ core/jobs.py.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
@@ -84,6 +85,27 @@ app.add_middleware(
     expose_headers=["*"],
     allow_credentials=True,
 )
+
+_QUIET_PATHS = {"/ping", "/healthz", "/readyz"}
+
+
+# Outermost middleware: one line per request with status and timing, and the
+# traceback of anything that blows up, so a failing page shows up in the pod log.
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("%s %s crashed after %.0fms", request.method, request.url.path,
+                         (time.perf_counter() - start) * 1000)
+        raise
+    if request.url.path not in _QUIET_PATHS:
+        ms = (time.perf_counter() - start) * 1000
+        level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        logger.log(level, "%s %s -> %d in %.0fms", request.method, request.url.path,
+                   response.status_code, ms)
+    return response
 
 
 # ── Probes ────────────────────────────────────────────────────────────────────

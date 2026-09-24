@@ -3,6 +3,7 @@
 import hmac
 import io
 import json
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -32,6 +33,7 @@ from database.models import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
@@ -152,7 +154,9 @@ def stores_get_structure(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    return _full_structure(db)
+    result = _full_structure(db)
+    logger.info("structure loaded: %d boxes for %s", len(result["boxes"]), idinfo.get("email"))
+    return result
 
 
 @router.post("/stores/structure")
@@ -165,6 +169,8 @@ def stores_post_structure(
     box_lbl = body.get("box", "").strip().upper()
     sec_lbl = body.get("section", "").strip() if body.get("section") else None
     new_lbl = body.get("newLabel", "").strip() if body.get("newLabel") else None
+    logger.info("structure %s: box=%r section=%r newLabel=%r by %s",
+                action, box_lbl, sec_lbl, new_lbl, idinfo.get("email"))
 
     if action == "add-box":
         if not box_lbl:
@@ -273,6 +279,7 @@ def stores_post_structure(
         db.commit()
 
     else:
+        logger.warning("structure: unknown action %r", action)
         raise HTTPException(status_code=400, detail="Unknown action")
 
     return _full_structure(db)
@@ -285,8 +292,10 @@ def stores_patch_box_layout(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    logger.info("box %s layout update %s by %s", box_label, body, idinfo.get("email"))
     box = db.query(StoresBox).filter(StoresBox.label == box_label.upper()).first()
     if not box:
+        logger.warning("box layout: box %r not found", box_label)
         raise HTTPException(status_code=404, detail="Box not found")
 
     if "topEnd" in body:
@@ -348,10 +357,13 @@ def stores_reorder_sections(
         raise HTTPException(status_code=404, detail="Box not found")
 
     sections_data: list = body.get("sections", [])
+    logger.info("box %s: reordering %d sections by %s", box_label, len(sections_data), idinfo.get("email"))
     section_map = {s.label: s for s in box.sections}
 
     incoming_labels = {str(sd["label"]) for sd in sections_data}
     if incoming_labels != set(section_map.keys()):
+        logger.warning("box %s reorder: labels %s don't match existing %s",
+                       box_label, sorted(incoming_labels), sorted(section_map))
         raise HTTPException(
             status_code=400,
             detail="sections must contain exactly the existing section labels",
@@ -381,6 +393,7 @@ def stores_get_stock(
         .options(joinedload(StoresItem.box), joinedload(StoresItem.section))
         .all()
     )
+    logger.info("stock loaded: %d items for %s", len(items), idinfo.get("email"))
     return [_item_to_dict(i) for i in items]
 
 
@@ -395,6 +408,8 @@ def stores_create_stock(
     box_lbl   = body.get("box",      "").strip().upper()
     sec_lbl   = body.get("section",  "").strip()
     quantity  = body.get("quantity", 0)
+    logger.info("stock add: %s %s x%s at %s/%s by %s",
+                item_type, size, quantity, box_lbl, sec_lbl, idinfo.get("email"))
 
     if not item_type or not size or not box_lbl or not sec_lbl:
         raise HTTPException(status_code=400, detail="Missing required fields")
@@ -415,6 +430,7 @@ def stores_create_stock(
     ).first()
 
     if existing:
+        logger.info("stock add: topping up existing item %s", existing.id)
         existing.quantity += int(quantity)
         db.commit()
         db.refresh(existing)
@@ -441,8 +457,10 @@ def stores_update_stock(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    logger.info("stock %s update %s by %s", item_id, body, idinfo.get("email"))
     item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
     if not item:
+        logger.warning("stock update: item %s not found", item_id)
         raise HTTPException(status_code=404, detail="Item not found")
 
     if "quantity" in body:
@@ -476,6 +494,7 @@ def stores_update_stock(
     ).first()
 
     if duplicate:
+        logger.info("stock %s merged into duplicate %s", item.id, duplicate.id)
         duplicate.quantity += item.quantity
         db.delete(item)
         db.commit()
@@ -495,7 +514,10 @@ def stores_delete_stock(
 ):
     item = db.query(StoresItem).filter(StoresItem.id == item_id).first()
     if not item:
+        logger.warning("stock delete: item %s not found", item_id)
         raise HTTPException(status_code=404, detail="Item not found")
+    logger.info("stock delete: %s (%s %s x%s) by %s",
+                item_id, item.item_type, item.size, item.quantity, idinfo.get("email"))
     db.delete(item)
     db.commit()
 
@@ -517,6 +539,7 @@ def stores_get_orders(
         .order_by(StoresOrder.created_at.desc())
         .all()
     )
+    logger.info("orders loaded: %d for %s", len(orders), idinfo.get("email"))
     return [order_to_dict(o) for o in orders]
 
 
@@ -528,6 +551,8 @@ def stores_create_order(
 ):
     cadet_cin = body.get("cadetCin")
     items     = body.get("items", [])
+    logger.info("order create: cadet %s, %d items by %s",
+                cadet_cin, len(items) if isinstance(items, list) else -1, idinfo.get("email"))
 
     if not cadet_cin or not isinstance(items, list):
         raise HTTPException(status_code=400, detail="cadetCin and items required")
@@ -544,6 +569,7 @@ def stores_create_order(
 
     db.commit()
     db.refresh(order)
+    logger.info("order %s created for cadet %s", order.id, cadet.cin)
     return order_to_dict(order)
 
 
@@ -554,8 +580,10 @@ def stores_update_order(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    logger.info("order %s update (%s) by %s", order_id, ", ".join(body), idinfo.get("email"))
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
+        logger.warning("order update: order %s not found", order_id)
         raise HTTPException(status_code=404, detail="Order not found")
 
     if "completed" in body:
@@ -613,6 +641,8 @@ def stores_kit_flight(
         add_order_items(db, order, [{"itemType": t} for t in KIT_FLIGHT_ITEMS])
         created.append(order)
     db.commit()
+    logger.info("kit flight: %d new kitting orders (%d C Flight cadets) by %s",
+                len(created), len(cadets), idinfo.get("email"))
     for o in created:
         db.refresh(o)
     return [order_to_dict(o) for o in created]
@@ -630,6 +660,7 @@ def stores_form_import(
     Each row matches a cadet by email and creates one order with the provided items.
     """
     if not UNIFORM_FORM_API_KEY or not x_import_key or not hmac.compare_digest(x_import_key, UNIFORM_FORM_API_KEY):
+        logger.warning("form import: rejected, bad or missing import key")
         raise HTTPException(status_code=401, detail="Invalid import key")
 
     rows = body.get("rows", [])
@@ -671,6 +702,12 @@ def stores_form_import(
         db.refresh(order)
         results.append({"email": email, "status": "created", "orderId": order.id})
 
+    statuses = [r["status"] for r in results]
+    logger.info("form import: %d rows -> %d created, %d skipped, %d errors",
+                len(rows), statuses.count("created"), statuses.count("skipped"), statuses.count("error"))
+    for r in results:
+        if r["status"] == "error":
+            logger.warning("form import: %s: %s", r["email"] or "<no email>", r["detail"])
     return {"results": results}
 
 
@@ -682,7 +719,9 @@ def stores_delete_order(
 ):
     order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
     if not order:
+        logger.warning("order delete: order %s not found", order_id)
         raise HTTPException(status_code=404, detail="Order not found")
+    logger.info("order delete: %s by %s", order_id, idinfo.get("email"))
     db.delete(order)
     db.commit()
 
@@ -705,6 +744,8 @@ def stores_mark_item_ready(
 
     item.ready_to_collect = datetime.utcnow()
     db.commit()
+    logger.info("order %s item %s (%s) marked ready by %s",
+                order_id, item_id, item.item_type, idinfo.get("email"))
 
     if order.cadet and order.cadet.email:
         greeting_name = f"{order.cadet.rank} {order.cadet.last_name}" if order.cadet.rank else order.cadet.last_name
@@ -715,6 +756,8 @@ def stores_mark_item_ready(
                 cadet_name=greeting_name, item_name=item.item_type, item_kind="uniform", size=item.size or "",
             ),
         )
+    else:
+        logger.info("order %s: no cadet email, ready-to-collect email not sent", order_id)
 
     db.refresh(order)
     return order_to_dict(order)
@@ -732,6 +775,8 @@ def stores_order_item_stock(
     count and appending to the item's stock history in one go, so the two can't
     drift apart the way two separate client calls could."""
     action = body.get("action")
+    logger.info("order %s item %s: stock %s (stockItemId=%s) by %s",
+                order_id, item_id, action, body.get("stockItemId"), idinfo.get("email"))
     if action not in ("remove", "return"):
         raise HTTPException(status_code=400, detail="action must be 'remove' or 'return'")
 
@@ -785,6 +830,8 @@ def stores_order_item_stock(
 
     item.stock_events = stock_events.dump(events)
     db.commit()
+    logger.info("order %s item %s: stock item %s now x%s",
+                order_id, item_id, stock_item.id, stock_item.quantity)
     db.refresh(order)
     db.refresh(stock_item)
     return {"order": order_to_dict(order), "stockItem": _item_to_dict(stock_item)}
@@ -843,6 +890,9 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
                 order_item.given_by = given_by
 
     db.commit()
+    logger.info("issuances recorded: %s for %s by %s",
+                [i.item_category for i in updated],
+                f"cadet {cadet_cin}" if cadet_cin is not None else f"user {user_id}", given_by)
     for i in updated:
         db.refresh(i)
     return updated
@@ -856,12 +906,14 @@ def stores_get_user_issuances(
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
+        logger.warning("issuances: user %s not found", user_id)
         raise HTTPException(status_code=404, detail="User not found")
     issuances = (
         db.query(StoresItemIssuance)
         .filter(StoresItemIssuance.user_id == user_id)
         .all()
     )
+    logger.info("issuances loaded: %d for user %s", len(issuances), user_id)
     return [issuance_to_dict(i) for i in issuances]
 
 
@@ -890,12 +942,14 @@ def stores_get_issuances(
 ):
     cadet = db.query(Cadet).filter(Cadet.cin == cadet_cin).first()
     if not cadet:
+        logger.warning("issuances: cadet %s not found", cadet_cin)
         raise HTTPException(status_code=404, detail="Cadet not found")
     issuances = (
         db.query(StoresItemIssuance)
         .filter(StoresItemIssuance.cadet_id == cadet_cin)
         .all()
     )
+    logger.info("issuances loaded: %d for cadet %s", len(issuances), cadet_cin)
     return [issuance_to_dict(i) for i in issuances]
 
 
@@ -924,7 +978,9 @@ def stores_delete_issuance(
 ):
     issuance = db.query(StoresItemIssuance).filter(StoresItemIssuance.id == issuance_id).first()
     if not issuance:
+        logger.warning("issuance delete: %s not found", issuance_id)
         raise HTTPException(status_code=404, detail="Issuance record not found")
+    logger.info("issuance delete: %s (%s) by %s", issuance_id, issuance.item_category, idinfo.get("email"))
     db.delete(issuance)
     db.commit()
 
@@ -971,6 +1027,7 @@ def logs_forms_list(
         .order_by(LogsForm.created_at.desc())
         .all()
     )
+    logger.info("logs forms loaded: %d for %s", len(forms), idinfo.get("email"))
     return [_logs_form_to_dict(f) for f in forms]
 
 
@@ -1014,6 +1071,8 @@ def logs_forms_add_entry(
         db.add(form)
         db.flush()
 
+    logger.info("logs form %s: adding %s %s for %s by %s",
+                form.id, item.item_type, size, cadet_name, idinfo.get("email"))
     db.add(LogsFormEntry(
         form_id       = form.id,
         order_item_id = item.id,
@@ -1039,6 +1098,7 @@ def logs_forms_delete_entry(
         raise HTTPException(status_code=404, detail="Entry not found")
     if entry.form.ordered_at is not None:
         raise HTTPException(status_code=400, detail="Form has been ordered and cannot be edited")
+    logger.info("logs form entry delete: %s by %s", entry_id, idinfo.get("email"))
     db.delete(entry)
     db.commit()
 
@@ -1055,6 +1115,7 @@ def logs_forms_mark_ordered(
     if form.ordered_at is not None:
         raise HTTPException(status_code=400, detail="Form is already marked as ordered")
     form.ordered_at = datetime.now()
+    logger.info("logs form %s marked ordered by %s", form_id, idinfo.get("email"))
     db.commit()
     db.refresh(form)
     return _logs_form_to_dict(form)
@@ -1094,6 +1155,7 @@ def logs_forms_download(
             issue = "Exchange" if has_issuance else "Initial Issue"
         nominal_roll.append((rank, e.cadet_name, issue))
 
+    logger.info("logs form %s download: %d entries, %d people", form_id, len(entries), len(nominal_roll))
     xlsx_bytes = generate_logs_form([(e.item_type, e.size) for e in entries], nominal_roll)
     filename = f"Logs Form 202 - {form.created_at.strftime('%d %b %Y')}.xlsx"
     return StreamingResponse(

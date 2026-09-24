@@ -81,6 +81,7 @@ def verify_token(authorization: str) -> dict:
         }
 
     if not authorization or not authorization.startswith("Bearer "):
+        logger.warning("auth rejected: no bearer token on request")
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization.split(" ", 1)[1]
 
@@ -108,6 +109,7 @@ def verify_token(authorization: str) -> dict:
         logger.warning(f"token rejected: {type(e).__name__}: {e}")
         raise HTTPException(status_code=401, detail="Invalid Token")
     if not idinfo.get("email_verified"):
+        logger.warning(f"auth rejected: {idinfo.get('email')} email not verified")
         raise HTTPException(status_code=401, detail="Email not verified")
 
     # Only accept accounts in our Workspace. Prefer the hd claim (Workspace
@@ -118,6 +120,7 @@ def verify_token(authorization: str) -> dict:
     hd = idinfo.get("hd")
     domain_ok = hd == GOOGLE_DOMAIN if hd else email.lower().endswith(f"@{GOOGLE_DOMAIN}")
     if not domain_ok:
+        logger.warning(f"auth rejected: {email} (hd={hd}) is outside {GOOGLE_DOMAIN}")
         raise HTTPException(status_code=403, detail="Outside this Workspace")
 
     # Cache until the token's own expiry (capped at 1h), so a revoked/expired
@@ -252,7 +255,9 @@ def require_user(authorization: str = Header(None)) -> dict:
 
 def require_staff(authorization: str = Header(None)) -> dict:
     idinfo = verify_token(authorization)
-    if get_user_role(idinfo["email"]) != "staff":
+    role = get_user_role(idinfo["email"])
+    if role != "staff":
+        logger.warning(f"staff check failed: {idinfo['email']} has role {role!r}")
         raise HTTPException(status_code=403, detail="Staff access required")
     return idinfo
 
