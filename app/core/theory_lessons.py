@@ -85,7 +85,10 @@ CLASSIFICATION_ORDER: tuple[str, ...] = (
 )
 
 
-def _class_rank(name: str | None) -> int:
+def class_rank(name: str | None) -> int:
+    """Index of a classification in the ladder; -1 for unknown/None, so
+    "has this classification or better" is a plain >= comparison. Public
+    because the badge-order qualification check ranks the same ladder."""
     try:
         return CLASSIFICATION_ORDER.index(name)
     except ValueError:
@@ -104,5 +107,5 @@ def lesson_qual_held(lesson: TheoryLesson, qual_names, classification: str | Non
         badge = BADGE_TYPE_BY_KEY.get(target)
         return bool(badge and held_level(badge, qual_names))
     if kind == "classification":
-        return _class_rank(classification) >= _class_rank(target)
+        return class_rank(classification) >= class_rank(target)
     return False

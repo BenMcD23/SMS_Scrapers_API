@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import stock_events
+from core.badge_quals import badge_qual_status
 from core.db import get_db
 from core.emailer import ready_to_collect_email_html, send_email
 from core.security import require_staff
@@ -73,10 +74,17 @@ def _get_or_create_badge_config(db: Session) -> BadgeGridConfig:
 
 
 def badge_order_to_dict(order: BadgeOrder) -> dict:
+    """An order for the QM's list and the cadet's own.
+
+    Each item carries a live `qualStatus` (see core/badge_quals) rather than
+    one stored when the order was placed, so an item flagged as unevidenced
+    stops being flagged the moment the qualification appears on SMS.
+    """
+    cadet = order.cadet
     return {
         "id":        str(order.id),
-        "cadetName": f"{order.cadet.first_name} {order.cadet.last_name}",
-        "cadetCin":  order.cadet.cin,
+        "cadetName": f"{cadet.first_name} {cadet.last_name}",
+        "cadetCin":  cadet.cin,
         "timestamp": order.created_at.isoformat(),
         "completed": bool(order.completed),
         "items": [
@@ -93,6 +101,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "gainedWhereDetail": oi.gained_where_detail,
                 "gainedDateFrom":    oi.gained_date_from.isoformat() if oi.gained_date_from else None,
                 "gainedDateTo":      oi.gained_date_to.isoformat() if oi.gained_date_to else None,
+                "qualStatus":        badge_qual_status(oi.badge_name, cadet.qualifications, cadet.classification),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -306,7 +315,10 @@ def badge_orders_list(
 ):
     orders = (
         db.query(BadgeOrder)
-        .options(joinedload(BadgeOrder.cadet), selectinload(BadgeOrder.order_items))
+        .options(
+            joinedload(BadgeOrder.cadet).selectinload(Cadet.qualifications),
+            selectinload(BadgeOrder.order_items),
+        )
         .order_by(BadgeOrder.created_at.desc())
         .all()
     )

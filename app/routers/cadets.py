@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from core import cache
 from core.attendance import attendance_state
+from core.badge_quals import badge_qual_statuses
 from core.db import get_db
-from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level
+from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level, qual_is_expired
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 from core.theory_lessons import THEORY_LESSON_BY_KEY, THEORY_LESSONS, lesson_qual_held
 from database.models import (
@@ -97,13 +98,6 @@ def list_cadets(
 
 # ─── Audit helpers ────────────────────────────────────────────────────────────
 
-def _is_expired(q, today) -> bool:
-    """True if the qualification has an expiry date that has already passed.
-    Quals with no expiry (``date_expires is None``) never expire. Compared on
-    the date (not datetime) so a qual is only expired the day *after* it lapses."""
-    return q.date_expires is not None and q.date_expires.date() < today
-
-
 def _award_date(badge, level, qual_objs):
     """ISO date the cadet gained ``badge`` at its held ``level`` — the
     date_achieved of the qual record matching that level's patterns, or None."""
@@ -130,7 +124,7 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
         entry = {**_cadet_summary(c)}
         # Expired qualifications are ignored everywhere in the audit — a lapsed
         # qual must never report the cadet as still holding it.
-        active_quals = [q for q in c.qualifications if not _is_expired(q, today)]
+        active_quals = [q for q in c.qualifications if not qual_is_expired(q, today)]
         if include_missing_attachments:
             entry["missing_attachments"] = [
                 q.qual_type for q in active_quals if q.has_attachment is False
@@ -527,6 +521,26 @@ def attendance_to_dict(record):
         "state": attendance_state(record.status),
         "unit": record.unit,
     }
+
+
+@router.get("/cadets/{cin}/badge-qual-check")
+def cadet_badge_qual_check(
+    cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Which badges in the catalogue this cadet's SMS record evidences — the
+    staff badge order form's copy of the portal's /cadets/me/badge-qual-check,
+    so the QM sees the same verdict when ordering on a cadet's behalf."""
+    cadet = (
+        db.query(Cadet)
+        .filter(Cadet.cin == cin)
+        .options(selectinload(Cadet.qualifications))
+        .first()
+    )
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+    return badge_qual_statuses(cadet.qualifications, cadet.classification)
 
 
 @router.get("/cadets/{cin}/attendance")
