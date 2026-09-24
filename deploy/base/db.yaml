@@ -13,6 +13,17 @@ spec:
   imageName: ghcr.io/cloudnative-pg/postgresql:16.15-standard-bookworm
   primaryUpdateStrategy: unsupervised
 
+  # A primary that can't reach the API server or the other instance within
+  # the timeout assumes it's cut off and shuts itself down (so two primaries
+  # never take writes). The 1s default tripped on squadron's WiFi, where
+  # calls routed to home/oracle over the tailnet can take longer.
+  probes:
+    liveness:
+      isolationCheck:
+        enabled: true
+        connectionTimeout: 5000 # ms
+        requestTimeout: 5000 # ms
+
   bootstrap:
     initdb:
       database: app
