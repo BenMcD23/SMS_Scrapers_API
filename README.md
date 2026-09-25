@@ -231,11 +231,10 @@ auth, and email off.
 python deploy/dev-env.py        # re-run whenever a secret or config.env changes
 ```
 
-Start PostgreSQL (the local override publishes it on `localhost:5432`, and it
-reads `POSTGRES_PASSWORD` from `.env`), then run migrations:
+Start PostgreSQL (on `localhost:5432`, reading `POSTGRES_PASSWORD` from `.env`), then run migrations:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local.yml up -d db
+docker compose up -d
 alembic -c app/database/alembic.ini upgrade head
 ```
 

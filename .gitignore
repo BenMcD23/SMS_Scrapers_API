@@ -2,9 +2,6 @@
 venv/
 .env
 __pycache__
-tailscale_data
 data/
 *.db
-tailscale_data/
 service_account.json
-tailscale_secrets.txt
