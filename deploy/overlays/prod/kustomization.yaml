@@ -7,7 +7,6 @@ resources:
   - ../../base
   - sealed-secret.yaml
   - switchover.yaml
-  - public-ingress.yaml
 
 # newTag is rewritten by .github/workflows/deploy.yml on every push to main.
 images:

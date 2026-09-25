@@ -12,10 +12,10 @@ FastAPI backend for the 317 SMS site - handles scrapers, assessments, stores, an
 
 Both run on the k3s homelab cluster, deployed by Argo CD from `deploy/`:
 
-| | Branch | Namespace | URL (Tailscale Funnel) |
+| | Branch | Namespace | URL |
 |-|--------|-----------|------------------------|
-| **prod** | `main` | `sms-prod` | `https://sms-api.<tailnet>.ts.net` |
-| **dev** | `development` | `sms-dev` | `https://sms-api-dev.<tailnet>.ts.net` |
+| **prod** | `main` | `sms-prod` | `https://smsapi.317atc.co.uk` |
+| **dev** | `development` | `sms-dev` | `https://smsapi-dev.317atc.co.uk` |
 
 A push to either branch runs `.github/workflows/deploy.yml`: build the image,
 push it to GHCR with a version tag, and commit that tag into the environment's
