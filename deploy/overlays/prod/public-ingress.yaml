@@ -1,0 +1,25 @@
+# Public endpoint on oracle's own IP through Traefik, for the Vercel
+# frontends. Faster than the Funnel one in base/ingress.yaml (0.7s vs 7.6s
+# for a 160KB response): Funnel's proxy runs WireGuard inside a 1230-MTU pod.
+# Traefik and its Let's Encrypt resolver are set up in the k8s repo,
+# clusters/prod/traefik.yaml. DNS: A smsapi -> 79.72.64.181 at domaindiscount24.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sms-api-public
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: smsapi.317atc.co.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sms-api
+                port:
+                  number: 80
