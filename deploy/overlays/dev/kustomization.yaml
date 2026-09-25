@@ -25,8 +25,8 @@ patches:
       - op: replace
         path: /spec/instances
         value: 1
-  - target: { kind: Ingress, name: sms-api }
+  - target: { kind: Ingress, name: sms-api-public }
     patch: |-
       - op: replace
-        path: /spec/tls/0/hosts/0
-        value: sms-api-dev
+        path: /spec/rules/0/host
+        value: smsapi-dev.317atc.co.uk
