@@ -7,19 +7,22 @@ There are three access tiers, used as FastAPI dependencies:
   require_staff_or_snco — staff or SNCO group members (inspections)
   require_staff         — staff group members only
 
-Roles come from Google Workspace group membership and are cached for
-5 minutes so we don't hit the admin API on every request.
+Roles come from Google Workspace group membership, from a snapshot of the
+groups refreshed every 15 minutes so we don't hit the admin API per request.
 """
 
 import logging
 import os
+import re
 import threading
 import time
 
+import httplib2
 from fastapi import Header, HTTPException
 from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport import requests
 from google.oauth2 import id_token, service_account
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build as google_build
 
 from core.config import (
@@ -37,18 +40,45 @@ from core.config import (
 
 logger = logging.getLogger(__name__)
 
-_role_cache: dict = {}
-_role_cache_lock = threading.Lock()
+# Roles come from one snapshot of the three groups, shared by every request:
+# (fetched_at, {role: member emails}). See _groups().
+ROLE_CACHE_S = 900
+ROLE_MISS_REFRESH_S = 60
+_group_snapshot: tuple[float, dict[str, set[str]]] | None = None
+_group_lock = threading.Lock()
 
-# Verified-token cache. Google's verify_oauth2_token fetches signing certs over
-# the network on every call, so without this we pay a Google round-trip on every
-# request. Keyed by the raw token string → (idinfo, expires_at).
+# Directory API credentials, shared so the access token is reused for its hour
+# instead of exchanged on every lookup; they refresh themselves when it expires.
+_directory_creds = None
+
+# Verified-token cache. Keyed by the raw token string → (idinfo, expires_at).
 _token_cache: dict = {}
 _token_cache_lock = threading.Lock()
 
-# Reused across verifications so even cache misses share a single HTTP session
-# (and its cert cache) rather than building a fresh one each time.
-_google_request = requests.Request()
+
+class _CertCachingRequest(requests.Request):
+    """google-auth fetches Google's signing certs on every token verification.
+    Keep them for as long as Google's Cache-Control allows (hours), so a new
+    token costs no round-trip. Google publishes new keys well before using them."""
+
+    def __init__(self):
+        super().__init__()
+        self._certs = None  # (response, expires_at)
+
+    def __call__(self, url, method="GET", **kwargs):
+        if method != "GET" or url != id_token._GOOGLE_OAUTH2_CERTS_URL:
+            return super().__call__(url, method=method, **kwargs)
+        cached = self._certs
+        if cached and time.time() < cached[1]:
+            return cached[0]
+        resp = super().__call__(url, method=method, **kwargs)
+        max_age = re.search(r"max-age=(\d+)", resp.headers.get("cache-control", ""))
+        if resp.status == 200 and max_age:
+            self._certs = (resp, time.time() + int(max_age[1]))
+        return resp
+
+
+_google_request = _CertCachingRequest()
 
 # google-auth defaults this to 0, meaning a token whose `iat` is even one second
 # ahead of this host's clock is rejected as "Token used too early". That lands
@@ -149,24 +179,16 @@ def _service_account_creds(scopes: list[str]):
     )
 
 
-def _fetch_user_role(email: str) -> str | None:
-    if not SA_EMAIL or not SA_PRIVATE_KEY:
-        return None
-    try:
-        creds = _service_account_creds(
+def _directory():
+    """A Directory API client on the shared credentials. Built per call because
+    httplib2 isn't thread-safe; the build itself is local (static discovery)."""
+    global _directory_creds
+    if _directory_creds is None:
+        _directory_creds = _service_account_creds(
             ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"]
         ).with_subject(IMPERSONATE_EMAIL)
-        admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
-        for group, role in [(STAFF_GROUP, "staff"), (SNCO_GROUP, "snco"), (NCO_GROUP, "nco")]:
-            try:
-                admin.members().get(groupKey=group, memberKey=email).execute()
-                return role
-            except Exception:
-                continue
-        return None
-    except Exception as e:
-        logger.error(f"role lookup failed: {e}")
-        return None
+    http = AuthorizedHttp(_directory_creds, http=httplib2.Http(timeout=10))
+    return google_build("admin", "directory_v1", http=http, cache_discovery=False)
 
 
 def _fetch_group_members(admin, group: str) -> set[str]:
@@ -185,49 +207,41 @@ def _fetch_group_members(admin, group: str) -> set[str]:
             return members
 
 
+def _groups(unknown: bool = False) -> dict[str, set[str]] | None:
+    """{role: member emails}, from a snapshot of all three groups shared by every
+    request. Refreshed after ROLE_CACHE_S, or after ROLE_MISS_REFRESH_S when
+    someone isn't in it (so a newly added member gets in within a minute).
+    One fetch at a time: concurrent cold requests wait for it and share it.
+    If Google fails, the last snapshot is kept rather than locking everyone out."""
+    global _group_snapshot
+    with _group_lock:
+        age = time.time() - _group_snapshot[0] if _group_snapshot else None
+        if age is not None and age < (ROLE_MISS_REFRESH_S if unknown else ROLE_CACHE_S):
+            return _group_snapshot[1]
+        if not SA_EMAIL or not SA_PRIVATE_KEY:
+            return None
+        try:
+            admin = _directory()
+            groups = {role: _fetch_group_members(admin, group)
+                      for role, group in (("staff", STAFF_GROUP), ("snco", SNCO_GROUP), ("nco", NCO_GROUP))}
+        except Exception as e:
+            logger.error(f"group lookup failed, keeping the previous snapshot: {e}")
+            return _group_snapshot[1] if _group_snapshot else None
+        _group_snapshot = (time.time(), groups)
+        return groups
+
+
+def _role_in(groups: dict[str, set[str]] | None, email: str) -> str | None:
+    key = (email or "").lower()
+    return next((role for role, members in (groups or {}).items() if key in members), None)
+
+
 def get_roles_for_emails(emails: list[str]) -> dict[str, str | None]:
-    """Role for each email in one pass — two group listings instead of one
-    admin-API round-trip per user. Results are written into the same per-email
-    cache used by get_user_role, so both paths stay consistent."""
-    now = time.time()
-    with _role_cache_lock:
-        cached = {
-            e: _role_cache[e][0]
-            for e in emails
-            if e in _role_cache and now < _role_cache[e][1]
-        }
-    missing = [e for e in emails if e not in cached]
-    if not missing:
-        return cached
-
-    if not SA_EMAIL or not SA_PRIVATE_KEY:
-        return {**cached, **{e: None for e in missing}}
-    try:
-        creds = _service_account_creds(
-            ["https://www.googleapis.com/auth/admin.directory.group.member.readonly"]
-        ).with_subject(IMPERSONATE_EMAIL)
-        admin = google_build("admin", "directory_v1", credentials=creds, cache_discovery=False)
-        staff = _fetch_group_members(admin, STAFF_GROUP)
-        snco = _fetch_group_members(admin, SNCO_GROUP)
-        nco = _fetch_group_members(admin, NCO_GROUP)
-    except Exception as e:
-        logger.error(f"bulk role lookup failed: {e}")
-        return {**cached, **{e: None for e in missing}}
-
-    resolved = {}
-    expiry = time.time() + 300
-    with _role_cache_lock:
-        for email in missing:
-            key = email.lower()
-            role = (
-                "staff" if key in staff
-                else "snco" if key in snco
-                else "nco" if key in nco
-                else None
-            )
-            resolved[email] = role
-            _role_cache[email] = (role, expiry)
-    return {**cached, **resolved}
+    """Role for each email, from the shared group snapshot."""
+    groups = _groups()
+    if any(_role_in(groups, e) is None for e in emails):
+        groups = _groups(unknown=True)
+    return {e: _role_in(groups, e) for e in emails}
 
 
 def get_user_role(email: str) -> str | None:
@@ -237,14 +251,7 @@ def get_user_role(email: str) -> str | None:
         for role in ("staff", "snco", "nco"):
             if (email or "").lower() == _dev_fake_email(role).lower():
                 return role
-    with _role_cache_lock:
-        cached = _role_cache.get(email)
-        if cached and time.time() < cached[1]:
-            return cached[0]
-    role = _fetch_user_role(email)
-    with _role_cache_lock:
-        _role_cache[email] = (role, time.time() + 300)
-    return role
+    return _role_in(_groups(), email) or _role_in(_groups(unknown=True), email)
 
 
 # ── FastAPI dependencies ──────────────────────────────────────────────────────
