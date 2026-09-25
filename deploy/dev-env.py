@@ -74,7 +74,6 @@ def main() -> None:
     local = {**LOCAL, **{k: previous[k] for k in KEEP if previous.get(k)}}
 
     merged = {**config, **secrets, **local}
-    merged.pop("SCHEDULER_ENABLED", None)  # the prod cutover switch; locally, the default
 
     if ENV_FILE.exists():
         ENV_FILE.replace(ROOT / ".env.bak")
