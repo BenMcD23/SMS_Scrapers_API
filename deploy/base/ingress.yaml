@@ -1,19 +1,26 @@
-# Its own device on the tailnet via the Tailscale operator, and on the public
-# internet via Funnel - the Vercel frontends call it from outside the tailnet.
-# The device name comes from tls.hosts[0]; overlays/dev renames it.
+# Public endpoint on oracle's own IP through Traefik, for the Vercel
+# frontends. Replaced Tailscale Funnel, which crawled on large responses
+# (7s vs 0.3s for 160KB): its proxy ran WireGuard inside a 1230-MTU pod.
+# Traefik and its Let's Encrypt resolver are set up in the k8s repo,
+# clusters/prod/traefik.yaml. DNS at domaindiscount24: A smsapi -> 79.72.64.181,
+# CNAME smsapi-dev -> smsapi. overlays/dev renames the host.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: sms-api
+  name: sms-api-public
   annotations:
-    tailscale.com/funnel: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
 spec:
-  ingressClassName: tailscale
-  defaultBackend:
-    service:
-      name: sms-api
-      port:
-        number: 80
-  tls:
-    - hosts:
-        - sms-api
+  ingressClassName: traefik
+  rules:
+    - host: smsapi.317atc.co.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sms-api
+                port:
+                  number: 80
