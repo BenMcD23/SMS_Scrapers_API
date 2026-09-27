@@ -77,6 +77,17 @@ class Level(NamedTuple):
     level: str                # one of the level labels above
     patterns: tuple[str, ...]  # case-insensitive substrings to detect this rung
     bader: tuple[BaderQual, ...] = ()
+    # Match a whole qualification name rather than a substring — for quals whose
+    # name may prefix longer, different qualifications we must not count.
+    exact: bool = False
+
+    def matches(self, qual_name: str) -> bool:
+        """True if one raw ``qual_type`` string counts toward this rung. Shared by
+        ``held_level`` and the audit's award-date lookup so both agree."""
+        name = qual_name.strip().casefold()
+        if self.exact:
+            return any(p.casefold() == name for p in self.patterns)
+        return any(p.casefold() in name for p in self.patterns)
 
 
 class BadgeType(NamedTuple):
@@ -174,6 +185,13 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
         )),
     )),
 
+    # Matched on the exact qualification name, not a substring (see Level.exact).
+    # No Bader option ids confirmed yet, so these are audit-only.
+    BadgeType("atp_ground_school", "ATP Ground School", LEVELED, (
+        Level(BRONZE, ("Bronze ATP Ground School",), exact=True),
+        Level(BLUE,   ("Blue ATP Ground School",),   exact=True),
+    )),
+
     BadgeType("flying", "Flying Badge", LEVELED, (
         Level(GOLD,   ("RAFAC Gold Flying Badge",),   (BaderQual("RAFAC Gold Flying Badge", 2992),)),
         Level(SILVER, ("RAFAC Silver Flying Badge",), (BaderQual("RAFAC Silver Flying Badge", 2991),)),
@@ -255,9 +273,9 @@ def held_level(badge: BadgeType, qual_names) -> str | None:
     """The level of ``badge`` held by a cadet, given an iterable of their raw
     ``qual_type`` strings. Returns the highest-priority level whose pattern
     matches (mirroring the spreadsheet cascade), or ``None`` if none match."""
-    blob = "\n".join(qual_names).casefold()
+    names = list(qual_names)
     for lvl in badge.levels:  # highest priority first
-        if any(p.casefold() in blob for p in lvl.patterns):
+        if any(lvl.matches(n) for n in names):
             return lvl.level
     return None
 

@@ -76,6 +76,12 @@ spec:
                 secretKeyRef:
                   name: sms-db-app
                   key: uri
+          # Keep serving for a few seconds after termination starts, until
+          # Traefik has dropped this pod from its backends. Without it a
+          # rollout 502s the requests that land in that gap.
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
           startupProbe:
             httpGet: { path: /healthz, port: 8000 }
             periodSeconds: 2
