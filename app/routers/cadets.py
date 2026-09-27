@@ -113,8 +113,7 @@ def _award_date(badge, level, qual_objs):
     if lv is None:
         return None
     for q in qual_objs:
-        name = q.qual_type.casefold()
-        if any(p.casefold() in name for p in lv.patterns):
+        if lv.matches(q.qual_type):
             return q.date_achieved.date().isoformat() if q.date_achieved else None
     return None
 
