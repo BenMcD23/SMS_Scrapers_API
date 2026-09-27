@@ -1,19 +1,23 @@
 """Cadet records — search, list, detail, audit, theory progress, and staff edits."""
 
+import io
 from collections import defaultdict
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session, selectinload
 
 from core import cache
 from core.attendance import attendance_state
 from core.db import get_db
+from core.http import content_disposition
 from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 from core.theory_lessons import THEORY_LESSON_BY_KEY, THEORY_LESSONS, lesson_qual_held
+from core.xlsx_export import table_to_xlsx
 from database.models import (
     AssessmentSheet,
     Cadet,
@@ -286,6 +290,29 @@ def audit_event_cadets(
     )
     return _build_audit_result(cadets, body.qualifications, body.include_medical,
                                body.include_dietary, body.include_missing_attachments)
+
+
+class AuditExportBody(BaseModel):
+    filename: str = "Audit"
+    headers: list[str] = Field(max_length=200)
+    # Cells arrive as displayed; ISO date strings become real Excel dates.
+    rows: list[list[str | int | None]] = Field(max_length=5000)
+
+
+@router.post("/cadets/audit/export")
+def audit_export(
+    body: AuditExportBody,
+    idinfo: dict = Depends(require_staff),
+):
+    """The audit results table as an .xlsx. The frontend sends the rows exactly
+    as filtered and sorted on screen, so the sheet matches what staff are
+    looking at without re-implementing the table's client-side filters here."""
+    xlsx = table_to_xlsx(body.headers, body.rows, sheet_title="Audit")
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": content_disposition("attachment", f"{body.filename}.xlsx", "Audit.xlsx")},
+    )
 
 
 # ─── Theory progress routes (must be before /cadets/{cin}) ────────────────────
