@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import stock_events
 from core.db import get_db
-from core.qualifications import order_badge_held
 from core.emailer import ready_to_collect_email_html, send_email
+from core.qualifications import order_badge_held
 from core.security import require_staff
 from database.models import (
     BadgeGridCell,
