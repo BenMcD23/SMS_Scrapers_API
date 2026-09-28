@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import stock_events
 from core.db import get_db
+from core.qualifications import order_badge_held
 from core.emailer import ready_to_collect_email_html, send_email
 from core.security import require_staff
 from database.models import (
@@ -73,6 +74,8 @@ def _get_or_create_badge_config(db: Session) -> BadgeGridConfig:
 
 
 def badge_order_to_dict(order: BadgeOrder) -> dict:
+    # ponytail: expiry ignored — an earned badge stays earned even if e.g. first aid lapses.
+    qual_names = [q.qual_type for q in order.cadet.qualifications]
     return {
         "id":        str(order.id),
         "cadetName": f"{order.cadet.first_name} {order.cadet.last_name}",
@@ -84,6 +87,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "id":             str(oi.id),
                 "badgeName":      oi.badge_name,
                 "replacement":    bool(oi.replacement),
+                "qualHeld":       order_badge_held(oi.badge_name, qual_names, order.cadet.classification),
                 "qmNotes":        json.loads(oi.qm_notes) if oi.qm_notes and oi.qm_notes.strip().startswith("[") else [],
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
@@ -306,7 +310,10 @@ def badge_orders_list(
 ):
     orders = (
         db.query(BadgeOrder)
-        .options(joinedload(BadgeOrder.cadet), selectinload(BadgeOrder.order_items))
+        .options(
+            joinedload(BadgeOrder.cadet).selectinload(Cadet.qualifications),
+            selectinload(BadgeOrder.order_items),
+        )
         .order_by(BadgeOrder.created_at.desc())
         .all()
     )
