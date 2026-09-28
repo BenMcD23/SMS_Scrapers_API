@@ -87,6 +87,13 @@ def _full_structure(db: Session) -> dict:
     return {"boxes": [_box_to_dict(b) for b in boxes]}
 
 
+def _last_issued(issuance: StoresItemIssuance | None) -> dict | None:
+    """When the subject last received this item's category (their Uniform tab)."""
+    if not issuance:
+        return None
+    return {"date": issuance.last_given.isoformat(), "size": issuance.size_given}
+
+
 def order_to_dict(order: StoresOrder) -> dict:
     if order.cadet_id is not None and order.cadet:
         subject_name = f"{order.cadet.first_name} {order.cadet.last_name}"
@@ -97,6 +104,8 @@ def order_to_dict(order: StoresOrder) -> dict:
     else:
         subject_name = "Unknown"
         subject_type = "unknown"
+    subject = order.cadet if subject_type == "cadet" else order.user if subject_type == "user" else None
+    issued = {i.item_category: i for i in (subject.item_issuances if subject else [])}
     return {
         "id":          str(order.id),
         "cadetName":   subject_name,
@@ -118,6 +127,7 @@ def order_to_dict(order: StoresOrder) -> dict:
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
                 "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
+                "lastIssued":     _last_issued(issued.get(ISSUANCE_ITEM_TYPE_MAP.get(oi.item_type, oi.item_type))),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -532,8 +542,8 @@ def stores_get_orders(
     orders = (
         db.query(StoresOrder)
         .options(
-            joinedload(StoresOrder.cadet),
-            joinedload(StoresOrder.user),
+            joinedload(StoresOrder.cadet).selectinload(Cadet.item_issuances),
+            joinedload(StoresOrder.user).selectinload(User.item_issuances),
             selectinload(StoresOrder.order_items),
         )
         .order_by(StoresOrder.created_at.desc())
