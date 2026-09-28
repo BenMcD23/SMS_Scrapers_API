@@ -111,3 +111,8 @@ def test_absence_rows_without_a_usable_window_are_dropped():
         ["", "Smith", "1234567", "09/07/2026", "31/07/2026", "Holiday"],
     ]
     assert _parse_absence_rows(rows) == []
+
+
+def test_no_results_placeholder_is_not_a_qualification():
+    rows = [qual_row(["No results have been found for your search criteria."])]
+    assert _parse_qual_rows(rows, set()) == []
