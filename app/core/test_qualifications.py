@@ -31,3 +31,22 @@ def test_substring_badges_still_match_variants():
 def test_atp_listed_directly_before_flying():
     keys = [b.key for b in BADGE_TYPES]
     assert keys.index("atp_ground_school") == keys.index("flying") - 1
+
+
+def test_order_badge_held():
+    from core.qualifications import order_badge_held as held
+    # Exact level only; a higher level doesn't count.
+    assert held("Shooting – Bronze", ["Bronze Shot (L98A2)"], None) is True
+    assert held("Shooting – Bronze", ["Gold Shot (Air Rifle)"], None) is False
+    assert held("Space – Blue", ["OU Applications of Space Technology (Blue)"], None) is True
+    assert held("Radio – Silver", ["Radio - Advanced Voice Procedure (Silver)"], None) is True
+    assert held("Road Marching – Gold (Nijmegen)", ["Nijmegen Road Marching"], None) is True
+    # Flying Blue/Bronze need ATP Ground School too; Silver doesn't.
+    atp_blue = "RAFAC Aviation Training Package Blue Training Badge"
+    assert held("Flying – Blue", [atp_blue], None) is False
+    assert held("Flying – Blue", [atp_blue, "Blue ATP Ground School"], None) is True
+    assert held("Flying – Silver", ["RAFAC Silver Flying Badge"], None) is True
+    # Classification comes off the cadet, exact only.
+    assert held("Senior", [], "Senior Cadet") is True
+    assert held("Senior", [], "Master Air Cadet") is False
+    assert held("ATC", ["anything"], None) is None

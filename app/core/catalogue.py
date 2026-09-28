@@ -135,7 +135,7 @@ BADGE_CATEGORIES: list[BadgeCategory] = [
     {"id": "music", "name": "Music Badges", "prefix": "Music", "levels": _STANDARD_LEVELS},
     {"id": "shooting", "name": "Shooting Badges", "prefix": "Shooting", "levels": _STANDARD_LEVELS},
     {"id": "radio", "name": "Radio Badges", "prefix": "Radio", "levels": _STANDARD_LEVELS},
-    {"id": "cyber", "name": "Cyber Badges", "prefix": "Cyber", "levels": _STANDARD_LEVELS},
+    {"id": "cyber", "name": "Cyber Badges", "prefix": "Cyber", "levels": ["Bronze", "Silver", "Gold"]},  # no Blue Cyber
     {"id": "space", "name": "Space Badges", "prefix": "Space", "levels": _STANDARD_LEVELS},
     {"id": "road-marching", "name": "Road Marching Badges", "prefix": "Road Marching",
      "levels": ["Blue", "Bronze", "Silver", "Gold (Nijmegen)"]},
