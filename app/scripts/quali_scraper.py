@@ -218,6 +218,8 @@ def _parse_qual_rows(rows, attachment_check_quals):
             continue
 
         qual_type = cells[0].replace("\n", " ").strip()
+        if qual_type.startswith("No results have been found"):
+            continue  # Bader's placeholder row for a cadet with no quals
         quals.append({
             "qual_type": qual_type,
             "status": "true",
@@ -315,7 +317,9 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             wait_for_preloader(page)
             wait_for_aspx_load(page)
 
-        cadetQualifications = []
+        # None (not []) when the tab didn't load, so the save keeps what's stored
+        # rather than syncing to an empty list.
+        cadetQualifications = None
         try:
             # The tab is only really open once its table is there, which is what
             # the fixed sleeps in the loop above were waiting for.

@@ -75,6 +75,19 @@ def remove_departed_cadets(db_session, scraped_cins):
     return len(departed)
 
 
+def remove_stale_qualifications(db_session, cadet, scraped_types):
+    """Delete the cadet's quals Bader no longer lists (this is also what clears
+    proof filenames an old scraper saved as quals). ``scraped_types`` is None
+    when the tab failed to load: nothing is removed, so a bad scrape can't wipe
+    history. An empty set means the cadet genuinely has none."""
+    if scraped_types is None:
+        return 0
+    stale = [cq for cq in cadet.qualifications if cq.qual_type not in scraped_types]
+    for cq in stale:
+        db_session.delete(cq)
+    return len(stale)
+
+
 def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
     context = None
     try:
@@ -131,6 +144,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         skipped = 0
         emails_matched = 0
         missing_attachments = 0
+        removed_quals = 0
         attendance_rows = 0
         scraped_cins = set()
 
@@ -171,7 +185,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
             cadet.classification = entry.get("classification") or cadet.classification
 
             deduped_quals = {}
-            for qual in entry.get("qualifications", []):
+            scraped_quals = entry.get("qualifications")
+            for qual in scraped_quals or []:
                 if isinstance(qual, str):
                     qt, st, da, de, ha = qual, "true", None, None, None
                 else:
@@ -189,7 +204,11 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                     if da is not None and (existing_da is None or da > existing_da):
                         deduped_quals[qt] = {"qual_type": qt, "status": st, "date_achieved": da, "date_expires": de, "has_attachment": ha}
 
-            existing_quals = {cq.qual_type: cq for cq in cadet.qualifications}
+            removed_quals += remove_stale_qualifications(
+                db_session, cadet, None if scraped_quals is None else set(deduped_quals)
+            )
+
+            existing_quals = {cq.qual_type: cq for cq in cadet.qualifications if cq.qual_type in deduped_quals}
             for qt, qual in deduped_quals.items():
                 if qt in existing_quals:
                     cq = existing_quals[qt]
@@ -242,7 +261,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
@@ -251,7 +270,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 "cadet_name": f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
                 "qualifications": [
                     q if isinstance(q, str) else q.get("qual_type", "")
-                    for q in entry.get("qualifications", [])
+                    for q in entry.get("qualifications") or []
                 ]
             }
             for entry in cadet_data
