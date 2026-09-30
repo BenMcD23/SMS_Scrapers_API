@@ -87,6 +87,20 @@ function toRosterPerson(row, personType) {
   return { personnelWebId, cin, personType, profile };
 }
 
+/**
+ * One of VP's roster lists, or null when this user's VP role can't see it.
+ * Named by permission, since that's what the user has to go and ask for.
+ */
+async function rosterList(path, permission, skipped) {
+  try {
+    return await vpGetAll(path);
+  } catch (e) {
+    if (!(e instanceof NoPermissionError)) throw e;
+    skipped.push(`${path.split("/").pop()} (needs '${permission}')`);
+    return null;
+  }
+}
+
 /** A VP unit-wide feed split into one record per person, or [] if VP says no. */
 async function unitWide(label, fn, skipped) {
   try {
@@ -142,11 +156,19 @@ export async function runSync(progress) {
   const token = await smsToken(settings.siteBase);
 
   progress("Reading the unit roster from VP…");
-  const [cadets, staff] = await Promise.all([vpGetAll("api/persons/cadets"), vpGetAll("api/persons/staff")]);
+  const skipped = [];
+  const [cadets, staff] = await Promise.all([
+    rosterList("api/persons/cadets", "Cadet Details – View", skipped),
+    rosterList("api/persons/staff", "Staff Details – View", skipped),
+  ]);
+  if (cadets === null && staff === null) {
+    throw new Error("Your VP account can't see the unit roster. It needs the VP permission "
+      + "'Cadet Details – View' (and 'Staff Details – View' for staff).");
+  }
   const inUnit = (r) => String(r.unitName ?? "").includes(settings.unitFilter);
   const people = [
-    ...cadets.filter(inUnit).map((r) => toRosterPerson(r, "cadet")),
-    ...staff.filter(inUnit).map((r) => toRosterPerson(r, "staff")),
+    ...(cadets || []).filter(inUnit).map((r) => toRosterPerson(r, "cadet")),
+    ...(staff || []).filter(inUnit).map((r) => toRosterPerson(r, "staff")),
   ].filter(Boolean);
   if (people.length === 0) {
     throw new Error(`VP shows nobody whose unit contains "${settings.unitFilter}". Check the unit filter.`);
@@ -155,7 +177,6 @@ export async function runSync(progress) {
   const roster = await apiPost(settings, token, "/vp-sync/people", { people });
   const ids = new Set(roster.acceptedIds);
 
-  const skipped = [];
   let pending = [];
   let stored = 0;
   const flush = async (force) => {

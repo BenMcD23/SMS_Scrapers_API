@@ -124,5 +124,7 @@ def test_person_missing_from_a_later_roster_is_removed_with_their_records():
         assert status["people"] == 1
         assert client.get("/vp-sync/people/222").status_code == 404
         assert client.get("/vp-sync/people/111").json()["personnelWebId"] == "w-ada"
+        listed = client.get("/vp-sync/people").json()
+        assert [(p["cin"], p["datasets"]) for p in listed] == [(111, [])]
     finally:
         app.dependency_overrides.clear()

@@ -201,6 +201,28 @@ def sync_status(db: Session = Depends(get_db), idinfo: dict = Depends(require_st
     }
 
 
+@router.get("/people")
+def list_people(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """Everyone with VP data, and which datasets each has, for the SMS site's
+    VP Sync page. Payloads are left out; fetch one person for those."""
+    datasets: dict[str, list[str]] = {}
+    for wid, dataset in db.query(VpRecord.personnel_web_id, VpRecord.dataset).all():
+        datasets.setdefault(wid, []).append(dataset)
+    people = db.query(VpPerson).all()
+    return [
+        {
+            "cin": p.cin,
+            "personType": p.person_type,
+            "givenName": p.profile.get("givenName"),
+            "familyName": p.profile.get("familyName"),
+            "rank": p.profile.get("rankAbbreviation"),
+            "syncedAt": p.synced_at.isoformat(),
+            "datasets": sorted(datasets.get(p.personnel_web_id, [])),
+        }
+        for p in sorted(people, key=lambda p: ((p.profile.get("familyName") or "").lower(), p.cin))
+    ]
+
+
 @router.get("/people/{cin}")
 def person_records(cin: int, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
     """Everything synced from VP for one cadet or staff member, by CIN."""

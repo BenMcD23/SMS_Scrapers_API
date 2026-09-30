@@ -139,6 +139,7 @@ All endpoints need staff.
 | `POST` | `/vp-sync/people` | `{people: [{personnelWebId, cin, personType: "cadet"\|"staff", profile}]}`. Replaces the roster and returns `acceptedIds` |
 | `POST` | `/vp-sync/records` | `{records: [{personnelWebId, dataset, payload}]}`. Upserts, 1000 max per request |
 | `GET` | `/vp-sync/status` | Head count, last roster sync, and per-dataset counts and times |
+| `GET` | `/vp-sync/people` | Everyone synced, with which datasets each person has (no payloads) |
 | `GET` | `/vp-sync/people/{cin}` | Everything synced for one person |
 
 ### The extension
@@ -168,6 +169,41 @@ site's URL in Settings.
 **Freshness.** Data is only as fresh as the last time someone with the
 extension had Chrome open and was signed in to both. One or two staff running
 it keeps it current. `/vp-sync/status` shows when and by whom.
+
+### The bookmarklet (no install)
+
+The alternative to the extension is a bookmarklet, which lives in the SMS site
+(`317_SMS_Site`, branch `vp-sync`). The SMS site can't call VP itself: VP
+answers cross-origin preflights with no `Access-Control-Allow-*` headers
+(checked 2026-09-30), and its session cookie isn't sent cross-site. Code
+running on VP's own page is same-origin, though, so:
+
+1. On the SMS site's **VP Sync** page (`/tools/vp-sync`, staff only), drag the
+   **317 VP Sync** bookmark to the bookmarks bar.
+2. On a signed-in VP tab, click it. The bookmark opens a popup of
+   `/tools/vp-sync?receive=1` (it opens during the click, so pop-up blockers
+   allow it), then loads `public/vp-sync-collector.js` from the SMS site into
+   the VP tab.
+3. The collector reads VP the same way `sync.js` does and sends each batch to
+   the popup with `postMessage`. Messages go only to the SMS origin, and the
+   popup only accepts them from VP's origin and from the window that opened
+   it. The popup is signed in to SMS, so it posts to `/vp-sync/*` as the user.
+
+The same page shows sync status and lets you browse the raw synced payloads for
+each person (`GET /vp-sync/people`, `GET /vp-sync/people/{cin}`).
+
+**Trade-offs compared with the extension:**
+- Nothing to install, and it works in any desktop browser.
+- It's manual only, with no schedule.
+- VP could block it by adding a Content-Security-Policy. VP had none on
+  2026-09-30; a manual `fetch('/api/antiforgery/token')` from VP's console
+  returned the token.
+- The VP-reading logic is copied between `sync.js`/`vp.js` and the collector.
+  Pick one route and drop the other, or keep both in step.
+
+**Checked 2026-09-30:** on the first account tested `api/persons/cadets` returned **403**,
+so that account lacks *Cadet Details – View*. Both routes now report the
+missing permission by name.
 
 ## Before relying on this
 
