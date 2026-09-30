@@ -1145,3 +1145,42 @@ class BadgeItem(Base):
     quantity = Column(Integer, nullable=False, default=1, server_default="1")
 
     cell = relationship("BadgeGridCell", back_populates="items")
+
+
+class VpPerson(Base):
+    """A 317 cadet or staff member as the Volunteer Portal knows them, pushed in by
+    the VP sync extension (vp-sync-extension/). VP can't be scraped server-side
+    (Microsoft sign-in with MFA), so a signed-in staff member's browser fetches it
+    and posts it here. VP keys people on personnelWebId; ``cin`` links the row to
+    the SMS-scraped Cadets/Staff tables, and only CINs already there are accepted."""
+    __tablename__ = "VP_People"
+
+    personnel_web_id = Column(Text,       primary_key=True)
+    cin              = Column(BigInteger, nullable=False, index=True)
+    person_type      = Column(Text,       nullable=False)  # "cadet" | "staff"
+    profile          = Column(JSON,       nullable=False)  # whitelisted roster fields, see routers/vp_sync.py
+    synced_at        = Column(DateTime,   nullable=False)
+    synced_by        = Column(Text,       nullable=False)  # email of the staff member whose browser sent it
+
+    records = relationship("VpRecord", back_populates="person", cascade="all, delete-orphan")
+
+
+class VpRecord(Base):
+    """One VP dataset for one person (learning history, WHTs, …), stored as the raw
+    JSON VP returned. VP's API is undocumented and its shapes are only known from
+    what we've seen, so keeping the payload whole means nothing is lost while the
+    parsing is worked out. One row per person+dataset, replaced on every sync."""
+    __tablename__ = "VP_Records"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    personnel_web_id = Column(Text, ForeignKey("VP_People.personnel_web_id", ondelete="CASCADE"), nullable=False)
+    dataset          = Column(Text, nullable=False)  # one of routers.vp_sync.DATASETS
+    payload          = Column(JSON, nullable=True)
+    synced_at        = Column(DateTime, nullable=False)
+    synced_by        = Column(Text, nullable=False)
+
+    person = relationship("VpPerson", back_populates="records")
+
+    __table_args__ = (
+        UniqueConstraint("personnel_web_id", "dataset", name="uq_vp_record_person_dataset"),
+    )

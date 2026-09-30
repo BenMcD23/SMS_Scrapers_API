@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: light dark; --muted: #6b7280; --bad: #b91c1c; --good: #15803d; }
+      body { font: 13px system-ui, sans-serif; width: 320px; margin: 12px; }
+      h1 { font-size: 15px; margin: 0 0 8px; }
+      p { margin: 6px 0; }
+      .muted { color: var(--muted); }
+      .bad { color: var(--bad); }
+      .good { color: var(--good); }
+      button { width: 100%; padding: 8px; font: inherit; cursor: pointer; }
+      details { margin-top: 10px; }
+      label { display: block; margin-top: 6px; }
+      input { width: 100%; box-sizing: border-box; font: inherit; padding: 4px; }
+      ul { margin: 4px 0; padding-left: 18px; }
+    </style>
+  </head>
+  <body>
+    <h1>317 SMS – VP Sync</h1>
+    <p class="muted">Copies 317's Volunteer Portal records into 317 SMS. You need to be signed in to both in this browser.</p>
+    <button id="sync">Sync now</button>
+    <p id="status"></p>
+    <div id="summary"></div>
+
+    <details>
+      <summary>Settings</summary>
+      <label>SMS API <input id="apiBase" /></label>
+      <label>SMS site <input id="siteBase" /></label>
+      <label>VP unit name contains <input id="unitFilter" /></label>
+      <label>Sync every (minutes, 0 = off) <input id="intervalMinutes" type="number" min="0" /></label>
+      <p><button id="save">Save</button></p>
+      <p id="saved" class="muted"></p>
+    </details>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

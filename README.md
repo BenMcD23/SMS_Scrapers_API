@@ -210,6 +210,12 @@ with tight permissions, or skip it.
   a half-finished command.
 - Disable key expiry on the server node in the admin console.
 
+## Volunteer Portal data
+
+VP sits behind Microsoft sign-in with MFA, so it isn't scraped. A browser
+extension (`vp-sync-extension/`) reads it with a signed-in staff member's
+session and posts it to `/vp-sync/*`. See [docs/vp-sync.md](docs/vp-sync.md).
+
 ## Local dev (without Docker)
 
 Lint and tests: `ruff check app` and `pytest` (see below).

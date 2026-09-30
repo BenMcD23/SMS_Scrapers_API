@@ -12,3 +12,5 @@ ops/
 docker-compose*.yml
 service_account.json
 deploy/
+vp-sync-extension/
+docs/

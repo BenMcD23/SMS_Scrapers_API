@@ -45,6 +45,7 @@ from routers import (
     stats,
     stores,
     texts,
+    vp_sync,
 )
 
 configure_logging()
@@ -168,3 +169,4 @@ app.include_router(nco_comments.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
 app.include_router(reference.router)
+app.include_router(vp_sync.router)

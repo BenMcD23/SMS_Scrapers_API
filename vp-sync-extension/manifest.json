@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "317 SMS – VP Sync",
+  "version": "0.1.0",
+  "description": "Copies 317's Volunteer Portal records (training, WHTs, shooting, fieldcraft, flying, exams) into 317 SMS using your own VP sign-in.",
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "VP Sync" },
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://volunteers.bader.mod.uk/*",
+    "https://sms.317atc.co.uk/*",
+    "https://smsapi.317atc.co.uk/*",
+    "https://smsapi-dev.317atc.co.uk/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"]
+}
