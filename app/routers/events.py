@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
 from core.db import get_db
+from core.http import content_disposition
 from core.security import require_staff
 from database.models import AllEvent, Cadet, CadetEvent, Event317
 from scripts.ji_ao_ai import generate_ao_description_ai, generate_ji_description_ai
@@ -181,12 +182,13 @@ def generate_doc_endpoint(
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
 
-        safe_filename = filename.replace('"', '').replace('\n', '').replace('\r', '')
         return StreamingResponse(
             file_buffer,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_filename}"',
+                # The reference is scraped from Bader — the shared helper copes
+                # with quotes and non-Latin-1 characters in it.
+                "Content-Disposition": content_disposition("attachment", filename, "document.docx"),
                 "X-Signature-Missing": "1" if signature is None else "0",
             }
         )

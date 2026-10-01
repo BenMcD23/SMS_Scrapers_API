@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.db import get_db, get_or_create_user
+from core.http import content_disposition
 from core.paths import TEMPLATES_DIR
 from core.security import require_staff
 
@@ -113,13 +114,15 @@ def generate_f1771e(
     user = get_or_create_user(db, idinfo)
     p = user.profile
 
+    # `or ""`: a profile row exists as soon as any one field is saved (bank
+    # details for a committee request, say), and a None here crashes the fill.
     personal = {
-        "rank":        p.rank        if p else "",
-        "initials":    p.initials    if p else "",
-        "surname":     p.surname     if p else "",
-        "jpa_number":  p.jpa_number  if p else "",
-        "appointment": p.appointment if p else "",
-        "car_reg":     p.car_reg     if p else "",
+        "rank":        (p.rank        if p else "") or "",
+        "initials":    (p.initials    if p else "") or "",
+        "surname":     (p.surname     if p else "") or "",
+        "jpa_number":  (p.jpa_number  if p else "") or "",
+        "appointment": (p.appointment if p else "") or "",
+        "car_reg":     (p.car_reg     if p else "") or "",
     }
 
     journeys = []
@@ -167,7 +170,7 @@ def generate_f1771e(
     return StreamingResponse(
         io.BytesIO(doc_bytes),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition("attachment", filename, "F1771.docx")},
     )
 
 
@@ -217,5 +220,6 @@ def generate_htd(
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        # The surname is typed in — an accented name must not 500 the download.
+        headers={"Content-Disposition": content_disposition("attachment", filename, "HTD.docx")},
     )

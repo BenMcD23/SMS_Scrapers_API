@@ -11,14 +11,21 @@ logger = logging.getLogger(__name__)
 
 
 def merge_pdfs(pdf_blobs: list[bytes | None]) -> bytes:
-    """Concatenate PDF byte blobs (in order) into a single PDF. None/empty entries are skipped."""
+    """Concatenate PDF byte blobs (in order) into a single PDF. None/empty entries are skipped.
+
+    An unreadable blob (a lesson plan that wasn't really a PDF) is skipped with a
+    log line rather than raised: it is stored against the cadet, so raising would
+    break their combined record on every download, not just once."""
     writer = PdfWriter()
-    for blob in pdf_blobs:
+    for i, blob in enumerate(pdf_blobs):
         if not blob:
             continue
-        reader = PdfReader(io.BytesIO(blob))
-        for page in reader.pages:
-            writer.add_page(page)
+        try:
+            pages = PdfReader(io.BytesIO(blob)).pages
+            for page in pages:
+                writer.add_page(page)
+        except Exception as e:
+            logger.warning(f"merge_pdfs: skipping unreadable PDF #{i}: {e}")
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue()

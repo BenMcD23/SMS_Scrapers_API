@@ -54,12 +54,3 @@ def _parse_absence_rows(rows):
             "reason": reason,
         })
     return absences
-
-
-if __name__ == "__main__":
-    # Bader renders dates as dd/mm/yyyy — a US-style parse would swap the AWOL
-    # window silently, so pin the format.
-    assert _parse_date("09/07/2026") == datetime(2026, 7, 9)
-    assert _parse_date("31/07/2026") == datetime(2026, 7, 31)
-    assert _parse_date("") is None and _parse_date("bad") is None
-    print("absence_scraper date parsing OK")

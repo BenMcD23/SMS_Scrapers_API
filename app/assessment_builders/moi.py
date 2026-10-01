@@ -196,12 +196,12 @@ def generate_moi_pdf(data: dict) -> bytes:
         writer = PdfWriter()
 
         page1 = template.pages[0]
+        page1 = writer.add_page(page1)
         page1.merge_page(ov1.pages[0])
-        writer.add_page(page1)
 
         page2 = template.pages[1]
+        page2 = writer.add_page(page2)
         page2.merge_page(ov2.pages[0])
-        writer.add_page(page2)
 
         out = io.BytesIO()
         writer.write(out)
