@@ -1,14 +1,12 @@
-import base64
 import io
 import logging
 from datetime import datetime
 
-from PIL import Image as PILImage
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.colors import HexColor, black
-from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as rl_canvas
 
+from assessment_builders.pdf_utils import draw_multiline, draw_signature
 from core.paths import ASSESSMENT_SHEETS_DIR
 
 logger = logging.getLogger(__name__)
@@ -93,72 +91,6 @@ def _draw_score_circles(c, scores: dict, page_scores: dict):
         c.circle(x, y, CIRCLE_RADIUS, stroke=1, fill=0)
 
 
-def _draw_multiline(c, text: str, x: float, y: float,
-                    max_x: float = 810, max_lines: int = 4, font_size: int = 9):
-    if not text:
-        return
-    font_name = "Helvetica"
-    c.setFont(font_name, font_size)
-    c.setFillColor(black)
-    available_w = max_x - x
-    words = text.split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        test = (current + " " + word).strip()
-        if c.stringWidth(test, font_name, font_size) <= available_w:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    for line in lines[:max_lines]:
-        c.drawString(x, y, line)
-        y -= font_size + 3
-
-
-def _draw_signature(c, sig: str, box: tuple):
-    """Draw a base64 image signature (or plain text) into a bounding box."""
-    x1, y1, x2, y2 = box
-    box_w, box_h = x2 - x1, y2 - y1
-
-    if sig and sig.startswith("data:image"):
-        try:
-            _, b64data = sig.split(",", 1)
-            img_bytes = base64.b64decode(b64data)
-            pil_img = PILImage.open(io.BytesIO(img_bytes)).convert("RGBA")
-            bbox = pil_img.getbbox()
-            if bbox:
-                pil_img = pil_img.crop(bbox)
-            img_w, img_h = pil_img.size
-            buf = io.BytesIO()
-            pil_img.save(buf, format="PNG")
-            buf.seek(0)
-
-            aspect = img_w / img_h
-            draw_w = box_w
-            draw_h = draw_w / aspect
-            if draw_h > box_h:
-                draw_h = box_h
-                draw_w = draw_h * aspect
-
-            draw_x = x1 + (box_w - draw_w) / 2
-            draw_y = y1 + (box_h - draw_h) / 2
-
-            c.drawImage(ImageReader(buf), draw_x, draw_y,
-                        width=draw_w, height=draw_h,
-                        preserveAspectRatio=False, mask="auto")
-        except Exception as e:
-            logger.error(f"Signature error: {e}")
-            c.setFont("Helvetica", 9)
-            c.drawString(x1, y1 + 5, "[signature error]")
-    elif sig:
-        c.setFont("Helvetica", 9)
-        c.drawString(x1, y1 + 5, sig)
-
-
 # ─── Overlay builders ─────────────────────────────────────────────────────────
 
 def _build_page1_overlay(data: dict) -> bytes:
@@ -182,7 +114,7 @@ def _build_page1_overlay(data: dict) -> bytes:
     for section_id, (page, x, y) in SECTION_COMMENTS.items():
         if page != 1:
             continue
-        _draw_multiline(c, section_comments.get(section_id, ""), x, y, max_x=810)
+        draw_multiline(c, section_comments.get(section_id, ""), x, y, max_x=810)
 
     c.save()
     buf.seek(0)
@@ -202,14 +134,14 @@ def _build_page2_overlay(data: dict) -> bytes:
     for section_id, (page, x, y) in SECTION_COMMENTS.items():
         if page != 2:
             continue
-        _draw_multiline(c, section_comments.get(section_id, ""), x, y, max_x=810)
+        draw_multiline(c, section_comments.get(section_id, ""), x, y, max_x=810)
 
     # Feedback text blocks
     for key in ("strengths", "improvements"):
         _, x, y = TEXT_FIELDS[key]
-        _draw_multiline(c, data.get(key, ""), x, y, max_x=810, max_lines=3)
+        draw_multiline(c, data.get(key, ""), x, y, max_x=810, max_lines=3)
     _, x, y = TEXT_FIELDS["general_comments"]
-    _draw_multiline(c, data.get("general_comments", ""), x, y, max_x=701, max_lines=3)
+    draw_multiline(c, data.get("general_comments", ""), x, y, max_x=701, max_lines=3)
 
     # Total score
     c.setFont("Helvetica-Bold", 16)
@@ -239,11 +171,11 @@ def _build_page2_overlay(data: dict) -> bytes:
     # Signatures
     assessor_sig = data.get("assessor_signature", "")
     if assessor_sig:
-        _draw_signature(c, assessor_sig, ASSESSOR_SIG_BOX)
+        draw_signature(c, assessor_sig, ASSESSOR_SIG_BOX)
 
     candidate_sig = data.get("cadet_signature", "")
     if candidate_sig:
-        _draw_signature(c, candidate_sig, CANDIDATE_SIG_BOX)
+        draw_signature(c, candidate_sig, CANDIDATE_SIG_BOX)
 
     c.save()
     buf.seek(0)
