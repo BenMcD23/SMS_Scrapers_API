@@ -420,3 +420,37 @@ def test_attachment_check_quals_replace_whole_list(api, db):
     assert api.get("/attachment-check-quals", headers=STAFF).json() == {"quals": ["Only"]}
     assert db.query(AttachmentCheckQual).count() == 1
     assert api.put("/attachment-check-quals", headers=STAFF, json={}).status_code == 422
+
+
+def test_a_scraper_that_reports_an_error_is_not_marked_done(api, db, creds, fresh_state, monkeypatch):
+    from database.models import StatsSnapshot
+
+    def swallowed(messages, lock, user_id, db_, stop_event, on_context_ready=None):
+        # What every scraper does with its own exceptions.
+        messages.append(json.dumps({"type": "error", "value": "Scraper Error: login failed"}))
+
+    monkeypatch.setitem(sc.SCRAPER_FUNCS, "cadet-quali", swallowed)
+    api.get("/run-scraper/cadet-quali", headers=STAFF)
+    assert _messages(fresh_state["cadet-quali"])[-1]["type"] == "error"
+    assert db.query(ScraperRun).one().success is False
+    assert db.query(StatsSnapshot).count() == 0
+
+
+def test_an_earlier_runs_error_does_not_fail_this_one(api, db, creds, fresh_state, monkeypatch):
+    monkeypatch.setitem(sc.SCRAPER_FUNCS, "medical", lambda *a, **k: None)
+    # Left over from a previous run in the same slot before it was cleared.
+    fresh_state["medical"]["messages"].append(json.dumps({"type": "error", "value": "old"}))
+    sc.run_named_scraper_task("medical", sc.SCRAPER_FUNCS["medical"], creds.id, "s")
+    assert db.query(ScraperRun).one().success is True
+
+
+def test_upload_job_with_a_failed_qualification_finishes_but_is_not_clean(db, monkeypatch):
+    def partial(messages, lock, user_id, db_, stop_event, **k):
+        messages.append(json.dumps({"type": "error", "value": "Failed to upload 'Radio' for CIN 1"}))
+        messages.append(json.dumps({"type": "info", "value": "Uploaded 'Leadership'"}))
+
+    monkeypatch.setattr(sc, "upload_qualifications_scraper", partial)
+    job_id, state = sc.create_upload_job("s")
+    sc.run_upload_job(job_id, 1, "s", [1, 2])
+    assert _messages(state)[-1] == {"type": "status", "value": "done"}
+    assert db.query(ScraperRun).one().success is False

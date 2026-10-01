@@ -470,9 +470,10 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Saving events to database..."}))
 
+        # Replaced in one transaction with the inserts below: committing the
+        # delete on its own meant a failure mid-save left no events at all.
         db_session.query(CadetEvent).delete()
         db_session.query(AllEvent).delete()
-        db_session.commit()
 
         saved_events = 0
         all_cadets = db_session.query(Cadet).all()

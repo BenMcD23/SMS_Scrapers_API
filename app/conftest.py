@@ -137,6 +137,18 @@ def api(auth, session_factory):
     app.dependency_overrides.pop(get_db, None)
 
 
+@pytest.fixture
+def real_send_email():
+    """The genuine core.emailer.send_email, for testing it directly — the
+    autouse outbox below has replaced every module's copy."""
+    import core.emailer as emailer
+
+    return _REAL_SEND_EMAIL or emailer.send_email
+
+
+_REAL_SEND_EMAIL = None
+
+
 @pytest.fixture(autouse=True)
 def outbox(monkeypatch):
     """Every email the code under test tries to send, instead of sending it.
@@ -153,7 +165,8 @@ def outbox(monkeypatch):
                      "attachment_filename": attachment_filename, "attachments": attachments,
                      "reply_to": reply_to})
 
-    original = emailer.send_email
+    global _REAL_SEND_EMAIL
+    original = _REAL_SEND_EMAIL = _REAL_SEND_EMAIL or emailer.send_email
     for mod in list(sys.modules.values()):
         if getattr(mod, "send_email", None) is original:
             monkeypatch.setattr(mod, "send_email", fake_send_email)
