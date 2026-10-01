@@ -735,6 +735,7 @@ logger = logging.getLogger(__name__)
 ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
     "Blue Leadership": ("leadership", BLUE),
     "Blue Radio":      ("radio", BLUE),
+    "Blue Space":      ("space", BLUE),
     "MOI":             ("moi", YES),
 }
 

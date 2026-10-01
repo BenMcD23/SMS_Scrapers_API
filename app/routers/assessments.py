@@ -14,6 +14,7 @@ from assessment_builders.moi import generate_moi_pdf
 from assessment_builders.moi import process_assessment_data as process_moi_data
 from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
+from assessment_builders.space import generate_space_pdf, process_space_data
 from core.db import get_db, get_or_create_user
 from core.emailer import assessment_email_html, send_email
 from core.security import get_user_role, require_staff, require_staff_or_nco
@@ -31,7 +32,7 @@ class MarkCompleteRequest(BaseModel):
     completed: bool = True
 
 
-EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "MOI")
+EDITABLE_TYPES = ("Blue Leadership", "Blue Radio", "Blue Space", "MOI")
 
 
 # How many assessments are needed per type before upload is unlocked
@@ -150,6 +151,24 @@ def _radio_fields_and_pdf(data: dict, cadet: Cadet) -> tuple[dict, bytes]:
     return fields, pdf_bytes
 
 
+def _space_fields_and_pdf(data: dict, cadet: Cadet) -> tuple[dict, bytes]:
+    processed = process_space_data(data, cadet)
+    pdf_bytes = generate_space_pdf(processed)
+    fields = {
+        "checklist":          processed["checklist"],
+        "passed":             processed["passed"],
+        "pts_date":           processed["pts_date"],
+        "pts_date_iso":       data.get("pts_date", ""),
+        "experiments":        processed["experiments"],
+        "assessor_name":      processed["assessor_name"],
+        "date":               processed["date"],
+        "date_iso":           data.get("date", ""),
+        "assessor_signature": processed.get("assessor_signature") or "",
+        "cadet_signature":    processed.get("cadet_signature") or "",
+    }
+    return fields, pdf_bytes
+
+
 def _moi_fields_and_pdf(data: dict) -> tuple[dict, bytes]:
     processed = process_moi_data(data)
     pdf_bytes = generate_moi_pdf(processed)
@@ -184,6 +203,24 @@ def _validate_radio(data: dict, *, require_signature: bool) -> None:
         raise HTTPException(status_code=400, detail="Assessor signature is required.")
     if len(data.get("comments", "")) > 140:
         raise HTTPException(status_code=400, detail="Comments must be 140 characters or fewer.")
+
+
+SPACE_EXPERIMENTS_MAX = 500
+
+
+def _validate_space(data: dict, *, require_signatures: bool) -> None:
+    if data.get("checklist", {}).get("pts") and not data.get("pts_date", "").strip():
+        raise HTTPException(status_code=400, detail="Blue Space PTS date is required when the PTS is ticked.")
+    if len(data.get("experiments", "")) > SPACE_EXPERIMENTS_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Practical experiments must be {SPACE_EXPERIMENTS_MAX} characters or fewer.",
+        )
+    if require_signatures:
+        if not data.get("assessor_signature"):
+            raise HTTPException(status_code=400, detail="Instructor signature is required.")
+        if not data.get("cadet_signature"):
+            raise HTTPException(status_code=400, detail="Cadet signature is required.")
 
 
 def _validate_moi(data: dict) -> None:
@@ -246,6 +283,23 @@ def generate_radio_assessment(
     data["passed"] = all(criteria.get(c) for c in criteria)
     fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
     sheet = _save_sheet_and_notify(db, user, cadet, "Blue Radio", fields, pdf_bytes)
+    return {"status": "success", "assessment_id": sheet.id}
+
+
+@router.post("/assessments/space/add-assessment")
+def generate_space_assessment(
+    data: dict,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    user = get_or_create_user(db, idinfo)
+    cadet = _resolve_cadet(db, data, allow_name_fallback=False)
+    assessor_name = _assessor_name(user)
+    if assessor_name:
+        data["assessor_name"] = assessor_name
+    _validate_space(data, require_signatures=True)
+    fields, pdf_bytes = _space_fields_and_pdf(data, cadet)
+    sheet = _save_sheet_and_notify(db, user, cadet, "Blue Space", fields, pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
 
@@ -429,6 +483,11 @@ def edit_assessment(
         criteria = data.get("criteria", {})
         data["passed"] = all(criteria.get(c) for c in criteria) if criteria else False
         fields, pdf_bytes = _radio_fields_and_pdf(data, cadet)
+    elif atype == "Blue Space":
+        if not data.get("cadet_signature"):
+            data["cadet_signature"] = existing.get("cadet_signature", "")
+        _validate_space(data, require_signatures=False)
+        fields, pdf_bytes = _space_fields_and_pdf(data, cadet)
     else:
         if not data.get("cadet_signature"):
             data["cadet_signature"] = existing.get("cadet_signature", "")
