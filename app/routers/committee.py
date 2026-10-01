@@ -27,6 +27,7 @@ from core.emailer import (
     committee_request_withdrawn_html,
     send_email,
 )
+from core.http import content_disposition
 from core.security import is_oc, require_oc, require_staff
 from database.models import CommitteeRequest, CommitteeRequestReceipt, User
 from form_generators.committee_request_pdf import build_committee_request_pdf
@@ -355,7 +356,9 @@ async def get_receipt(
     return StreamingResponse(
         io.BytesIO(rec.data),
         media_type=rec.mime_type,
-        headers={"Content-Disposition": f'inline; filename="{rec.filename}"'},
+        # Receipt names come from the uploader's device — quotes or an accented
+        # name would otherwise break the header or 500 the download.
+        headers={"Content-Disposition": content_disposition("inline", rec.filename, "receipt")},
     )
 
 

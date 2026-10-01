@@ -34,7 +34,7 @@ def _idinfo(name: str) -> dict:
     return {"sub": name, "email": f"{name}@x", "given_name": name, "family_name": "T"}
 
 
-def test():
+def test(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine)()
@@ -42,18 +42,18 @@ def test():
     # Stand in for Google Calendar — record the calls instead of making them.
     created: list[dict] = []
     deleted: list[str] = []
-    nh.calendar_configured = lambda: True
-    nh.create_holiday_event = lambda name, email, f, t, r: (
+    monkeypatch.setattr(nh, "calendar_configured", lambda: True)
+    monkeypatch.setattr(nh, "create_holiday_event", lambda name, email, f, t, r: (
         created.append({"name": name, "from": f, "to": t}) or f"evt-{len(created)}"
-    )
-    nh.delete_holiday_event = lambda event_id: (deleted.append(event_id) or True)
+    ))
+    monkeypatch.setattr(nh, "delete_holiday_event", lambda event_id: (deleted.append(event_id) or True))
     updated: list[dict] = []
-    nh.update_holiday_event = lambda eid, name, email, f, t, r: (
+    monkeypatch.setattr(nh, "update_holiday_event", lambda eid, name, email, f, t, r: (
         updated.append({"id": eid, "from": f, "to": t}) or bool(eid)
-    )
+    ))
 
     staff_emails = {"staff@x"}
-    nh._is_staff = lambda idinfo: idinfo.get("email") in staff_emails
+    monkeypatch.setattr(nh, "_is_staff", lambda idinfo: idinfo.get("email") in staff_emails)
 
     alice, bob, staff = (_idinfo("alice"), _idinfo("bob"), _idinfo("staff"))
     for who in (alice, bob, staff):
@@ -168,24 +168,24 @@ def test():
 
     # A booking made while Calendar was down saves anyway, flags itself, and
     # syncs on retry.
-    nh.create_holiday_event = lambda *a, **k: None
+    monkeypatch.setattr(nh, "create_holiday_event", lambda *a, **k: None)
     offline = run(nh.create_holiday(
         nh.HolidayBody(date_from=_day(90), date_to=_day(91)), db, alice))
     assert offline["on_calendar"] is False
     assert offline["cancelled"] is False
-    nh.create_holiday_event = lambda *a, **k: "evt-recovered"
+    monkeypatch.setattr(nh, "create_holiday_event", lambda *a, **k: "evt-recovered")
     assert run(nh.sync_holiday(offline["id"], db, alice))["on_calendar"] is True
 
     # A cancel that Google refuses still cancels the booking, and leaves the
     # event id behind so the retry can clear it rather than orphaning it.
-    nh.create_holiday_event = lambda *a, **k: "evt-stuck"
+    monkeypatch.setattr(nh, "create_holiday_event", lambda *a, **k: "evt-stuck")
     stuck = run(nh.create_holiday(
         nh.HolidayBody(date_from=_day(100), date_to=_day(101)), db, alice))
-    nh.delete_holiday_event = lambda event_id: False
+    monkeypatch.setattr(nh, "delete_holiday_event", lambda event_id: False)
     still_there = run(nh.cancel_holiday(stuck["id"], db, alice))
     assert still_there["cancelled"] is True
     assert still_there["on_calendar"] is True    # flagged for retry
-    nh.delete_holiday_event = lambda event_id: (deleted.append(event_id) or True)
+    monkeypatch.setattr(nh, "delete_holiday_event", lambda event_id: (deleted.append(event_id) or True))
     assert run(nh.sync_holiday(stuck["id"], db, alice))["on_calendar"] is False
     assert "evt-stuck" in deleted
 
@@ -196,9 +196,9 @@ def test():
     assert datetime.fromisoformat(one_day["date_from"]).hour == 0
 
     # ── Double booking and extending ─────────────────────────────────────────
-    nh.create_holiday_event = lambda name, email, f, t, r: (
+    monkeypatch.setattr(nh, "create_holiday_event", lambda name, email, f, t, r: (
         created.append({"name": name, "from": f, "to": t}) or f"evt-{len(created)}"
-    )
+    ))
     base = run(nh.create_holiday(
         nh.HolidayBody(date_from=_day(200), date_to=_day(204), reason="Trip"), db, alice))
     base_id, base_event = base["id"], f"evt-{len(created)}"
@@ -325,7 +325,7 @@ def test():
         assert e.status_code == 409
 
     # An edit Google refuses leaves the booking flagged for the existing retry.
-    nh.update_holiday_event = lambda *a, **k: False
+    monkeypatch.setattr(nh, "update_holiday_event", lambda *a, **k: False)
     stale = run(nh.edit_holiday(
         soon.id, nh.HolidayBody(date_from=_day(3), date_to=_day(5)), db, alice))
     assert _on(stale, "date_to") == _day(5)               # the record is still right

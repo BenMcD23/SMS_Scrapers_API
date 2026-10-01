@@ -274,6 +274,10 @@ def badge_delete_row(
     cfg = _get_or_create_badge_config(db)
     if cfg.num_rows <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete last row")
+    # Out of range (e.g. a stale tab after someone else shrank the grid) must
+    # not fall through: the num_rows decrement below would drop a real row.
+    if not 0 <= row_index < cfg.num_rows:
+        raise HTTPException(status_code=404, detail="Row not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row == row_index).all():
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row > row_index).all():
@@ -292,6 +296,10 @@ def badge_delete_col(
     cfg = _get_or_create_badge_config(db)
     if cfg.num_cols <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete last column")
+    # Out of range (e.g. a stale tab after someone else shrank the grid) must
+    # not fall through: the num_cols decrement below would drop a real column.
+    if not 0 <= col_index < cfg.num_cols:
+        raise HTTPException(status_code=404, detail="Column not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col == col_index).all():
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col > col_index).all():

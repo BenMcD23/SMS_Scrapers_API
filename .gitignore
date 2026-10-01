@@ -5,3 +5,7 @@ __pycache__
 data/
 *.db
 service_account.json
+
+# pytest-cov output
+.coverage
+htmlcov/

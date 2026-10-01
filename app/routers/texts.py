@@ -67,7 +67,7 @@ def _message_json(m: ParadeNightMessage) -> dict:
 
 
 def _get_message(db: Session, message_id: int) -> ParadeNightMessage:
-    message = db.query(ParadeNightMessage).get(message_id)
+    message = db.get(ParadeNightMessage, message_id)
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
     return message

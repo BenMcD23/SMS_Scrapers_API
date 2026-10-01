@@ -15,7 +15,7 @@ from assessment_builders.moi import process_assessment_data as process_moi_data
 from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from assessment_builders.radio import generate_radio_pdf, process_radio_data
 from assessment_builders.space import generate_space_pdf, process_space_data
-from core.db import get_db, get_or_create_user
+from core.db import escape_like, get_db, get_or_create_user
 from core.emailer import assessment_email_html, send_email
 from core.security import get_user_role, require_staff, require_staff_or_nco
 from database.models import AssessmentSheet, Cadet, User
@@ -65,7 +65,7 @@ def _resolve_cadet(db: Session, data: dict, allow_name_fallback: bool = True) ->
     if not cadet_name:
         raise HTTPException(status_code=400, detail="cadet_cin or cadet_name is required.")
     cadet = db.query(Cadet).filter(
-        (Cadet.first_name + " " + Cadet.last_name).ilike(cadet_name)
+        (Cadet.first_name + " " + Cadet.last_name).ilike(escape_like(cadet_name), escape="\\")
     ).first()
     if not cadet:
         raise HTTPException(status_code=404, detail=f"Cadet '{cadet_name}' not found.")

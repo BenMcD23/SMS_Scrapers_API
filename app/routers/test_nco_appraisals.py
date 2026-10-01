@@ -93,7 +93,7 @@ def test_age_on():
     assert na.age_on(Cadet(cin=2, first_name="A", last_name="B"), datetime(2026, 8, 8).date()) == ""
 
 
-def test():
+def test(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine)()
@@ -238,9 +238,9 @@ def test():
 
     # ── emailing the PDF to the NCO ──────────────────────────────────────────
     sent: list[dict] = []
-    na.send_email = lambda to, subject, html, attachments=None, reply_to=None: sent.append(
+    monkeypatch.setattr(na, "send_email", lambda to, subject, html, attachments=None, reply_to=None: sent.append(
         {"to": to, "subject": subject, "attachments": attachments, "reply_to": reply_to}
-    )
+    ))
     emailed = na.email_appraisal(appraisal["id"], na.EmailBody(), db, staff)
     # Defaults to the NCO's own address, with replies pointed at the sender
     # rather than the unmonitored noreply mailbox.
