@@ -21,7 +21,12 @@ from database.models import (
     Staff,
     StaffAttendance,
 )
-from routers.stats import STATS_CACHE_KEY, STATS_CACHE_TTL, compute_stats
+from routers.stats import (
+    JUNIOR_CLASSIFICATION,
+    STATS_CACHE_KEY,
+    STATS_CACHE_TTL,
+    compute_stats,
+)
 
 router = APIRouter()
 
@@ -78,33 +83,46 @@ def _attendance_trend(db: Session) -> list[dict]:
     ]
 
 
-def _qual_summary(db: Session, today: datetime) -> dict:
+def _quals_query(db: Session, exclude_juniors: bool):
+    """Cadet qualifications, optionally limited to cadets past Junior — juniors
+    hold few quals, so the OC can drop them to see the trained cohort."""
+    query = db.query(CadetQualification).join(Cadet)
+    if exclude_juniors:
+        query = query.filter(
+            Cadet.classification.isnot(None),
+            Cadet.classification != JUNIOR_CLASSIFICATION,
+        )
+    return query
+
+
+def _qual_summary(db: Session, today: datetime, exclude_juniors: bool) -> dict:
     """Counts behind the expiry table — what's already lapsed matters as much as
     what's about to, and the table only ever showed the future."""
     expired = (
-        db.query(CadetQualification)
+        _quals_query(db, exclude_juniors)
         .filter(CadetQualification.date_expires.isnot(None),
                 CadetQualification.date_expires < today)
         .count()
     )
     in_30 = (
-        db.query(CadetQualification)
+        _quals_query(db, exclude_juniors)
         .filter(CadetQualification.date_expires >= today,
                 CadetQualification.date_expires <= today + timedelta(days=30))
         .count()
     )
     in_90 = (
-        db.query(CadetQualification)
+        _quals_query(db, exclude_juniors)
         .filter(CadetQualification.date_expires >= today,
                 CadetQualification.date_expires <= quali_expiry_cutoff(today))
         .count()
     )
-    total = db.query(CadetQualification).count()
+    total = _quals_query(db, exclude_juniors).count()
     return {"total": total, "expired": expired, "expiring_30": in_30, "expiring_90": in_90}
 
 
 @router.get("/oc/dashboard")
 async def oc_dashboard(
+    exclude_juniors: bool = False,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),
 ):
@@ -131,8 +149,7 @@ async def oc_dashboard(
     # Qualifications expiring within the next 3 months (everything in-window, not
     # just the un-notified ones the weekly email dedupes on).
     quals = (
-        db.query(CadetQualification)
-        .join(Cadet)
+        _quals_query(db, exclude_juniors)
         .filter(
             CadetQualification.date_expires >= today,
             CadetQualification.date_expires <= quali_expiry_cutoff(today),
@@ -150,10 +167,15 @@ async def oc_dashboard(
         for q in quals
     ]
 
+    # Badge coverage over the chosen cohort — both are in the cached stats.
+    cohort = strength["non_junior"] if exclude_juniors else strength
+    coverage = {"cadets": cohort["total_cadets"], "badges": cohort["badges"]}
+
     return {
         "strength": {**strength, "total_staff": len(staff_rows)},
+        "badge_coverage": coverage,
         "staff_attendance": staff_attendance,
         "attendance_trend": _attendance_trend(db),
-        "qual_summary": _qual_summary(db, today),
+        "qual_summary": _qual_summary(db, today, exclude_juniors),
         "expiring_quals": expiring_quals,
     }

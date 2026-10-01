@@ -32,8 +32,8 @@ deploy/dev-env.py       writes a local .env from the above (see Local dev)
 
 Placement and failover are explained in the homelab repo's ADR 0007. In
 short: prod's database runs as two instances, on squadron and home. The
-primary (and the API with it) lives on squadron, except 17:00–23:00 on
-Wednesday and Friday, when it moves to home.
+primary (and the API with it) lives on home; squadron's link is too flaky to
+hold it.
 
 ### Versions
 
