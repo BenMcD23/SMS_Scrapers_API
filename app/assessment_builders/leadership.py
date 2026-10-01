@@ -199,8 +199,8 @@ def generate_leadership_pdf(data: dict) -> bytes:
         overlay_reader = PdfReader(io.BytesIO(overlay_bytes))
         writer = PdfWriter()
         page = template_reader.pages[0]
+        page = writer.add_page(page)
         page.merge_page(overlay_reader.pages[0])
-        writer.add_page(page)
         out_buf = io.BytesIO()
         writer.write(out_buf)
         return out_buf.getvalue()

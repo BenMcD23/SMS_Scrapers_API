@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from core import cache
 from core.attendance import attendance_state
-from core.db import get_db
+from core.db import escape_like, get_db
 from core.http import content_disposition
 from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
@@ -70,12 +70,12 @@ def search_cadets(
     if not q or len(q.strip()) < 2:
         return []
 
-    search = f"%{q.strip()}%"
+    search = f"%{escape_like(q.strip())}%"
     cadets = db.query(Cadet).filter(
         or_(
-            Cadet.first_name.ilike(search),
-            Cadet.last_name.ilike(search),
-            (Cadet.first_name + " " + Cadet.last_name).ilike(search),
+            Cadet.first_name.ilike(search, escape="\\"),
+            Cadet.last_name.ilike(search, escape="\\"),
+            (Cadet.first_name + " " + Cadet.last_name).ilike(search, escape="\\"),
         )
     ).order_by(Cadet.last_name, Cadet.first_name).limit(10).all()
 

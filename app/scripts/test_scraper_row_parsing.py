@@ -116,3 +116,15 @@ def test_absence_rows_without_a_usable_window_are_dropped():
 def test_no_results_placeholder_is_not_a_qualification():
     rows = [qual_row(["No results have been found for your search criteria."])]
     assert _parse_qual_rows(rows, set()) == []
+
+
+# Moved from absence_scraper's __main__ block so CI runs it. Bader renders dates
+# as dd/mm/yyyy — a US-style parse would swap the AWOL window silently.
+def test_absence_dates_are_day_first():
+    from datetime import datetime
+
+    from scripts.absence_scraper import _parse_date
+
+    assert _parse_date("09/07/2026") == datetime(2026, 7, 9)
+    assert _parse_date("31/07/2026") == datetime(2026, 7, 31)
+    assert _parse_date("") is None and _parse_date("bad") is None

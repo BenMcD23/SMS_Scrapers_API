@@ -128,15 +128,23 @@ def match_email(first_key, last_key, email_map):
 
 
 def push_to_google_apps_script(data, url, scraper_messages, scraper_lock):
-    with scraper_lock:
-        scraper_messages.append("Pushing data to sheets")
+    """Mirror scraped data into the squadron's Google Sheet.
 
-    headers = {"Content-Type": "application/json"}
-    response = requests.post(url, json=data, headers=headers)
+    Runs after the database is already saved, so a failure here is a warning,
+    not a failed scrape — and it has a timeout, since a hung Apps Script would
+    otherwise hold the run open until the watchdog killed it."""
+    def note(level, value):
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": level, "value": value}))
+
+    note("info", "Pushing data to sheets")
+    try:
+        response = requests.post(url, json=data, headers={"Content-Type": "application/json"}, timeout=60)
+    except requests.RequestException as e:
+        note("warning", f"Could not push data to sheets: {e}")
+        return
 
     if response.status_code == 200:
-        with scraper_lock:
-            scraper_messages.append(f"Data pushed successfully: {response.text}")
+        note("info", f"Data pushed successfully: {response.text}")
     else:
-        with scraper_lock:
-            scraper_messages.append(f"Failed to push data: {response.status_code}, {response.text}")
+        note("warning", f"Failed to push data: {response.status_code}, {response.text}")

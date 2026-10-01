@@ -60,10 +60,20 @@ def save_credentials(
         creds = BaderCredentials(user_id=user.id)
         db.add(creds)
 
-    creds.role_username = data.get("role_user")
-    creds.role_password = encrypt_password(data.get("role_pass"))
-    creds.personal_username = data.get("pers_user")
-    creds.personal_password = encrypt_password(data.get("pers_pass"))
+    # The settings form never shows stored values (passwords can't be sent
+    # back), so it always starts blank. A blank field therefore means "leave
+    # it", not "clear it" — otherwise saving just the role login would wipe the
+    # personal one.
+    for key, attr, secret in (
+        ("role_user", "role_username", False),
+        ("role_pass", "role_password", True),
+        ("pers_user", "personal_username", False),
+        ("pers_pass", "personal_password", True),
+    ):
+        value = data.get(key) or ""
+        if value.strip():
+            # Passwords are stored exactly as typed; a space may be part of one.
+            setattr(creds, attr, encrypt_password(value) if secret else value.strip())
 
     db.commit()
     return {"status": "success", "message": f"Settings saved for {user.email}"}

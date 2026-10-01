@@ -62,29 +62,70 @@ class PhoneNumberBody(BaseModel):
     phone_number: str
 
 
+def _uniform_item(order: StoresOrder, item: OrderItemIn) -> StoresOrderItem:
+    return StoresOrderItem(
+        order_id       = order.id,
+        item_type      = item.itemType,
+        size           = item.size,
+        need_sizing    = item.needSizing,
+        sizing_details = item.sizingDetails,
+        qm_notes       = "[]",
+    )
+
+
+def _uniform_key(item) -> tuple:
+    if isinstance(item, OrderItemIn):
+        return (item.itemType, item.size, item.needSizing, item.sizingDetails)
+    return (item.item_type, item.size, bool(item.need_sizing), item.sizing_details)
+
+
 def _add_uniform_items(db: Session, order: StoresOrder, items: list[OrderItemIn]):
     for item in items:
         if not item.itemType:
             continue
-        db.add(StoresOrderItem(
-            order_id       = order.id,
-            item_type      = item.itemType,
-            size           = item.size,
-            need_sizing    = item.needSizing,
-            sizing_details = item.sizingDetails,
-            qm_notes       = "[]",
-        ))
+        db.add(_uniform_item(order, item))
 
 
-def _replace_pending_items(db: Session, order, add_items_fn):
-    """Swap out an order's items, keeping anything already given out."""
+def _badge_item(order: BadgeOrder, item: BadgeOrderItemIn) -> BadgeOrderItem:
+    return BadgeOrderItem(
+        order_id            = order.id,
+        badge_name          = item.badgeName,
+        replacement         = item.replacement,
+        qm_notes            = "[]",
+        gained_where        = item.gainedWhere,
+        gained_where_detail = item.gainedWhereDetail,
+        gained_date_from    = _parse_timestamp(item.gainedDateFrom),
+        gained_date_to      = _parse_timestamp(item.gainedDateTo),
+    )
+
+
+def _badge_key(item) -> tuple:
+    if isinstance(item, BadgeOrderItemIn):
+        return (item.badgeName, item.replacement, item.gainedWhere, item.gainedWhereDetail,
+                _parse_timestamp(item.gainedDateFrom), _parse_timestamp(item.gainedDateTo))
+    return (item.badge_name, bool(item.replacement), item.gained_where, item.gained_where_detail,
+            item.gained_date_from, item.gained_date_to)
+
+
+def _replace_pending_items(db: Session, order, wanted: list, key, build):
+    """Make an order's not-yet-given items match ``wanted``, keeping anything
+    already given out.
+
+    The portal sends the whole remaining list on every edit. An item that comes
+    back unchanged keeps its row — and with it the QM's notes, the ready-to-
+    collect stamp and the stock history. Recreating it instead would lose the
+    record that it's already off the shelf, and the stock count would drift."""
     if order.completed:
         raise HTTPException(status_code=400, detail="Cannot edit a completed order")
 
-    # Snapshot the replaceable items before adding the new ones
-    old_pending = [oi for oi in order.order_items if oi.given_at is None]
-    add_items_fn()
-    for oi in old_pending:
+    unmatched = [oi for oi in order.order_items if oi.given_at is None]
+    for item in wanted:
+        match = next((oi for oi in unmatched if key(oi) == key(item)), None)
+        if match is not None:
+            unmatched.remove(match)
+        else:
+            db.add(build(order, item))
+    for oi in unmatched:
         db.delete(oi)
 
     db.commit()
@@ -190,7 +231,8 @@ def cadet_patch_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    _replace_pending_items(db, order, lambda: _add_uniform_items(db, order, body.items))
+    wanted = [i for i in body.items if i.itemType]
+    _replace_pending_items(db, order, wanted, _uniform_key, _uniform_item)
     return order_to_dict(order)
 
 
@@ -277,16 +319,7 @@ def cadet_create_badge_order(
 
     for item in body.items:
         if item.badgeName:
-            db.add(BadgeOrderItem(
-                order_id            = order.id,
-                badge_name          = item.badgeName,
-                replacement         = item.replacement,
-                qm_notes            = "[]",
-                gained_where        = item.gainedWhere,
-                gained_where_detail = item.gainedWhereDetail,
-                gained_date_from    = _parse_timestamp(item.gainedDateFrom),
-                gained_date_to      = _parse_timestamp(item.gainedDateTo),
-            ))
+            db.add(_badge_item(order, item))
 
     db.commit()
     db.refresh(order)
@@ -307,21 +340,8 @@ def cadet_patch_badge_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    def add_items():
-        for item in body.items:
-            if item.badgeName:
-                db.add(BadgeOrderItem(
-                    order_id            = order.id,
-                    badge_name          = item.badgeName,
-                    replacement         = item.replacement,
-                    qm_notes            = "[]",
-                    gained_where        = item.gainedWhere,
-                    gained_where_detail = item.gainedWhereDetail,
-                    gained_date_from    = _parse_timestamp(item.gainedDateFrom),
-                    gained_date_to      = _parse_timestamp(item.gainedDateTo),
-                ))
-
-    _replace_pending_items(db, order, add_items)
+    wanted = [i for i in body.items if i.badgeName]
+    _replace_pending_items(db, order, wanted, _badge_key, _badge_item)
     return badge_order_to_dict(order)
 
 
@@ -388,7 +408,8 @@ def user_patch_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    _replace_pending_items(db, order, lambda: _add_uniform_items(db, order, body.items))
+    wanted = [i for i in body.items if i.itemType]
+    _replace_pending_items(db, order, wanted, _uniform_key, _uniform_item)
     return order_to_dict(order)
 
 

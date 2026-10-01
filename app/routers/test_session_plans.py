@@ -20,15 +20,15 @@ def _idinfo(name: str) -> dict:
     return {"sub": name, "email": f"{name}@x", "given_name": name, "family_name": "T"}
 
 
-def test():
+def test(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine)()
 
     # No email or Google group lookups in a self-check.
-    sp.send_email = lambda *a, **k: None
+    monkeypatch.setattr(sp, "send_email", lambda *a, **k: None)
     staff_emails = {"staff@x"}
-    sp._is_staff = lambda idinfo: idinfo.get("email") in staff_emails
+    monkeypatch.setattr(sp, "_is_staff", lambda idinfo: idinfo.get("email") in staff_emails)
 
     alice, bob, staff = (_idinfo("alice"), _idinfo("bob"), _idinfo("staff"))
     for who in (alice, bob, staff):

@@ -43,8 +43,13 @@ def get_workspace_users() -> list[dict]:
         ).execute()
 
         for u in result.get("users", []):
-            first = u["name"].get("givenName", "").strip()
-            last  = u["name"].get("familyName", "").strip()
+            # A service or room account can come back with no name at all; one
+            # of those must not fail the whole lookup (and every cadet's email).
+            if not u.get("primaryEmail"):
+                continue
+            name = u.get("name") or {}
+            first = (name.get("givenName") or "").strip()
+            last  = (name.get("familyName") or "").strip()
             users.append({
                 "email":          u["primaryEmail"],
                 "first_name":     first,
