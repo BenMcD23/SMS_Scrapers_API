@@ -10,7 +10,7 @@ from assessment_builders.pdf_utils import merge_pdfs
 from core.config import BAN_ALERT_EMAIL
 from core.directory import get_workspace_users
 from core.emailer import ban_alert_email_html, send_email
-from core.qualifications import BLUE, YES, bader_quals_for
+from core.qualifications import BLUE, YES, bader_quals_for, order_badge_name
 from database.models import (
     AllEvent,
     AssessmentSheet,
@@ -745,6 +745,61 @@ ASSESSMENT_TYPE_TO_BADGE: dict[str, tuple[str, str]] = {
 MERGE_GROUP_PDF_TYPES = {"MOI"}
 
 
+def _parse_assessment_date(raw) -> datetime | None:
+    """An assessment sheet's ``date`` field, which the forms have saved in
+    several formats over time. ``None`` when missing or unrecognised."""
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def order_badge_for_upload(db_session, cadet_id: int, assessment_type: str, gained_on: datetime | None) -> str | None:
+    """Put in the badge order for a qualification that has just gone onto Bader,
+    so the QM doesn't have to raise it by hand. Returns the badge ordered, or
+    ``None`` when there's nothing to order: the type has no badge (MOI), or the
+    cadet already has an order for it — re-uploading after a reopen must not
+    order the same badge twice. Replacement orders don't count; those are for a
+    lost badge, not the one being earned now."""
+    badge = ASSESSMENT_TYPE_TO_BADGE.get(assessment_type)
+    badge_name = order_badge_name(*badge) if badge else None
+    if not badge_name:
+        return None
+
+    already = (
+        db_session.query(BadgeOrderItem.id)
+        .join(BadgeOrder)
+        .filter(
+            BadgeOrder.cadet_id == cadet_id,
+            BadgeOrderItem.badge_name == badge_name,
+            BadgeOrderItem.replacement.is_(False),
+        )
+        .first()
+    )
+    if already:
+        return None
+
+    order = BadgeOrder(cadet_id=cadet_id, created_at=datetime.now())
+    db_session.add(order)
+    db_session.flush()
+    # Assessments are run on squadron nights, and the sheet's date is the day it
+    # was gained — the same details the QM would otherwise fill in.
+    db_session.add(BadgeOrderItem(
+        order_id         = order.id,
+        badge_name       = badge_name,
+        qm_notes         = "[]",
+        gained_where     = "on_sqn",
+        gained_date_from = gained_on,
+        gained_date_to   = gained_on,
+    ))
+    db_session.commit()
+    return badge_name
+
+
 def upload_qualifications_scraper(
     scraper_messages,
     scraper_lock,
@@ -857,17 +912,9 @@ def upload_qualifications_scraper(
                         f.write(pdf_bytes)
                     tmp_paths.append(tmp_path)
 
-                award_date = None
                 raw_date = (sheets_with_pdf[0].fields or {}).get("date")
-                if raw_date:
-                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y"):
-                        try:
-                            award_date = datetime.strptime(raw_date, fmt).strftime("%d/%m/%Y")
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                    if award_date is None:
-                        award_date = raw_date
+                gained_on = _parse_assessment_date(raw_date)
+                award_date = gained_on.strftime("%d/%m/%Y") if gained_on else (raw_date or None)
 
                 add_qualification_with_attachment(
                     page=page,
@@ -907,6 +954,20 @@ def upload_qualifications_scraper(
             db_session.commit()
 
             log(f"'{qual_name}' uploaded for {cadet.first_name} {cadet.last_name} (CIN {cadet.cin}).")
+
+            # The qualification is on Bader and recorded as uploaded by now, so a
+            # failed order is only a warning — it must not undo or fail the upload.
+            try:
+                ordered = order_badge_for_upload(db_session, cadet.cin, assessment_type, gained_on)
+                if ordered:
+                    log(f"Badge order created: {ordered} for {cadet.first_name} {cadet.last_name}.")
+            except Exception as order_err:
+                db_session.rollback()
+                log(
+                    f"Couldn't create the badge order for CIN {cadet.cin} ({order_err}) — "
+                    "add it on the badge orders page.",
+                    "warning",
+                )
 
         log("All qualifications processed.", "status")
 
