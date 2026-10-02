@@ -309,6 +309,19 @@ _ORDER_CLASSIFICATION = {
 }
 
 
+def order_badge_name(badge_key: str, level: str) -> str | None:
+    """The badge-order name for a ``(badge_key, level)`` — the inverse of what
+    ``order_badge_held`` parses — so a qualification gained here can be ordered
+    under the same name the QM's order form uses. ``None`` for badges with no
+    order item (e.g. MOI)."""
+    prefix = next((p for p, k in _ORDER_PREFIX_TO_BADGE.items() if k == badge_key), None)
+    if not prefix or level not in (BLUE, BRONZE, SILVER, GOLD):
+        return None
+    if badge_key == "road_marching" and level == GOLD:
+        return f"{prefix} – Gold (Nijmegen)"
+    return f"{prefix} – {level.capitalize()}"
+
+
 def _has_rung(badge_key: str, level: str, names: list[str]) -> bool:
     return any(lvl.level == level and any(lvl.matches(n) for n in names)
                for lvl in BADGE_TYPE_BY_KEY[badge_key].levels)

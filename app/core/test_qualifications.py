@@ -50,3 +50,27 @@ def test_order_badge_held():
     assert held("Senior", [], "Senior Cadet") is True
     assert held("Senior", [], "Master Air Cadet") is False
     assert held("ATC", ["anything"], None) is None
+
+
+def test_order_badge_name_is_the_inverse_of_order_badge_held():
+    from core.catalogue import BADGE_CATEGORIES
+    from core.qualifications import order_badge_name
+
+    assert order_badge_name("leadership", "blue") == "Leadership – Blue"
+    assert order_badge_name("radio", "blue") == "Radio – Blue"
+    assert order_badge_name("space", "silver") == "Space – Silver"
+    # Road marching's top rung is named differently on the order form.
+    assert order_badge_name("road_marching", "gold") == "Road Marching – Gold (Nijmegen)"
+    # Every name produced must be one the order form actually offers.
+    offered = {f"{c['prefix']} – {lvl}" for c in BADGE_CATEGORIES if "prefix" in c for lvl in c["levels"]}
+    for key in ("leadership", "radio", "space", "first_aid", "road_marching"):
+        for level in ("blue", "bronze", "silver", "gold"):
+            assert order_badge_name(key, level) in offered
+
+
+def test_order_badge_name_is_none_for_badges_with_no_order_item():
+    from core.qualifications import order_badge_name
+
+    assert order_badge_name("moi", "yes") is None
+    assert order_badge_name("not_a_badge", "blue") is None
+    assert order_badge_name("swimming", "basic") is None
