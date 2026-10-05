@@ -4,11 +4,14 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
+    # Skip releases younger than a week: bad releases are usually yanked or patched
+    # by then. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
@@ -23,22 +26,28 @@ updates:
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
+    # Skip releases younger than a week: bad releases are usually yanked or patched
+    # by then. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(docker)"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
+    # Skip releases younger than a week: bad releases are usually yanked or patched
+    # by then. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(actions)"
     groups:
