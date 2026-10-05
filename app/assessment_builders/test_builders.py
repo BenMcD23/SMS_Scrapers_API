@@ -20,7 +20,11 @@ BAD_SIG = "data:image/png;base64,bm90IGFuIGltYWdl"  # valid base64, not an image
 
 
 def _text(pdf: bytes) -> str:
-    return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(pdf)).pages)
+    # Whitespace is collapsed because how pypdf lays out extracted text changes
+    # between releases (newer ones put every word on its own line), and these
+    # tests care which words are on the page, not how the extractor spaces them.
+    pages = (p.extract_text() or "" for p in PdfReader(io.BytesIO(pdf)).pages)
+    return " ".join(" ".join(pages).split())
 
 
 def _pages(pdf: bytes) -> int:

@@ -5,61 +5,54 @@ staff-only an SNCO saw "No cadets found for this flight" — the page looked
 broken rather than forbidden. Asserting the whole set together stops one of them
 drifting back out of step with the others.
 
-No DB or network — this only inspects the routes' declared dependencies.
+Rather than reading the route table (FastAPI 0.142 stores included routers as
+private lazy wrappers, so there is no stable public way to walk their
+dependencies), this calls each endpoint as every role and checks whether the
+real guard let it through. A request with no body or params is rejected with a
+422 only *after* the role guards have run, so 401/403 means the guard said no.
 """
 
 import pytest
 
 from api import app
-from core.security import (
-    require_staff,
-    require_staff_or_nco,
-    require_staff_or_snco,
-    require_user,
-)
 
-# Who each dependency lets through.
-ADMITS = {
-    require_user.__name__: {"staff", "snco", "nco"},
-    require_staff_or_nco.__name__: {"staff", "snco", "nco"},
-    require_staff_or_snco.__name__: {"staff", "snco"},
-    require_staff.__name__: {"staff"},
-}
+ROLES = ["staff", "snco", "nco"]
+METHODS = ["get", "post", "put", "patch", "delete"]
 
 # Paths the inspection sheet hits: the roster it renders flights from, the
 # absences it prefills, and the submit.
 INSPECTION_PATHS = ["/absences", "/cadets", "/inspections"]
 
 
-def guards(path: str) -> set[str]:
-    """Roles admitted by every security dependency declared on `path`."""
-    roles = {"staff", "snco", "nco"}
-    found = False
-    for route in app.routes:
-        if getattr(route, "path", None) != path:
+def guards(api, path: str) -> set[str]:
+    """Roles that get past the role guard on every method `path` declares."""
+    declared = app.openapi()["paths"].get(path)
+    assert declared, f"{path}: no such endpoint — is the path still right?"
+    admitted = set(ROLES)
+    for method in METHODS:
+        if method not in declared:
             continue
-        for dep in route.dependant.dependencies:
-            admits = ADMITS.get(dep.call.__name__)
-            if admits is not None:
-                roles &= admits
-                found = True
-    assert found, f"{path}: no role guard found — is the path still right?"
-    return roles
+        for role in ROLES:
+            resp = api.request(method.upper(), path, headers=api.as_(role))
+            if resp.status_code in (401, 403):
+                admitted.discard(role)
+    return admitted
 
 
 @pytest.mark.parametrize("path", INSPECTION_PATHS)
 @pytest.mark.parametrize("role", ["staff", "snco"])
-def test_inspection_endpoint_admits(path, role):
-    assert role in guards(path), f"{path} shuts out {role}s: admits {guards(path)}"
+def test_inspection_endpoint_admits(api, path, role):
+    admitted = guards(api, path)
+    assert role in admitted, f"{path} shuts out {role}s: admits {admitted}"
 
 
-def test_cadet_roster_stays_off_ncos():
+def test_cadet_roster_stays_off_ncos(api):
     # The roster is the one that regressed, and it must not swing the other way
     # either — NCOs get /cadets/search, not the full list.
-    assert guards("/cadets") == {"staff", "snco"}
+    assert guards(api, "/cadets") == {"staff", "snco"}
 
 
-def test_admits_table_still_reflects_reality():
-    # Guards against ADMITS going stale: a real staff-only endpoint must still
+def test_admits_table_still_reflects_reality(api):
+    # Guards against the probe going blind: a real staff-only endpoint must still
     # read as staff-only.
-    assert guards("/users") == {"staff"}
+    assert guards(api, "/users") == {"staff"}
