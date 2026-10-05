@@ -11,10 +11,23 @@ resources:
 # newTag is rewritten by .github/workflows/deploy.yml on every push to main.
 images:
   - name: ghcr.io/benmcd23/sms_scrapers_api
-    newTag: v1.0.426
+    newTag: v1.0.430
 
 configMapGenerator:
   - name: sms-api-config
     behavior: merge
     envs:
       - config.env
+
+patches:
+  # TEMPORARY, since 2026-10-05: squadron has been offline since 2026-10-02, so
+  # its replica (sms-db-1) can't run. With instances: 2 the Cluster never goes
+  # Healthy, and that blocks every Argo sync at the database wave, so no API
+  # deploy has gone out since v1.0.404. The primary (sms-db-2, on home) holds
+  # all the data. When squadron is back, delete this patch: CNPG clones a
+  # fresh replica onto it.
+  - target: { kind: Cluster, name: sms-db }
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
