@@ -193,9 +193,13 @@ def run_db_backup() -> dict:
 # ── restore / preview ─────────────────────────────────────────────────────────
 
 def _run_psql(url: str, sql_path: str) -> None:
-    """Restore a gzipped SQL dump into `url` in a single transaction."""
+    """Restore a gzipped SQL dump into `url` in a single transaction.
+
+    --quiet matters: stdout is only read once the whole dump has been written,
+    so psql echoing a line per statement could fill the pipe and deadlock a
+    large restore. Errors still come through."""
     proc = subprocess.Popen(
-        ["psql", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", url],
+        ["psql", "--quiet", "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", url],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

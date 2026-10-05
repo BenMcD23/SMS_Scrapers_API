@@ -2,20 +2,37 @@
 
 The model chain and its fallbacks live in core.llm — this module is only the
 prompt and the parsing of what comes back.
+
+The examples in the prompt are real texts staff sent (after editing the AI
+draft), picked from the ones whose wording follows from the programme alone —
+so the model copies what staff actually want, not what an earlier model wrote.
 """
 
 import re
 
 from core.llm import PRIMARY_MODEL, generate, model_label  # noqa: F401  (re-exported for the texts router)
 
-SYSTEM_PROMPT = "You generate structured squadron SMS messages."
+SYSTEM_PROMPT = (
+    "You write the weekly parade-night text message that 317 (Failsworth) Squadron, "
+    "Air Cadets, sends to its cadets and their parents. You only ever state what the "
+    "programme says."
+)
 
 UNIFORM_EXPANSIONS = {
     "no.3 sd": "No.3 SD (MTP/DPM)",
     "no.2a sd": "No.2a SD (Wedgewood and tie)",
+    "no.2c sd": "No.2c SD (Working Blues)",
 }
 
 CASUAL_UNIFORMS = ("civvies", "sports kit")
+
+# Probationary cadets have no uniform of their own yet. Staff change this by hand
+# once an intake has theirs — it's a line in code, not the model, so it's the same
+# every week and never gets "creatively" reworded.
+C_FLIGHT_UNIFORM = "Uniform - Civvies"
+
+# What the model writes for C Flight when there is nothing C-Flight-specific to say.
+NO_C_FLIGHT = "NONE"
 
 
 def format_uniform(raw: str) -> str:
@@ -30,36 +47,54 @@ def format_uniform(raw: str) -> str:
     return ", ".join(UNIFORM_EXPANSIONS.get(i.lower(), i) for i in items)
 
 PROMPT_TEMPLATE = """
-You write the weekly parade night SMS for 317 Failsworth Air Cadets.
+Write this week's parade-night text for 317 Failsworth Air Cadets from the programme below.
+It goes out as an SMS under a "Uniform:" line and above a "DNCO:" line, so never mention
+the uniform or the duty NCO yourself.
 
-INPUT FORMAT:
-- The programme data is split into "1st Period" and "2nd Period" — what the cadets do first, then after the break.
-- Within each activity block, the activity name comes first and the staff running it follow on the next line(s).
-- "A Flight:" / "B Flight:" label each flight's own activity.
-- "Both Flights:" means A and B Flight do that activity together.
-- "Whole Squadron:" means everyone does it together.
-- A "/" between several ACTIVITIES means the cadets are split between them, with staff paired up respectively (first activity with first staff member, and so on).
-- A "/" between staff names for a single activity just means it has multiple staff — write "with CWO Tyrell and CI Boxall", never "split between" staff.
+READING THE PROGRAMME
+- "1st Period" is the first half of the night, "2nd Period" the second half, after the break.
+- In each block the activity comes first, then the staff running it.
+- "A Flight:" / "B Flight:" is that flight's own activity. "Both Flights:" and "Whole Squadron:"
+  mean everyone does it together.
+- A "/" between ACTIVITIES means the cadets are split across them at the same time, staff paired
+  up in order. A "/" (or "&") between staff on ONE activity just means several staff run it.
 
-STYLE — write like a person, not a timetable:
-- Friendly and enthusiastic; the occasional exclamation mark or playful line is welcome.
-- NEVER invent activities, staff or details that are not in the programme data.
-- When A and B Flight do the same activities in opposite halves of the night, do NOT use flight labels — describe the night once, e.g. "Classifications running alongside Flight Time".
-- Only use flight labels when the flights genuinely do different things. The format is then strict: "A Flight:" on its own line, that flight's full night on the next line(s), ONE blank line, then "B Flight:" and theirs — no intro line before the labels. A "Both Flights" period then appears in BOTH flights' lines.
-- Keep activities in chronological order: 1st Period first, then 2nd Period after a connector. Never swap the order, never drop a period. Vary connectors: "followed by", "and then...", "Then".
-- If the same activity runs in both periods, mention it once instead of repeating it.
-- For split ("/") activities, list them naturally, e.g. "Archery, Exams & Resits & Ceremonial Drill".
-- Staff names are optional — include them where they read well ("with Sgt Davies"); drop them when there are many or the sentence gets cluttered.
-- Expand abbreviations: "Trg" becomes "Training". The activity "Uniform" means uniform maintenance — call it "Uniform maintenance".
-- Do NOT include the words "1st Period", "2nd Period", "Main Flight:" or "C Flight:" in the output.
+HOW STAFF WANT IT WRITTEN
+- Short. It's a text message: usually one to three short lines. Say what the night IS, not a
+  timetable of who is where.
+- Friendly and upbeat. A short lead-in or sign-off line adds warmth ("Get ready for...", "Let's
+  see which flight comes out on top...") — one at most, and only about things the programme
+  actually says. Vary the wording week to week; don't lean on the same phrase every time.
+- First half, then second half, in that order, joined by "followed by", "then", "and then...",
+  or on a new line. If it's the same all night, say so once ("running all night").
+- Split activities are one list: "Archery, Exams & Resits & Ceremonial Drill".
+- Staff names: leave most out. Name at most one or two people, and only where one person is
+  clearly running a headline activity ("with CI Stone", "brought to you by Sgt Lloyd Morris").
+  Never list every instructor. Never name groups like "Flight NCOs", "SNCOs", "All I/Cs",
+  "The Staff" or "Staff".
+- Flights: when both flights swap the same two activities between halves, don't mention flights
+  at all ("Classifications running alongside Flight Time"). When they genuinely differ, say so
+  inline ("Flight Time for A Flight and Slacks Repair for B Flight"). Only use separate
+  "A Flight:" / "B Flight:" blocks when the flights differ in BOTH halves and one line would be
+  a mess — then "A Flight:" on its own line, their night on the next, a blank line, then
+  "B Flight:" and theirs, with no intro line.
+- If the programme says the squadron is stood down / not parading, say plainly that there is no
+  parade night and cadets should not attend.
+- Expand shorthand: "Trg" → "Training", "Adv" → "Advanced", "Exped" → "Expedition". Leave
+  "WTD" (Wing Training Day) as it is — everyone knows it.
+- NEVER invent an activity, a person, a time, a place or a detail. Never write "1st Period",
+  "2nd Period", "Main Flight" or "C Flight".
 
-C FLIGHT RULES:
-- C Flight are the probationary cadets. Their message must ALWAYS start with exactly "Uniform - Civvies" followed by a blank line, then their activities.
-- Keep it to one short sentence, combining their periods naturally with "and", e.g. "Map Reading Pt1 and Drill" — not "followed by" every time.
+C FLIGHT (the probationary cadets, listed separately)
+- One short line of their activities, combined with "and": "Map Reading 1 and Drill".
+  Mention the instructor only if one person runs the whole night.
+- If C Flight has no real activity of its own — empty, "Awaiting Intake", stood down, or just
+  the same as the whole squadron — write exactly {no_c_flight}.
+- Don't write their uniform; that's added for you.
 
-EXAMPLES of the style wanted:
+EXAMPLES — real texts staff sent
 
-Input main body (the flights swap the same two activities, so no labels):
+Programme:
 1st Period
 A Flight:
 Flight Time
@@ -77,11 +112,10 @@ CWO Tyrell / CI Boxall
 B Flight:
 Flight Time
 FS Beverley
+Text:
+Classifications running alongside Flight Time!
 
-Good MAIN output:
-Classifications running alongside Flight Time
-
-Input main body:
+Programme:
 1st Period
 Both Flights:
 Archery Practice / Exams & Resits / Ceremonial Drill
@@ -91,70 +125,127 @@ CI Stone / Fg Off Barker / FS Gill
 Both Flights:
 Task Master
 CWO Tyrell
-
-Good MAIN output:
+Text:
 Archery, Exams & Resits & Ceremonial Drill
 and then...
 CWO Tyrell will become the Task Master!
 
-Input main body (flights genuinely differ, so labels are needed; the 1st Period "Both Flights" activity appears in both lines):
+Programme:
+1st Period
+A Flight:
+Flight Time
+Flight NCO
+
+B Flight:
+Slacks Repair
+Cpl Tyrell
+
+2nd Period
+Both Flights:
+Rounders Training
+CI Stone
+Text:
+Flight Time for A Flight and Slacks Repair for B Flight first half, followed by Rounders Training with CI Stone!
+
+Programme:
 1st Period
 Both Flights:
-Cook Off / Night Ex Prep
-Sgt Smith / CI Jones
+The Hunger Games
+Sgt Lloyd Morris
+
+2nd Period
+Both Flights:
+The Hunger Games
+Sgt Lloyd Morris
+Text:
+The Hunger Games! Sgt Lloyd Morris is running it all night — may the odds be ever in your favour...
+
+Programme:
+1st Period
+Both Flights:
+Classification Training / Exams / DofE Sign Off
+ASgt Tyrell / Sgt Lloyd Morris / CI Boxall
+
+2nd Period
+Both Flights:
+Classification Training / Exams / DofE Sign Off
+ASgt Tyrell / Sgt Lloyd Morris / CI Boxall
+Text:
+Classification Training, Exams & DofE Sign Off running all night!
+
+Programme:
+1st Period
+A Flight:
+Inter Flight GAS EX
+FS Wimbury
+
+B Flight:
+Inter Flight Quiz
+Sgt Mack
 
 2nd Period
 A Flight:
-Drill, FS Hall / Chess, CWO Lee
+Inter Flight Quiz
+Sgt Mack
 
 B Flight:
-Banner, Fg Off Cole
+Inter Flight GAS EX
+FS Wimbury
+Text:
+Get ready for a night of friendly competition! The Inter Flight GAS EX and the Inter Flight Quiz are running this evening. Let's see which flight comes out on top...
 
-Good MAIN output:
-A Flight:
-Cook Off and Night Ex Prep, then a split between Drill with FS Hall and Chess with CWO Lee.
-
-B Flight:
-Cook Off and Night Ex Prep, followed by Banner with Fg Off Cole.
-
-Input C Flight:
+C Flight programme:
 1st Period:
-Drill
-Sgt Lloyd Morris
+Map Reading 1
+FS Beverley
 
 2nd Period:
 Drill
-Sgt Lloyd Morris
+FS Gill
+C Flight text:
+Map Reading 1 and Drill
 
-Good C output:
-Uniform - Civvies
+C Flight programme:
+1st Period:
+Awaiting Intake
+C Flight text:
+{no_c_flight}
 
-Drill with Sgt Lloyd Morris
+NOW WRITE THIS WEEK'S
 
-Programme Data:
-
-Main Body:
+Programme:
 {main_body}
 
-C Flight:
+C Flight programme:
 {c_flight}
 
-Return EXACTLY in this format:
+Return EXACTLY this, nothing before or after:
 
 ===MAIN===
-<main message>
+<text>
 
 ===C===
-<C Flight message starting with "Uniform - Civvies">
+<C Flight text, or {no_c_flight}>
 """
+
+
+def _expand_uniform(raw: str) -> str:
+    """A programme activity of just "Uniform" is uniform maintenance. Done here
+    rather than asked of the model, which kept writing "Uniform!" — and a looser
+    rule turned "Uniform Prep" into "Uniform maintenance preparation"."""
+    return re.sub(r"(?m)(^|/\s*)Uniform(?=\s*(?:/|\(|$))", r"\1Uniform Maintenance", raw)
 
 
 def generate_message(main_body: str, c_flight: str) -> tuple[str, str, str]:
     """Return (main_message, c_flight_message, model_id) — model_id is whichever
     model actually answered, so callers can report fallbacks."""
-    prompt = PROMPT_TEMPLATE.format(main_body=main_body, c_flight=c_flight)
-    # Groq is capped lower than Gemini — it needs no thinking headroom here,
-    # and its free-tier tokens-per-minute budget is much tighter.
+    prompt = PROMPT_TEMPLATE.format(
+        main_body=_expand_uniform(main_body.strip()) or "(nothing programmed)",
+        c_flight=_expand_uniform(c_flight.strip()) or "(empty)",
+        no_c_flight=NO_C_FLIGHT,
+    )
+    # Groq is capped lower — it needs no thinking headroom here, and its
+    # free-tier tokens-per-minute budget is much tighter.
     output, model_id = generate(prompt, SYSTEM_PROMPT, groq_max_tokens=3000)
 
     main_match = re.search(r"===MAIN===\s*([\s\S]*?)===C===", output)
@@ -171,5 +262,12 @@ def generate_message(main_body: str, c_flight: str) -> tuple[str, str, str]:
     both = re.match(r"^A Flight:\n([\s\S]*?)\n\nB Flight:\n([\s\S]*)$", main_message)
     if both and both.group(1).strip() == both.group(2).strip():
         main_message = both.group(1).strip()
+
+    # No C Flight programme means no C Flight section — don't trust the model to
+    # notice, an empty input used to come back as a lone "Uniform - Civvies".
+    if not c_flight.strip() or c_message.strip(" .").upper() == NO_C_FLIGHT or not c_message:
+        c_message = ""
+    else:
+        c_message = f"{C_FLIGHT_UNIFORM}\n\n{c_message}"
 
     return main_message, c_message, model_id

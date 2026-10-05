@@ -9,6 +9,13 @@ from database.database import SessionLocal
 from database.models import Cadet, User
 
 
+def escape_like(text: str) -> str:
+    """Escape LIKE wildcards so user input matches literally — pair with
+    ``.ilike(pattern, escape="\\")``. Without it a search for "%" or "_"
+    matches every row, and a name lookup can land on the wrong cadet."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def get_db():
     db = SessionLocal()
     try:

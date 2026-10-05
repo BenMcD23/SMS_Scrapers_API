@@ -7,8 +7,8 @@ __pycache__/
 *.db
 .env
 .env.*
-!.env.tmpl
 data/
-tailscale_data/
 ops/
 docker-compose*.yml
+service_account.json
+deploy/

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from core import stock_events
 from core.db import get_db
 from core.emailer import ready_to_collect_email_html, send_email
+from core.qualifications import order_badge_held
 from core.security import require_staff
 from database.models import (
     BadgeGridCell,
@@ -73,6 +74,8 @@ def _get_or_create_badge_config(db: Session) -> BadgeGridConfig:
 
 
 def badge_order_to_dict(order: BadgeOrder) -> dict:
+    # ponytail: expiry ignored — an earned badge stays earned even if e.g. first aid lapses.
+    qual_names = [q.qual_type for q in order.cadet.qualifications]
     return {
         "id":        str(order.id),
         "cadetName": f"{order.cadet.first_name} {order.cadet.last_name}",
@@ -84,6 +87,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "id":             str(oi.id),
                 "badgeName":      oi.badge_name,
                 "replacement":    bool(oi.replacement),
+                "qualHeld":       order_badge_held(oi.badge_name, qual_names, order.cadet.classification),
                 "qmNotes":        json.loads(oi.qm_notes) if oi.qm_notes and oi.qm_notes.strip().startswith("[") else [],
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
@@ -270,6 +274,10 @@ def badge_delete_row(
     cfg = _get_or_create_badge_config(db)
     if cfg.num_rows <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete last row")
+    # Out of range (e.g. a stale tab after someone else shrank the grid) must
+    # not fall through: the num_rows decrement below would drop a real row.
+    if not 0 <= row_index < cfg.num_rows:
+        raise HTTPException(status_code=404, detail="Row not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row == row_index).all():
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row > row_index).all():
@@ -288,6 +296,10 @@ def badge_delete_col(
     cfg = _get_or_create_badge_config(db)
     if cfg.num_cols <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete last column")
+    # Out of range (e.g. a stale tab after someone else shrank the grid) must
+    # not fall through: the num_cols decrement below would drop a real column.
+    if not 0 <= col_index < cfg.num_cols:
+        raise HTTPException(status_code=404, detail="Column not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col == col_index).all():
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col > col_index).all():
@@ -306,7 +318,10 @@ def badge_orders_list(
 ):
     orders = (
         db.query(BadgeOrder)
-        .options(joinedload(BadgeOrder.cadet), selectinload(BadgeOrder.order_items))
+        .options(
+            joinedload(BadgeOrder.cadet).selectinload(Cadet.qualifications),
+            selectinload(BadgeOrder.order_items),
+        )
         .order_by(BadgeOrder.created_at.desc())
         .all()
     )

@@ -30,7 +30,7 @@ from core.attendance import ABSENT, PRESENT, count_states
 from core.db import get_db, get_or_create_user
 from core.emailer import EMAIL_RE, nco_appraisal_email_html, send_email
 from core.http import content_disposition
-from core.llm import PRIMARY_MODEL, model_label
+from core.llm import model_label
 from core.paths import TEMPLATES_DIR
 from core.ranks import is_nco_rank, nco_team
 from core.security import require_staff
@@ -45,6 +45,7 @@ from database.models import (
 )
 from form_generators.nco_appraisal_gen import build_appraisal_docx, next_review_label
 from form_generators.nco_appraisal_pdf import build_appraisal_pdf
+from scripts.nco_appraisal_ai import PRIMARY_MODEL
 
 logger = logging.getLogger(__name__)
 

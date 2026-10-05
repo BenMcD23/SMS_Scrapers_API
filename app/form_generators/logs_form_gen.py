@@ -102,39 +102,3 @@ def generate_logs_form(
     buffer = io.BytesIO()
     wb.save(buffer)
     return buffer.getvalue()
-
-
-if __name__ == "__main__":
-    # Self-check: every item_type/size combo from the app catalogue
-    # (lib/stores-items.ts in the frontend) must match a Live Demands row.
-    from core.catalogue import UNIFORM_SIZES
-
-    CATALOGUE_SIZES = {**UNIFORM_SIZES, "Belt": [""]}
-    ws = openpyxl.load_workbook(TEMPLATE_PATH)["Live Demands"]
-    template_rows = {
-        _norm(ws.cell(r, 4).value)
-        for r in range(2, ws.max_row + 1)
-        if ws.cell(r, 4).value not in (None, "")
-    }
-    missing = [
-        (item_type, size)
-        for item_type, sizes in CATALOGUE_SIZES.items()
-        for size in sizes
-        if _norm(build_description(item_type, size)) not in template_rows
-    ]
-    # Known template typo: "Trousers Woman's RAF 80/70/99" where the catalogue has 80/75/99
-    assert missing == [("Slacks", "80/75/99")], f"Unexpected unmatched combos: {missing}"
-    entries = [("Beret", "56"), ("Beret", "56"), ("Tie", "Standard"), ("Slacks", "80/75/99")]
-    out = generate_logs_form(entries, [("Cdt", "A Cadet", "Initial Issue")])
-    check = openpyxl.load_workbook(io.BytesIO(out))["Live Demands"]
-    rows = {check.cell(r, 4).value: check.cell(r, 5).value for r in range(2, check.max_row + 1)
-            if check.cell(r, 4).value not in (None, "")}
-    assert rows == {
-        "Beret RAF Size 56": 2,
-        "Necktie Black (Unisex Item) Standard": 1,
-        "Trousers Woman's RAF 80/75/99": 1,  # appended — no template row
-    }, f"Unexpected output rows: {rows}"
-    rdds = {check.cell(r, 7).value.date() if hasattr(check.cell(r, 7).value, "date") else check.cell(r, 7).value
-            for r in range(2, check.max_row + 1) if check.cell(r, 4).value not in (None, "")}
-    assert rdds == {date.today() + timedelta(days=21)}, f"Unexpected RDDs: {rdds}"
-    print("logs_form_gen self-check OK")

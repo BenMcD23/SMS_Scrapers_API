@@ -1,27 +1,22 @@
 """Inspection marking sheet — scraped absences for a parade date, sheet
 submission with AWOL detection (marked absent but no absence log), and
 per-cadet inspection history with score/attendance trends plus an optional
-Groq-powered analysis of recurring uniform faults."""
+AI analysis of recurring uniform faults."""
 
 import io
 from datetime import datetime
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from core.config import GROQ_API_KEY
 from core.db import get_db
+from core.llm import generate
 from core.security import require_staff_or_snco
 from database.models import Cadet, CadetAbsence, InspectionSheet
 
 router = APIRouter()
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "openai/gpt-oss-120b"
-
 
 def _parse_date(s: str) -> datetime:
     try:
@@ -259,6 +254,58 @@ def _split_comments(comments: list[dict]) -> tuple[list[dict], list[dict]]:
     return faults, positives
 
 
+def _timeline_entry(date: str, uniform: str, mark: dict) -> dict:
+    """One night of a cadet's history: what they scored and every note left on
+    them, faults and positives split out."""
+    faults, positives = _split_comments(mark.get("comments") or [])
+    return {
+        "date":      date,
+        "uniform":   uniform,
+        "score":     mark.get("score"),
+        "absent":    bool(mark.get("absent")),
+        "awol":      bool(mark.get("awol")),
+        "faults":    faults,
+        "positives": positives,
+    }
+
+
+def summarise_timeline(timeline: list[dict]) -> dict:
+    """Averages over one cadet's timeline.
+
+    The attendance denominator is the nights this cadet's flight was inspected —
+    i.e. the sheets they appear on — not every parade night. Overall is the
+    attendance fraction x the score average, the squadron's own metric."""
+    present = [e for e in timeline if not e["absent"]]
+    scored = [e["score"] for e in present if e["score"] is not None]
+    attendance = (len(present) / len(timeline)) if timeline else 0.0
+    score_avg = (sum(scored) / len(scored)) if scored else 0.0
+    return {
+        "present_count":  len(present),
+        "attendance_avg": round(attendance * 100, 2),
+        "score_avg":      round(score_avg, 2),
+        "overall":        round(attendance * score_avg, 2),
+    }
+
+
+def cadet_timeline(db: Session, cin: int) -> list[dict]:
+    """One cadet's inspection history, oldest first — every sheet they were
+    recorded on. Kept separate from the history table above so the cadet portal
+    can serve a cadet their own history without reading anyone else's."""
+    sheets = db.query(InspectionSheet).order_by(InspectionSheet.date).all()
+    out = []
+    for s in sheets:
+        data = s.data or {}
+        mark = next(
+            (m for m in data.get("marks", []) if m.get("cin") == cin), None
+        )
+        if mark is None:
+            continue  # cadet wasn't recorded on this sheet
+        out.append(
+            _timeline_entry(s.date.date().isoformat(), data.get("uniform", "blues"), mark)
+        )
+    return out
+
+
 @router.get("/inspections/history")
 async def inspection_history(
     db: Session = Depends(get_db),
@@ -284,46 +331,30 @@ async def inspection_history(
     timelines: dict[int, list[dict]] = {c.cin: [] for c in cadets}
     for s in sheets:
         d = s.date.date().isoformat()
+        data = s.data or {}
+        uniform = data.get("uniform", "blues")
         by_cin = {
             m.get("cin"): m
-            for m in (s.data or {}).get("marks", [])
+            for m in data.get("marks", [])
             if m.get("cin") is not None
         }
         for c in cadets:
             m = by_cin.get(c.cin)
             if m is None:
                 continue  # cadet wasn't recorded on this sheet
-            faults, positives = _split_comments(m.get("comments") or [])
-            timelines[c.cin].append({
-                "date":      d,
-                "score":     m.get("score"),
-                "absent":    bool(m.get("absent")),
-                "awol":      bool(m.get("awol")),
-                "faults":    faults,
-                "positives": positives,
-            })
+            timelines[c.cin].append(_timeline_entry(d, uniform, m))
 
     rows = []
     for c in cadets:
         tl = timelines[c.cin]
-        present = [e for e in tl if not e["absent"]]
-        scored = [e["score"] for e in present if e["score"] is not None]
-        # Denominator is the nights this cadet's flight was inspected — i.e. the
-        # sheets they appear on — not every parade night.
-        attendance = (len(present) / len(tl)) if tl else 0.0
-        score_avg = (sum(scored) / len(scored)) if scored else 0.0
-        overall = attendance * score_avg
         rows.append({
-            "cin":            c.cin,
-            "first_name":     c.first_name,
-            "last_name":      c.last_name,
-            "rank":           c.rank,
-            "flight":         c.flight,
-            "timeline":       tl,
-            "present_count":  len(present),
-            "attendance_avg": round(attendance * 100, 2),
-            "score_avg":      round(score_avg, 2),
-            "overall":        round(overall, 2),
+            "cin":        c.cin,
+            "first_name": c.first_name,
+            "last_name":  c.last_name,
+            "rank":       c.rank,
+            "flight":     c.flight,
+            "timeline":   tl,
+            **summarise_timeline(tl),
         })
 
     att_ranks = _competition_ranks([r["attendance_avg"] for r in rows])
@@ -521,37 +552,13 @@ class AnalyseRequest(BaseModel):
     cin: int
 
 
-def _call_groq(system: str, user: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not configured on the server")
-    resp = httpx.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model": GROQ_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.4,
-            "max_tokens": 1500,
-            "reasoning_effort": "low",
-        },
-        timeout=60,
-    )
-    data = resp.json()
-    if "choices" not in data:
-        raise RuntimeError(f"Groq API error: {resp.text[:300]}")
-    return data["choices"][0]["message"]["content"].strip()
-
-
 @router.post("/inspections/analyse")
-async def analyse_cadet(
+def analyse_cadet(  # sync on purpose — the slow AI call runs in the threadpool
     body: AnalyseRequest,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
 ):
-    """Groq-powered reasoning over a single cadet's inspection history, focused
+    """AI reasoning over a single cadet's inspection history, focused
     on recurring uniform faults and score trends."""
     cadet = db.query(Cadet).filter(Cadet.cin == body.cin).first()
     if not cadet:
@@ -604,8 +611,9 @@ async def analyse_cadet(
     )
 
     try:
-        analysis = _call_groq(ANALYSIS_SYSTEM_PROMPT, prompt)
+        analysis, model_id = generate(prompt, ANALYSIS_SYSTEM_PROMPT, temperature=0.4,
+                                      max_tokens=4000, groq_max_tokens=1500)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    return {"cin": body.cin, "model": GROQ_MODEL, "analysis": analysis}
+    return {"cin": body.cin, "model": model_id, "analysis": analysis}

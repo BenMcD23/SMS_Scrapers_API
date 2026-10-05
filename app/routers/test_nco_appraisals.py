@@ -16,6 +16,7 @@ import routers.nco_appraisals as na
 from core.db import get_or_create_user
 from database.database import Base
 from database.models import Cadet, CadetAttendance, NcoAppraisal
+from scripts.nco_appraisal_ai import short_name
 
 
 def _idinfo(name: str) -> dict:
@@ -92,7 +93,7 @@ def test_age_on():
     assert na.age_on(Cadet(cin=2, first_name="A", last_name="B"), datetime(2026, 8, 8).date()) == ""
 
 
-def test():
+def test(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine)()
@@ -237,9 +238,9 @@ def test():
 
     # ── emailing the PDF to the NCO ──────────────────────────────────────────
     sent: list[dict] = []
-    na.send_email = lambda to, subject, html, attachments=None, reply_to=None: sent.append(
+    monkeypatch.setattr(na, "send_email", lambda to, subject, html, attachments=None, reply_to=None: sent.append(
         {"to": to, "subject": subject, "attachments": attachments, "reply_to": reply_to}
-    )
+    ))
     emailed = na.email_appraisal(appraisal["id"], na.EmailBody(), db, staff)
     # Defaults to the NCO's own address, with replies pointed at the sender
     # rather than the unmonitored noreply mailbox.
@@ -264,3 +265,10 @@ def test():
         raise AssertionError("expected a malformed address to be rejected")
     except ValueError:
         pass
+
+
+def test_ai_short_name():
+    assert short_name("Corporal Isabella Wiggett") == "Cpl Wiggett"
+    assert short_name("Flight Sergeant Jo Mullery-McCourt") == "FS Mullery-McCourt"
+    assert short_name("Cpl Sawczuk") == "Cpl Sawczuk"
+    assert short_name("Jo Bloggs") == "Jo Bloggs"

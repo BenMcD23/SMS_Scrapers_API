@@ -26,8 +26,10 @@ from googleapiclient.discovery import build as google_build
 from core.config import IMPERSONATE_EMAIL, PROGRAMME_DRIVE_FOLDER_ID
 from core.security import _service_account_creds
 
+# Full names or the usual abbreviations ("Wed 2nd", "Thurs 4th") — a row whose
+# weekday isn't stripped fails to parse and the night silently disappears.
 WEEKDAY_RE = re.compile(
-    r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)", re.IGNORECASE
+    r"\b(Mon|Tues?|Wed|Thu(?:rs?)?|Fri|Sat|Sun)(?:day|nesday|sday|urday)?\b\.?,?", re.IGNORECASE
 )
 ORDINAL_RE = re.compile(r"(\d+)(st|nd|rd|th)", re.IGNORECASE)
 
@@ -192,7 +194,17 @@ def _parse_period(cells: list[dict], c_col: int, a_cols: list[int], b_cols: list
 
 
 def _parse_date(raw: str, month: int, year: int) -> datetime | None:
-    """Parse the date cell (weekday already stripped) against the known month/year."""
+    """Parse the date cell (weekday already stripped) against the known month/year.
+
+    None for anything that isn't a real date — a typo like "31/02" in one row
+    must skip that night, not fail the whole month's generation."""
+    try:
+        return _parse_date_strict(raw, month, year)
+    except ValueError:
+        return None
+
+
+def _parse_date_strict(raw: str, month: int, year: int) -> datetime | None:
     text = ORDINAL_RE.sub(r"\1", raw).strip()
     if not text:
         return None

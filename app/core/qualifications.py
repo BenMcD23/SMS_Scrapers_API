@@ -77,6 +77,17 @@ class Level(NamedTuple):
     level: str                # one of the level labels above
     patterns: tuple[str, ...]  # case-insensitive substrings to detect this rung
     bader: tuple[BaderQual, ...] = ()
+    # Match a whole qualification name rather than a substring — for quals whose
+    # name may prefix longer, different qualifications we must not count.
+    exact: bool = False
+
+    def matches(self, qual_name: str) -> bool:
+        """True if one raw ``qual_type`` string counts toward this rung. Shared by
+        ``held_level`` and the audit's award-date lookup so both agree."""
+        name = qual_name.strip().casefold()
+        if self.exact:
+            return any(p.casefold() == name for p in self.patterns)
+        return any(p.casefold() in name for p in self.patterns)
 
 
 class BadgeType(NamedTuple):
@@ -121,7 +132,8 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
 
     BadgeType("radio", "Radio", LEVELED, (
         Level(GOLD,   ("Radio - Comms Specialist (Gold)",), (BaderQual("Radio - Comms Specialist (Gold)", 377),)),
-        Level(SILVER, ("Radio - Communicator (Silver)",),   (BaderQual("Radio - Communicator (Silver)", 376),)),
+        Level(SILVER, ("Radio - Communicator (Silver)", "Radio - Advanced Voice Procedure (Silver)"),
+                      (BaderQual("Radio - Communicator (Silver)", 376),)),
         Level(BRONZE, ("Radio - Operator (Bronze)",),       (BaderQual("Radio - Operator (Bronze)", 375),)),
         Level(BLUE,   ("Radio - Basic Operator (Blue)",),   (BaderQual("Radio - Basic Operator (Blue)", 373),)),
     )),
@@ -172,6 +184,13 @@ BADGE_TYPES: tuple[BadgeType, ...] = (
             BaderQual("Musician (Blue) - Lyre", 1898),
             BaderQual("Musician (Blue) - Pipes", 1897),
         )),
+    )),
+
+    # Matched on the exact qualification name, not a substring (see Level.exact).
+    # No Bader option ids confirmed yet, so these are audit-only.
+    BadgeType("atp_ground_school", "ATP Ground School", LEVELED, (
+        Level(BRONZE, ("Bronze ATP Ground School",), exact=True),
+        Level(BLUE,   ("Blue ATP Ground School",),   exact=True),
     )),
 
     BadgeType("flying", "Flying Badge", LEVELED, (
@@ -255,9 +274,9 @@ def held_level(badge: BadgeType, qual_names) -> str | None:
     """The level of ``badge`` held by a cadet, given an iterable of their raw
     ``qual_type`` strings. Returns the highest-priority level whose pattern
     matches (mirroring the spreadsheet cascade), or ``None`` if none match."""
-    blob = "\n".join(qual_names).casefold()
+    names = list(qual_names)
     for lvl in badge.levels:  # highest priority first
-        if any(p.casefold() in blob for p in lvl.patterns):
+        if any(lvl.matches(n) for n in names):
             return lvl.level
     return None
 
@@ -272,3 +291,45 @@ def bader_quals_for(badge_key: str, level: str) -> tuple[BaderQual, ...]:
         if lvl.level == level:
             return lvl.bader
     return ()
+
+
+# ─── Badge orders ─────────────────────────────────────────────────────────────
+# Order names come from core/catalogue.BADGE_CATEGORIES: "<prefix> – <level>"
+# for levelled badges, bare names for Core/Classification.
+
+_ORDER_PREFIX_TO_BADGE = {
+    "Leadership": "leadership", "Music": "music", "Shooting": "shooting",
+    "Radio": "radio", "Cyber": "cyber", "Space": "space",
+    "Road Marching": "road_marching", "First Aid": "first_aid",
+    "DofE": "duke_of_edinburgh", "Flying": "flying",
+}
+_ORDER_CLASSIFICATION = {
+    "First Class": "First Class Cadet", "Leading": "Leading Cadet",
+    "Senior": "Senior Cadet", "Master": "Master Air Cadet",
+}
+
+
+def _has_rung(badge_key: str, level: str, names: list[str]) -> bool:
+    return any(lvl.level == level and any(lvl.matches(n) for n in names)
+               for lvl in BADGE_TYPE_BY_KEY[badge_key].levels)
+
+
+def order_badge_held(badge_name: str, qual_names, classification: str | None) -> bool | None:
+    """Whether a cadet holds the qualification for an ordered badge — the exact
+    level, a higher one doesn't count. ``None`` when the badge has no
+    qualification behind it (Core badges, unknown names)."""
+    if badge_name in _ORDER_CLASSIFICATION:
+        return (classification or "").strip() == _ORDER_CLASSIFICATION[badge_name]
+    prefix, sep, level = badge_name.partition(" – ")
+    key = _ORDER_PREFIX_TO_BADGE.get(prefix)
+    if not sep or not key:
+        return None
+    names = list(qual_names)
+    if level == "Gold (Nijmegen)":
+        return _has_rung(key, GOLD, names) or _has_rung(key, NIJMEGEN, names)
+    level = level.casefold()
+    held = _has_rung(key, level, names)
+    # Flying Blue/Bronze need the ATP Ground School at the same level as well.
+    if key == "flying" and level in (BLUE, BRONZE):
+        held = held and _has_rung("atp_ground_school", level, names)
+    return held

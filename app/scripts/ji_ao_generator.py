@@ -5,8 +5,10 @@ from datetime import datetime, timedelta
 
 from docx import Document
 from docx.shared import Inches
+from sqlalchemy import func, or_
 
-from core.paths import SIGNATURES_DIR, TEMPLATES_DIR
+from core.paths import TEMPLATES_DIR
+from database.models import User, UserProfile, UserSignature
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +58,6 @@ def get_template_path(filename):
         str(TEMPLATES_DIR / filename)
     )
 
-def get_signature_path(last_name):
-    return os.path.abspath(
-        str(SIGNATURES_DIR / f"{last_name}.png")
-    )
-
 
 def replace_text_preserve_format(paragraph, replacements):
     """
@@ -78,9 +75,11 @@ def replace_text_preserve_format(paragraph, replacements):
             else:
                 paragraph.add_run(new_text)
 
-def replace_placeholder_with_signature(paragraph, placeholder, name, email, signature_path, width=Inches(2)):
+def replace_placeholder_with_signature(paragraph, placeholder, name, signature, width=Inches(2)):
     """
     Replace a placeholder in a paragraph with a signature image followed by text.
+    With no signature image the name is still written, leaving a blank line
+    above it to sign by hand.
     """
     if placeholder not in paragraph.text:
         return
@@ -88,13 +87,11 @@ def replace_placeholder_with_signature(paragraph, placeholder, name, email, sign
     # Clear existing text in the paragraph
     paragraph.text = ""
 
-    run = paragraph.add_run()
     try:
-        # Add the signature image
-        run.add_picture(signature_path, width=width)
+        if signature:
+            paragraph.add_run().add_picture(io.BytesIO(signature), width=width)
     except Exception as e:
         logger.error(f"Could not add signature image for {name}: {e}")
-        return
 
     # Add a line break before the text
     paragraph.add_run().add_break()
@@ -120,9 +117,27 @@ def _date_range_text(event) -> str:
 
 
 def _signature_key(adult_ic: str) -> str:
-    """Surname the signature image and contact card are filed under."""
+    """Surname the contact card is filed under."""
     parts = (adult_ic or "").strip().split()
     return parts[-1] if parts else "N/A"
+
+
+def find_signature(db, adult_ic: str) -> bytes | None:
+    """The signature the Adult IC saved in their settings, matched on surname
+    (their account name or F1771e profile surname). Two staff sharing a surname
+    are told apart by first name when the Adult IC text includes it."""
+    surname = _signature_key(adult_ic).lower()
+    users = (
+        db.query(User)
+        .join(UserSignature)
+        .outerjoin(UserProfile)
+        .filter(or_(func.lower(User.last_name) == surname, func.lower(UserProfile.surname) == surname))
+        .all()
+    )
+    words = (adult_ic or "").lower().split()
+    named = [u for u in users if (u.first_name or "").lower() in words]
+    match = (named or users or [None])[0]
+    return match.signature.image_data if match else None
 
 
 def _contact(adult_ic: str, key: str) -> str:
@@ -184,15 +199,14 @@ def ao_fields(event) -> dict:
     }
 
 
-def _apply_signature(doc, adult_ic: str):
+def _apply_signature(doc, adult_ic: str, signature: bytes | None):
     for paragraph in doc.paragraphs:
         if "{{ adult_ic_signature }}" in paragraph.text:
             replace_placeholder_with_signature(
                 paragraph,
                 "{{ adult_ic_signature }}",
                 name=adult_ic,
-                email=_contact(adult_ic, "email"),
-                signature_path=get_signature_path(_signature_key(adult_ic)),
+                signature=signature,
                 width=Inches(2),
             )
 
@@ -216,19 +230,20 @@ def _save(doc) -> io.BytesIO:
     return buffer
 
 
-def generate_ji(event, fields=None):
+def generate_ji(event, fields=None, signature=None):
     """Generate a JI for the selected event.
 
     `fields` are the edited values from the UI; anything missing falls back to
-    what ji_fields computes from the event.
+    what ji_fields computes from the event. `signature` is the Adult IC's
+    image bytes (see find_signature); without one the name goes in unsigned.
     """
     values = {**ji_fields(event), **(fields or {})}
     doc = _render("ji_template.docx", values)
-    _apply_signature(doc, values["adult_ic"])
+    _apply_signature(doc, values["adult_ic"], signature)
     return _save(doc)
 
 
-def generate_ao(event, fields=None):
+def generate_ao(event, fields=None, signature=None):
     """Generate an AO for the selected event. See generate_ji for `fields`."""
     values = {**ao_fields(event), **(fields or {})}
     doc = _render("ao_template.docx", values)
@@ -244,5 +259,5 @@ def generate_ao(event, fields=None):
                 paragraph.insert_paragraph_before("")
                 break
 
-    _apply_signature(doc, values["adult_ic"])
+    _apply_signature(doc, values["adult_ic"], signature)
     return _save(doc)

@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sms-api
+  annotations:
+    # After the migration Job (wave 1): a failed migration stops the sync here,
+    # leaving the old pod serving.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  # One pod. The scheduler is safe with more (core/leader.py), but a scrape's
+  # live log and stop button live in the pod that started it.
+  replicas: 1
+  # The new pod must be Ready before the old one goes, so a deploy has no
+  # downtime. The brief overlap is safe: only the pod holding the Postgres
+  # leader lock runs scheduled jobs, and the old pod releases it as it exits.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: sms-api
+  template:
+    metadata:
+      labels:
+        app: sms-api
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: role
+                    operator: In
+                    values: [interactive, batch]
+        # Sit next to the database primary, so queries don't cross the
+        # tailnet. The switchover CronJob restarts this pod after it moves
+        # the primary.
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    cnpg.io/cluster: sms-db
+                    cnpg.io/instanceRole: primary
+      # Default is 5 minutes on a dead node before rescheduling.
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: api
+          image: ghcr.io/benmcd23/sms_scrapers_api
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sms-api-config
+            - secretRef:
+                name: sms-api-secrets
+          env:
+            # Written by CloudNativePG: postgresql://app:...@sms-db-rw:5432/app
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: sms-db-app
+                  key: uri
+          # Keep serving for a few seconds after termination starts, until
+          # Traefik has dropped this pod from its backends. Without it a
+          # rollout 502s the requests that land in that gap.
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
+          startupProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            # Idles ~1GiB; scrapers (Chromium) burst well above. The request is
+            # what's reserved, the limit is only a ceiling.
+            # ponytail: limit is a guess - set to ~1.5x the peak from
+            # `kubectl top pod` once a few scrape runs have been observed.
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 6Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        # Chromium needs a bigger /dev/shm than the 64MB default (was
+        # shm_size in compose). Counts against the memory limit.
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sms-api
+spec:
+  selector:
+    app: sms-api
+  ports:
+    - port: 80
+      targetPort: 8000

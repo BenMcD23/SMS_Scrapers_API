@@ -45,6 +45,10 @@ jobs:
   deploy:
     needs: merge
     if: needs.merge.outputs.merged == 'true'
+    # A called workflow can't be granted more than its caller job has.
+    permissions:
+      contents: write
+      packages: write
     uses: ./.github/workflows/deploy.yml
     with:
       ref: development

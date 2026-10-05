@@ -5,13 +5,15 @@ core/jobs.py.
 """
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 
+from core import leader
 from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, SCHEDULER_ENABLED
 from core.jobs import register_jobs
 from core.logging import configure_logging
@@ -55,11 +57,14 @@ async def lifespan(app: FastAPI):
     # starts (deploy job / compose step), never by create_all here.
     if SCHEDULER_ENABLED:
         register_jobs(scheduler)
-        scheduler.start()
-        logger.info("background scheduler started")
+        # Jobs run only in the process holding the leader lock, so a rolling
+        # deploy never has two schedulers going at once. Scraper schedules are
+        # re-read on takeover, in case the old process saw an edit this one missed.
+        leader.start(scheduler, on_acquire=scrapers.register_schedule_jobs)
     else:
         logger.info("background scheduler disabled on this replica")
     yield
+    leader.stop()
     if scheduler.running:
         scheduler.shutdown()
 
@@ -80,6 +85,27 @@ app.add_middleware(
     expose_headers=["*"],
     allow_credentials=True,
 )
+
+_QUIET_PATHS = {"/ping", "/healthz", "/readyz"}
+
+
+# Outermost middleware: one line per request with status and timing, and the
+# traceback of anything that blows up, so a failing page shows up in the pod log.
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("%s %s crashed after %.0fms", request.method, request.url.path,
+                         (time.perf_counter() - start) * 1000)
+        raise
+    if request.url.path not in _QUIET_PATHS:
+        ms = (time.perf_counter() - start) * 1000
+        level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        logger.log(level, "%s %s -> %d in %.0fms", request.method, request.url.path,
+                   response.status_code, ms)
+    return response
 
 
 # ── Probes ────────────────────────────────────────────────────────────────────

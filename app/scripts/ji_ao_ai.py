@@ -1,21 +1,14 @@
 """AI authoring of the free-text description sections in the JI/AO documents.
 
 Takes the same Event317 data the deterministic generator uses and asks an LLM
-to turn it into a properly written paragraph. Only Groq's gpt-oss-120b is used
-here (no Gemini fallback) — this is a one-off, on-demand generation triggered
-by a button click, so the lower latency matters more than Gemini's better
-prose, and Gemini's tiny free-tier daily quota is better saved for the SMS
-generator that runs every week.
+to turn it into a properly written paragraph. Goes through core.llm's chain like
+every other AI feature — GLM on NVIDIA's per-minute free tier leads, so an
+on-demand button click no longer has to be kept off Gemini's tiny daily quota.
 """
 
-import time
+import re
 
-import httpx
-
-from core.config import GROQ_API_KEY
-
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "openai/gpt-oss-120b"
+from core.llm import generate
 
 SYSTEM_PROMPT = "You write formal joining instructions and admin orders for an Air Cadets squadron."
 
@@ -58,36 +51,16 @@ Return ONLY the paragraph, no preamble.
 """
 
 
-def _call_groq(prompt: str) -> str:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY not configured")
+def _write(prompt: str) -> str:
+    output, _model = generate(prompt, SYSTEM_PROMPT, temperature=0.5,
+                              max_tokens=4000, groq_max_tokens=1000)
+    # Scraped notes arrive with stray non-breaking spaces and runs of whitespace;
+    # the models copy them through.
+    return re.sub(r"[ \t\u00a0]+", " ", output).strip()
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.6,
-        "max_tokens": 1000,
-        "reasoning_effort": "low",
-    }
 
-    for _ in range(5):
-        resp = httpx.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json=payload,
-            timeout=60,
-        )
-        if resp.status_code != 429:
-            break
-        time.sleep(min(float(resp.headers.get("retry-after", 10)) + 1, 60))
-
-    data = resp.json()
-    if "choices" not in data:
-        raise RuntimeError(f"Groq API error: {resp.text}")
-    return data["choices"][0]["message"]["content"].strip()
+def _clean_notes(raw: str | None) -> str:
+    return re.sub(r"[\s\u00a0]+", " ", raw or "").strip() or "(none provided)"
 
 
 def _location_text(event) -> str:
@@ -113,9 +86,9 @@ def generate_ji_description_ai(event) -> str:
         date_from_to=date_from_to,
         location=_location_text(event),
         dress=event.dress or "N/A",
-        raw_description=event.description or "(none provided)",
+        raw_description=_clean_notes(event.description),
     )
-    return _call_groq(prompt)
+    return _write(prompt)
 
 
 def generate_ao_description_ai(event) -> str:
@@ -126,6 +99,6 @@ def generate_ao_description_ai(event) -> str:
         date_from=event.date_from.strftime("%d/%m/%Y") if event.date_from else "N/A",
         date_to=event.date_to.strftime("%d/%m/%Y") if event.date_to else "N/A",
         location=_location_text(event),
-        raw_description=event.description or "(none provided)",
+        raw_description=_clean_notes(event.description),
     )
-    return _call_groq(prompt)
+    return _write(prompt)

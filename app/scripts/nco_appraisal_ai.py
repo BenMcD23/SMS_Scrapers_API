@@ -12,7 +12,21 @@ reference material only — the model must never award a strength or weakness th
 staff notes don't support, which is the one failure mode that would matter here.
 """
 
-from core.llm import generate
+from core.llm import MODEL_PREFERENCE, NVIDIA_MODEL, generate
+
+# GLM on NVIDIA's free tier writes the short texts fine, but on this long prompt it
+# reasons past five minutes and times out (tested 2026-09-24) — every draft would
+# sit through the 120s timeout before falling back anyway. Appraisals are rare
+# enough that Gemini's 20/day is plenty, so start there.
+APPRAISAL_MODELS = [m for m in MODEL_PREFERENCE if m != NVIDIA_MODEL]
+PRIMARY_MODEL = APPRAISAL_MODELS[0]
+
+RANK_SHORT = {
+    "cadet warrant officer": "CWO",
+    "flight sergeant": "FS",
+    "sergeant": "Sgt",
+    "corporal": "Cpl",
+}
 
 SYSTEM_PROMPT = (
     "You write formal NCO appraisals for a Royal Air Force Air Cadets squadron. "
@@ -139,8 +153,9 @@ PROMPT_TEMPLATE = """
 Write the five sections of an NCO appraisal for {name}, a cadet NCO at 317 (Failsworth) Squadron.
 
 WHO THIS IS ABOUT
-- Name and rank (use exactly this form when referring to them): {name}
-- Age: {age}
+- Full name and rank: {name}
+- Refer to them as: {short_name}
+- Age: {age} (context only — don't state it in the appraisal)
 - Squadron attendance: {attendance}
 
 THE ASSESSING STAFF MEMBER'S NOTES — the only facts you may use:
@@ -152,15 +167,20 @@ HARD RULES
 - If the notes are thin, write less. Short and true beats padded.
 - Do not contradict the notes to be kinder, and do not soften a stated concern
   out of existence — this is a formal record staff and the NCO both read.
-- Refer to them as "{name}" (or "they") throughout. Never guess a gender: if the
-  notes don't make it explicit, use they/them.
+- Refer to them as "{short_name}", the way the worked example says "Cpl Sawczuk",
+  or by pronoun. Never use their first name. Never guess a gender: if the notes
+  don't make it explicit, use they/them — and once you've picked, stay with it.
+- Quote the attendance figure only where it backs up a point the notes make.
+  Don't turn "keep attending" into a target unless the notes raise attendance.
+- These instructions are for you, not the reader: never echo their wording
+  (no "the honest headline is", "the notes say", "according to staff").
 - Address the appraisal about them in the third person for the first four
   sections; the Targets are written to them ("Step forward to lead...").
 - British English. No headings, no markdown, no bullet characters.
 
 SECTIONS AND THEIR SHAPE
 1. General Observations — 3 to 5 sentences of flowing prose. Who they are on
-   squadron overall, what they contribute, and the honest headline.
+   squadron overall, what they contribute, and the main thing they need to hear.
 2. Effectiveness in Role — 4 to 6 sentences of flowing prose. How they actually
    perform the NCO job: attendance, reliability, running things, and the "however"
    where performance falls short.
@@ -252,6 +272,16 @@ def _clean(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def short_name(name: str) -> str:
+    """ "Corporal Isabella Wiggett" -> "Cpl Wiggett", how 317 appraisals refer to
+    an NCO. Anything that doesn't start with a known rank is left as typed."""
+    lowered = (name or "").strip().lower()
+    for rank, short in RANK_SHORT.items():
+        if lowered.startswith(rank + " ") or lowered.startswith(short.lower() + " "):
+            return f"{short} {name.split()[-1]}"
+    return name or "the NCO"
+
+
 def generate_appraisal(name: str, age: str, attendance: str, points: str) -> tuple[dict, str]:
     """Draft the five sections from staff notes.
 
@@ -260,11 +290,13 @@ def generate_appraisal(name: str, age: str, attendance: str, points: str) -> tup
     """
     prompt = PROMPT_TEMPLATE.format(
         name=name or "the NCO",
+        short_name=short_name(name),
         age=age or "not recorded",
         attendance=attendance or "not recorded",
         points=points.strip(),
         word_bank=WORD_BANK,
         example=EXAMPLE_APPRAISAL,
     )
-    output, model_id = generate(prompt, SYSTEM_PROMPT, temperature=0.7, groq_max_tokens=4000)
+    output, model_id = generate(prompt, SYSTEM_PROMPT, temperature=0.7, groq_max_tokens=4000,
+                                models=APPRAISAL_MODELS)
     return _split_sections(output), model_id

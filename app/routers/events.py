@@ -8,10 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 
 from core.db import get_db
+from core.http import content_disposition
 from core.security import require_staff
 from database.models import AllEvent, Cadet, CadetEvent, Event317
 from scripts.ji_ao_ai import generate_ao_description_ai, generate_ji_description_ai
-from scripts.ji_ao_generator import ao_fields, generate_ao, generate_ji, ji_fields
+from scripts.ji_ao_generator import ao_fields, find_signature, generate_ao, generate_ji, ji_fields
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,12 @@ def get_doc_fields(
     """Default text for every editable section of both documents — what the UI
     fills its preview with before the user changes anything."""
     event = _get_event(db, event_id)
-    return {"ji": ji_fields(event), "ao": ao_fields(event)}
+    return {
+        "ji": ji_fields(event),
+        "ao": ao_fields(event),
+        # Lets the UI warn before generating that the doc will go out unsigned.
+        "signature_missing": find_signature(db, event.adult_ic) is None,
+    }
 
 
 @router.post("/generate-doc/{event_id}/{action}/ai-description")
@@ -163,22 +169,28 @@ def generate_doc_endpoint(
 ):
     event = _get_event(db, event_id)
     fields = data.fields if data else {}
+    # Resolved from the edited Adult IC, which may differ from the event's.
+    signature = find_signature(db, fields.get("adult_ic") or event.adult_ic)
 
     try:
         if action == "ji":
-            file_buffer = generate_ji(event, fields=fields)
+            file_buffer = generate_ji(event, fields=fields, signature=signature)
             filename = f"JI_{event.reference}.docx"
         elif action == "ao":
-            file_buffer = generate_ao(event, fields=fields)
+            file_buffer = generate_ao(event, fields=fields, signature=signature)
             filename = f"AO_{event.reference}.docx"
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
 
-        safe_filename = filename.replace('"', '').replace('\n', '').replace('\r', '')
         return StreamingResponse(
             file_buffer,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'}
+            headers={
+                # The reference is scraped from Bader — the shared helper copes
+                # with quotes and non-Latin-1 characters in it.
+                "Content-Disposition": content_disposition("attachment", filename, "document.docx"),
+                "X-Signature-Missing": "1" if signature is None else "0",
+            }
         )
     except HTTPException:
         raise

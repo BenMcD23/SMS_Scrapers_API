@@ -175,8 +175,10 @@ def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: l
             if stop_event.is_set():
                 state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
             else:
+                # A failed qualification doesn't stop the others, so the job
+                # still finishes — but it isn't recorded as a clean run.
                 state["messages"].append(json.dumps({"type": "status", "value": "done"}))
-                success = True
+                success = not _logged_error(state["messages"], 0)
     except Exception as e:
         logger.error(f"upload job {job_id} crashed:\n" + traceback.format_exc())
         with state["lock"]:
@@ -199,6 +201,16 @@ def run_upload_job(job_id: str, user_id: int, user_email: str, assessment_ids: l
         state["running"] = False
         state["context"] = None
         state["finished_at"] = datetime.now()
+
+
+def _logged_error(messages: list[str], since: int) -> bool:
+    """Whether the run appended an "error" line after index ``since``.
+
+    The scrapers catch their own failures and report them in the log rather
+    than raising, so returning normally doesn't mean the run worked — without
+    this a crashed scrape was followed by "done" (the UI flipped its ✗ back to
+    ✓) and recorded as a success."""
+    return any((safe_parse(m) or {}).get("type") == "error" for m in messages[since:])
 
 
 def _quit_context(state: dict):
@@ -247,12 +259,15 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
         else:
             state["messages"].append(json.dumps({"type": "error", "value": "Scraper timed out."}))
 
+    started_at = len(state["messages"])
     try:
         scraper_func(state["messages"], state["lock"], user_id, db, stop_event, on_context_ready=on_context_ready)
 
         with state["lock"]:
             if stop_event.is_set():
                 append_stop_outcome()
+            elif _logged_error(state["messages"], started_at):
+                pass  # the scraper already reported why; leave its error last
             else:
                 if name == "cadet-quali":
                     _save_stats_snapshot(db)

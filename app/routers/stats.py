@@ -28,6 +28,29 @@ STAT_BADGES = [b for b in BADGE_TYPES if b.kind == LEVELED]
 BADGE_KEY_ALIAS = {"flying": "flying_badge", "swimming": "swimming_proficiency"}
 
 
+# No classification recorded means they haven't passed First Class yet.
+JUNIOR_CLASSIFICATION = "Junior Cadet"
+
+
+def is_junior(cadet: Cadet) -> bool:
+    return (cadet.classification or JUNIOR_CLASSIFICATION) == JUNIOR_CLASSIFICATION
+
+
+def _badge_counts(cadets: list[Cadet], quals_by_cadet: dict) -> dict:
+    """badge key -> {level label: cadet count} over the given cadets. The shared
+    catalog decides the held level per badge (highest-first substring match)."""
+    badges: dict = {}
+    for badge in STAT_BADGES:
+        out_key = BADGE_KEY_ALIAS.get(badge.key, badge.key)
+        level_counts: dict = {}
+        for c in cadets:
+            lvl = held_level(badge, quals_by_cadet.get(c.cin, ()))
+            label = lvl.capitalize() if lvl else "None"
+            level_counts[label] = level_counts.get(label, 0) + 1
+        badges[out_key] = level_counts
+    return badges
+
+
 def compute_stats(db: Session) -> dict:
     cadets = db.query(Cadet).all()
     today = date_type.today()
@@ -41,29 +64,21 @@ def compute_stats(db: Session) -> dict:
         flight_counts[flight] = flight_counts.get(flight, 0) + 1
         rank = c.rank or "Unknown"
         rank_counts[rank] = rank_counts.get(rank, 0) + 1
-        # No classification recorded means they haven't passed First Class yet.
-        classification = c.classification or "Junior Cadet"
+        classification = c.classification or JUNIOR_CLASSIFICATION
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
         if c.date_of_birth:
             dob = c.date_of_birth
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
             age_counts[str(age)] = age_counts.get(str(age), 0) + 1
 
-    # Badge breakdown — group each cadet's raw quals, then let the shared catalog
-    # decide the held level per badge (highest-first substring match).
     quals_by_cadet: dict = defaultdict(list)
     for q in db.query(CadetQualification).all():
         quals_by_cadet[q.cadet_id].append(q.qual_type)
 
-    badges: dict = {}
-    for badge in STAT_BADGES:
-        out_key = BADGE_KEY_ALIAS.get(badge.key, badge.key)
-        level_counts: dict = {}
-        for c in cadets:
-            lvl = held_level(badge, quals_by_cadet.get(c.cin, ()))
-            label = lvl.capitalize() if lvl else "None"
-            level_counts[label] = level_counts.get(label, 0) + 1
-        badges[out_key] = level_counts
+    # The same breakdown without juniors, who've barely started on badges and
+    # drag every percentage down. Counted here so the dashboards can toggle it
+    # without another round-trip, and so snapshots carry it for the trend charts.
+    non_juniors = [c for c in cadets if not is_junior(c)]
 
     return {
         "total_cadets": len(cadets),
@@ -71,7 +86,11 @@ def compute_stats(db: Session) -> dict:
         "by_age": age_counts,
         "by_rank": rank_counts,
         "by_classification": classification_counts,
-        "badges": badges,
+        "badges": _badge_counts(cadets, quals_by_cadet),
+        "non_junior": {
+            "total_cadets": len(non_juniors),
+            "badges": _badge_counts(non_juniors, quals_by_cadet),
+        },
     }
 
 
