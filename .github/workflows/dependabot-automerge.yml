@@ -1,0 +1,31 @@
+# Auto-merges Dependabot's minor/patch updates once the required checks pass.
+# `--auto` makes GitHub wait for branch protection's required checks, so a red CI
+# run blocks the merge. Major versions and Docker base-image bumps stay manual:
+# majors are where the breaking changes are, and a Python version "minor" bump
+# (3.10 -> 3.14) is really a runtime change that CI can't fully vouch for.
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: >-
+          steps.metadata.outputs.update-type != 'version-update:semver-major' &&
+          steps.metadata.outputs.package-ecosystem != 'docker'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
