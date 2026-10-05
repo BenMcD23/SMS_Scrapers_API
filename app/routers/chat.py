@@ -1,6 +1,6 @@
 """Docs assistant: questions answered from the RAFAC controlled documents.
 
-The chatbot service (github.com/BenMcD23/chatbot) only listens inside the
+The chatbot service (github.com/BenMcD23/RAFAC-Chatbot) only listens inside the
 cluster and has no auth of its own, so this route is its front door: it does
 the staff check, then forwards the question as-is.
 """
