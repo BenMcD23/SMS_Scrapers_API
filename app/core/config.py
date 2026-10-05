@@ -111,3 +111,6 @@ CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"^https://317-sms-site-[a-z0
 # Whether this process runs the background scheduler (cleanups, parade-night
 # texts, scheduled scrapers, backups). Exactly one process may have it on.
 SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
+
+# Docs assistant service (routers/chat.py). Cluster-internal only, no auth of its own.
+CHATBOT_URL = os.getenv("CHATBOT_URL", "http://chatbot.chatbot.svc.cluster.local")
