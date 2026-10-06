@@ -34,6 +34,12 @@ spec:
                   - key: role
                     operator: In
                     values: [interactive, batch]
+              # Fallback if home goes down: oracle2 holds the other database
+              # instance. (Terms are ORed.)
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [oracle2]
         # Sit next to the database primary, so queries don't cross the
         # tailnet. The switchover CronJob restarts this pod after it moves
         # the primary.
