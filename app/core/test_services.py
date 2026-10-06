@@ -357,6 +357,7 @@ def test_register_jobs(monkeypatch):
     jobs.register_jobs(Sched())
     names = [a[0] for a in added]
     assert "quali_expiry_alert" in names and "scheduled_send_job" in names and "schedules" in names
+    assert "cleanup_old_usage" in names
     assert "run_db_backup" not in names
 
     added.clear()

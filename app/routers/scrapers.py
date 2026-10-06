@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from core.config import SCHEDULER_ENABLED
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
-from core.security import require_owner, require_staff
+from core.security import require_staff
 from database.database import SessionLocal, engine
 from database.models import AttachmentCheckQual, ScraperRun, ScraperSchedule, StatsSnapshot
 from routers.cadets import invalidate_cadet_caches
@@ -571,34 +571,6 @@ def scraper_run_detail(
         "success":    run.success,
         "ran_by":     run.ran_by,
         "logs":       run.logs or "",
-    }
-
-
-@router.get("/api-logs")
-def api_logs(
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_owner),
-):
-    cutoff = datetime.now() - timedelta(days=RUN_LOG_RETENTION_DAYS)
-    runs = (
-        db.query(ScraperRun)
-        .filter(ScraperRun.ran_at >= cutoff)
-        .order_by(ScraperRun.ran_at.desc())
-        .all()
-    )
-    return {
-        "retention_days": RUN_LOG_RETENTION_DAYS,
-        "runs": [
-            {
-                "id":         r.id,
-                "scraper_id": r.scraper_id,
-                "ran_at":     r.ran_at.isoformat(),
-                "success":    r.success,
-                "ran_by":     r.ran_by,
-                "logs":       r.logs or "",
-            }
-            for r in runs
-        ],
     }
 
 
