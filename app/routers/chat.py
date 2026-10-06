@@ -24,7 +24,12 @@ class Question(BaseModel):
 
 @router.post("/ask")
 def ask(body: Question, idinfo: dict = Depends(require_staff)) -> dict:
-    """Answer plus numbered sources ({n, filename, location, url, snippet, score}).
+    """The chatbot's reply, passed through untouched: {answer, found, sources, related}.
+
+    sources are only the ones the answer cites as [n], each with the chunk text and the
+    quotes in it that were checked against it ({start, end, text, location, page}), so
+    the site can highlight the exact lines. related lists the closest documents when
+    there's no answer. See the chatbot README for the full shape.
 
     The timeout covers the chatbot's own retry/backoff when the LLM provider
     rate-limits it (~15s) on top of a normal answer.
