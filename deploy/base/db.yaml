@@ -47,7 +47,10 @@ spec:
     enablePodAntiAffinity: true
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: required
-    # home and squadron only. oracle is left out on purpose.
+    # home, squadron and oracle2 (terms are ORed). oracle2 gives an off-site
+    # replica on a datacenter link, ~9ms from home, that the API can fail over
+    # to with it. oracle is left out on purpose: one core, already busy with
+    # Traefik, etcd and the CNPG operator.
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         nodeSelectorTerms:
@@ -55,3 +58,7 @@ spec:
               - key: role
                 operator: In
                 values: [interactive, batch]
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [oracle2]
