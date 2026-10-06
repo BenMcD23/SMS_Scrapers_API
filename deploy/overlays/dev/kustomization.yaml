@@ -30,3 +30,8 @@ patches:
       - op: replace
         path: /spec/rules/0/host
         value: smsapi-dev.317atc.co.uk
+  - target: { kind: Certificate, name: sms-api-tls }
+    patch: |-
+      - op: replace
+        path: /spec/dnsNames/0
+        value: smsapi-dev.317atc.co.uk
