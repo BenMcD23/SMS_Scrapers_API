@@ -3,6 +3,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -1145,3 +1146,20 @@ class BadgeItem(Base):
     quantity = Column(Integer, nullable=False, default=1, server_default="1")
 
     cell = relationship("BadgeGridCell", back_populates="items")
+
+
+# ─── Usage ────────────────────────────────────────────────────────────────────
+
+class UsageDaily(Base):
+    """Successful API calls, counted per day, endpoint and caller. Aggregated
+    rather than one row per request so frontends that poll can't bloat it."""
+    __tablename__ = "Usage_Daily"
+    __table_args__ = (UniqueConstraint("day", "method", "route", "email", name="uq_usage_daily"),)
+
+    id      = Column(Integer, primary_key=True, autoincrement=True)
+    day     = Column(Date, nullable=False)
+    method  = Column(Text, nullable=False)
+    route   = Column(Text, nullable=False)                 # route template, e.g. /cadets/{cin}
+    email   = Column(Text, nullable=False, default="")     # "" for unauthenticated calls
+    calls   = Column(Integer, nullable=False, default=0)
+    last_at = Column(DateTime, nullable=False)

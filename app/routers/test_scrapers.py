@@ -62,11 +62,6 @@ def test_staff_only(api, method, path, persona):
     assert res.status_code == 403
 
 
-def test_api_logs_are_owner_only(api):
-    assert api.get("/api-logs", headers=STAFF).status_code == 403
-    assert api.get("/api-logs", headers=api.as_("owner")).status_code == 200
-
-
 @pytest.mark.parametrize("path", ["/scraper-stream/medical", "/upload-stream/x"])
 def test_streams_check_the_token_from_header_or_query(api, path):
     assert api.get(path).status_code == 401
@@ -291,15 +286,11 @@ def test_run_history_listing_detail_and_limits(api, db):
     assert api.get("/scraper-runs/99999", headers=STAFF).status_code == 404
 
 
-def test_api_logs_and_cleanup_honour_retention(api, db):
+def test_run_log_cleanup_honours_retention(db):
     old = datetime.now() - timedelta(days=sc.RUN_LOG_RETENTION_DAYS + 1)
     db.add_all([ScraperRun(scraper_id="staff", ran_at=old, success=True),
                 ScraperRun(scraper_id="staff", ran_at=datetime.now(), success=True, logs=None)])
     db.commit()
-    body = api.get("/api-logs", headers=api.as_("owner")).json()
-    assert body["retention_days"] == sc.RUN_LOG_RETENTION_DAYS
-    assert len(body["runs"]) == 1 and body["runs"][0]["logs"] == ""
-
     sc.cleanup_old_run_logs()
     db.expire_all()
     assert db.query(ScraperRun).count() == 1

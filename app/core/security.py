@@ -25,6 +25,7 @@ from google.oauth2 import id_token, service_account
 from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build as google_build
 
+from core import usage
 from core.config import (
     GOOGLE_CLIENT_ID,
     GOOGLE_DOMAIN,
@@ -256,12 +257,20 @@ def get_user_role(email: str) -> str | None:
 
 # ── FastAPI dependencies ──────────────────────────────────────────────────────
 
+def _authenticate(authorization: str) -> dict:
+    """verify_token, plus telling the usage counter who is calling. Every
+    dependency below goes through here so no endpoint is counted as anonymous."""
+    idinfo = verify_token(authorization)
+    usage.note_caller(idinfo.get("email", ""))
+    return idinfo
+
+
 def require_user(authorization: str = Header(None)) -> dict:
-    return verify_token(authorization)
+    return _authenticate(authorization)
 
 
 def require_staff(authorization: str = Header(None)) -> dict:
-    idinfo = verify_token(authorization)
+    idinfo = _authenticate(authorization)
     role = get_user_role(idinfo["email"])
     if role != "staff":
         logger.warning(f"staff check failed: {idinfo['email']} has role {role!r}")
@@ -271,14 +280,14 @@ def require_staff(authorization: str = Header(None)) -> dict:
 
 def require_staff_or_snco(authorization: str = Header(None)) -> dict:
     """Inspections — SNCOs run them, so they get the same access as staff there."""
-    idinfo = verify_token(authorization)
+    idinfo = _authenticate(authorization)
     if get_user_role(idinfo["email"]) not in ("staff", "snco"):
         raise HTTPException(status_code=403, detail="Staff or SNCO access required")
     return idinfo
 
 
 def require_staff_or_nco(authorization: str = Header(None)) -> dict:
-    idinfo = verify_token(authorization)
+    idinfo = _authenticate(authorization)
     if get_user_role(idinfo["email"]) not in ("staff", "snco", "nco"):
         raise HTTPException(status_code=403, detail="Staff or NCO access required")
     return idinfo
@@ -286,7 +295,7 @@ def require_staff_or_nco(authorization: str = Header(None)) -> dict:
 
 def require_owner(authorization: str = Header(None)) -> dict:
     """Developer-only access — restricted to the single OWNER_EMAIL account."""
-    idinfo = verify_token(authorization)
+    idinfo = _authenticate(authorization)
     if idinfo.get("email", "").lower() != OWNER_EMAIL.lower():
         raise HTTPException(status_code=403, detail="Owner access required")
     return idinfo
@@ -303,7 +312,7 @@ def is_oc(email: str) -> bool:
 
 def require_oc(authorization: str = Header(None)) -> dict:
     """OC-only access — committee-request approvals and the OC dashboard."""
-    idinfo = verify_token(authorization)
+    idinfo = _authenticate(authorization)
     if not is_oc(idinfo.get("email", "")):
         raise HTTPException(status_code=403, detail="OC access required")
     return idinfo

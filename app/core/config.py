@@ -23,7 +23,7 @@ NOTIFY_GROUP = os.getenv("NOTIFY_GROUP", f"notifications@{GOOGLE_DOMAIN}")
 SNCO_GROUP = os.getenv("SNCO_GROUP", f"snco@{GOOGLE_DOMAIN}")
 NCO_GROUP = os.getenv("NCO_GROUP", f"ncoteam@{GOOGLE_DOMAIN}")
 
-# Sole owner/maintainer — has access to developer-only views (e.g. API logs)
+# Sole owner/maintainer — has access to developer-only views (e.g. backups, usage)
 OWNER_EMAIL = os.getenv("OWNER_EMAIL", f"ci.mcdonald@{GOOGLE_DOMAIN}")
 
 # Officer Commanding — gates the OC dashboard and the committee-request approval
