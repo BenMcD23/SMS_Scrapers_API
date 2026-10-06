@@ -24,3 +24,17 @@ spec:
                 name: sms-api
                 port:
                   number: 80
+---
+# Issued by cert-manager (ClusterIssuer in the k8s repo,
+# clusters/prod/cert-manager.yaml) into a Secret, so any Traefik replica can
+# serve it. overlays/dev renames the host here too.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sms-api-tls
+spec:
+  secretName: sms-api-tls
+  dnsNames: [smsapi.317atc.co.uk]
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt
