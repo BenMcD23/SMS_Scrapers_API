@@ -64,6 +64,10 @@ jobs:
           echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "Building $TAG ($(git rev-parse --short HEAD))"
 
+      # arm64 too, so the API can fail over to oracle2 if home goes down.
+      # Built under QEMU: slower, but one job.
+      - uses: docker/setup-qemu-action@v4
+
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
@@ -75,6 +79,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/benmcd23/sms_scrapers_api:${{ env.TAG }}
           labels: org.opencontainers.image.revision=${{ env.SHA }}

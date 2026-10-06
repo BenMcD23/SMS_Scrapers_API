@@ -24,6 +24,12 @@ spec:
                   - key: role
                     operator: In
                     values: [interactive, batch]
+              # Fallback if home goes down: oracle2 holds the other database
+              # instance. (Terms are ORed.)
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [oracle2]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
