@@ -9,11 +9,12 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 
-from core import leader
+from core import leader, usage
 from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, SCHEDULER_ENABLED
 from core.jobs import register_jobs
 from core.logging import configure_logging
@@ -47,6 +48,7 @@ from routers import (
     stores,
     texts,
 )
+from routers import usage as usage_router
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -86,6 +88,20 @@ app.add_middleware(
     expose_headers=["*"],
     allow_credentials=True,
 )
+
+# Counts each successful call against its route template (/cadets/{cin}, not
+# /cadets/123) and caller, for GET /usage. Registered before log_requests, so it
+# sits inside it and a counting failure can never hide a request from the log.
+@app.middleware("http")
+async def count_usage(request: Request, call_next):
+    caller = usage.start_request()
+    response = await call_next(request)
+    route = getattr(request.scope.get("route"), "path", None)
+    # Unmatched paths (scanners, typos) and failed calls aren't feature use.
+    if route and route not in usage.SKIP_ROUTES and request.method != "OPTIONS" and response.status_code < 400:
+        await run_in_threadpool(usage.record, request.method, route, caller.get("email", ""))
+    return response
+
 
 _QUIET_PATHS = {"/ping", "/healthz", "/readyz"}
 
@@ -170,3 +186,4 @@ app.include_router(attendance.router)
 app.include_router(leaving.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
+app.include_router(usage_router.router)

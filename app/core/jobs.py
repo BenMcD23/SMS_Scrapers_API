@@ -18,7 +18,7 @@ from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
 from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
-from routers import scrapers
+from routers import scrapers, usage
 from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 
@@ -121,6 +121,7 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
+    scheduler.add_job(usage.cleanup_old_usage, "interval", hours=24)
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri).
     scheduler.add_job(scheduled_send_job, CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone=LONDON))
