@@ -182,8 +182,10 @@ def test_snapshot_and_history(api, db, cadets):
     assert res["status"] == "ok"
     db.add(StatsSnapshot(captured_at=datetime.now() - timedelta(days=400), data={"old": True}))
     db.commit()
-    history = api.get("/stats/history", headers=STAFF).json()
+    history = api.get("/stats/history?days=365", headers=STAFF).json()
     assert len(history) == 1 and history[0]["data"]["total_cadets"] == 3
+    # With no window, everything ever captured comes back.
+    assert len(api.get("/stats/history", headers=STAFF).json()) == 2
 
 
 def test_stats_are_cached(api, db, cadets):
