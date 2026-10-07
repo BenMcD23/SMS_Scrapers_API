@@ -186,3 +186,95 @@ def test_a_qual_expiring_today_is_still_listed(api, db, squadron):
     db.commit()
     [q] = api.get("/stats/expiring", headers=api.as_("nco")).json()
     assert q["days_left"] == 0
+
+
+# ── absolute ranges ───────────────────────────────────────────────────────────
+
+def _iso(d: datetime) -> str:
+    return d.date().isoformat()
+
+
+def test_history_between_two_dates_includes_the_whole_end_day(api, db):
+    start = _today() - timedelta(days=20)
+    end = _today() - timedelta(days=10)
+    db.add_all([
+        StatsSnapshot(captured_at=start - timedelta(hours=1), data={"n": 0}),  # the evening before
+        StatsSnapshot(captured_at=start, data={"n": 1}),                      # midnight on the first day
+        StatsSnapshot(captured_at=end.replace(hour=23, minute=59), data={"n": 2}),  # late on the last day
+        StatsSnapshot(captured_at=end + timedelta(days=1), data={"n": 3}),    # the day after
+    ])
+    db.commit()
+    body = api.get(f"/stats/history?start={_iso(start)}&end={_iso(end)}", headers=api.as_("nco")).json()
+    assert [p["data"]["n"] for p in body] == [1, 2]
+
+
+def test_history_range_can_be_open_ended(api, db):
+    db.add_all([
+        StatsSnapshot(captured_at=_today() - timedelta(days=30), data={"n": 1}),
+        StatsSnapshot(captured_at=_today() - timedelta(days=5), data={"n": 2}),
+    ])
+    db.commit()
+    since = _iso(_today() - timedelta(days=10))
+    assert [p["data"]["n"] for p in api.get(f"/stats/history?start={since}", headers=api.as_("nco")).json()] == [2]
+    assert [p["data"]["n"] for p in api.get(f"/stats/history?end={since}", headers=api.as_("nco")).json()] == [1]
+
+
+def test_a_long_absolute_range_buckets_by_week(api, db):
+    # Two snapshots in one ISO week, a year back: a 300-day range is weekly.
+    monday = _today() - timedelta(days=_today().weekday() + 7 * 40)
+    db.add_all([
+        StatsSnapshot(captured_at=monday + timedelta(hours=9), data={"n": 1}),
+        StatsSnapshot(captured_at=monday + timedelta(days=2, hours=9), data={"n": 2}),
+    ])
+    db.commit()
+    start, end = _iso(monday - timedelta(days=10)), _iso(monday + timedelta(days=290))
+    assert [p["data"]["n"] for p in api.get(f"/stats/history?start={start}&end={end}", headers=api.as_("nco")).json()] == [2]
+    # A short range over the same week stays daily.
+    start, end = _iso(monday), _iso(monday + timedelta(days=6))
+    assert len(api.get(f"/stats/history?start={start}&end={end}", headers=api.as_("nco")).json()) == 2
+
+
+def test_awards_between_two_dates(api, db, squadron):
+    now = datetime.now()
+    db.add_all([
+        CadetQualification(cadet_id=1, qual_type="Blue Leadership", status="true", date_achieved=now - timedelta(days=40)),
+        CadetQualification(cadet_id=1, qual_type="Bronze Leadership", status="true", date_achieved=now - timedelta(days=5)),
+    ])
+    db.commit()
+    start, end = _iso(now - timedelta(days=60)), _iso(now - timedelta(days=30))
+    body = api.get(f"/stats/awards?start={start}&end={end}", headers=api.as_("nco")).json()
+    assert [a["level"] for a in body] == ["Blue"]
+
+
+def test_awards_default_to_the_last_30_days(api, db, squadron):
+    now = datetime.now()
+    db.add_all([
+        CadetQualification(cadet_id=1, qual_type="Blue Leadership", status="true", date_achieved=now - timedelta(days=40)),
+        CadetQualification(cadet_id=1, qual_type="Bronze Leadership", status="true", date_achieved=now - timedelta(days=5)),
+    ])
+    db.commit()
+    assert [a["level"] for a in api.get("/stats/awards", headers=api.as_("nco")).json()] == ["Bronze"]
+
+
+@pytest.mark.parametrize("path", ["/stats/history", "/stats/awards"])
+def test_a_range_ending_before_it_starts_is_rejected(api, path):
+    res = api.get(f"{path}?start=2026-05-01&end=2026-04-01", headers=api.as_("nco"))
+    assert res.status_code == 400 and "before" in res.json()["detail"]
+
+
+@pytest.mark.parametrize("path", ["/stats/history", "/stats/awards"])
+def test_days_and_dates_together_is_rejected(api, path):
+    assert api.get(f"{path}?days=30&start=2026-05-01", headers=api.as_("nco")).status_code == 400
+
+
+@pytest.mark.parametrize("query", ["start=2026-13-01", "end=yesterday", "start=01/05/2026"])
+@pytest.mark.parametrize("path", ["/stats/history", "/stats/awards"])
+def test_a_malformed_date_is_rejected(api, path, query):
+    assert api.get(f"{path}?{query}", headers=api.as_("nco")).status_code == 422
+
+
+def test_a_single_day_range_works(api, db):
+    db.add(StatsSnapshot(captured_at=_today() - timedelta(days=3, hours=-12), data={"n": 1}))
+    db.commit()
+    day = _iso(_today() - timedelta(days=3))
+    assert len(api.get(f"/stats/history?start={day}&end={day}", headers=api.as_("nco")).json()) == 1
