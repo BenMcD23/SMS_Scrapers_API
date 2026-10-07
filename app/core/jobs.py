@@ -17,8 +17,9 @@ from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
-from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder
+from database.models import AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, StoresOrder
 from routers import scrapers, usage
+from routers.stats import save_snapshot
 from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
 
@@ -117,12 +118,36 @@ def quali_expiry_alert() -> None:
         db.close()
 
 
+def weekly_stats_snapshot() -> None:
+    """Make sure every week has a stats snapshot, scraper run or not.
+
+    Snapshots are otherwise only taken when someone runs the cadet-quali
+    scraper, so a quiet week left a gap in every trend. Skips the week if one
+    was already taken since Monday — a second copy of the same numbers adds
+    nothing, and the trends keep one point per week anyway.
+    """
+    now = datetime.now()
+    monday = datetime(now.year, now.month, now.day) - timedelta(days=now.weekday())
+    db = SessionLocal()
+    try:
+        if db.query(StatsSnapshot).filter(StatsSnapshot.captured_at >= monday).first():
+            return
+        save_snapshot(db)
+    except Exception:
+        db.rollback()
+        logger.exception("weekly stats snapshot failed")
+    finally:
+        db.close()
+
+
 def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     scheduler.add_job(usage.cleanup_old_usage, "interval", hours=24)
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
+    # Sunday evening: after any weekend scrape, before the week's trend closes.
+    scheduler.add_job(weekly_stats_snapshot, CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=LONDON))
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri).
     scheduler.add_job(scheduled_send_job, CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone=LONDON))
     # Scraper schedules live in the database and are edited through the API,

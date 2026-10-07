@@ -837,6 +837,44 @@ class StatsSnapshot(Base):
     data        = Column(JSON, nullable=False)
 
 
+class CadetSnapshot(Base):
+    """One cadet as they stood in a stats snapshot: the per-cadet history behind
+    drill-downs into the past, intake retention and time between classifications.
+
+    Deliberately no foreign key to Cadets: departed cadets are deleted from
+    there, and their history is exactly what retention needs to keep.
+    """
+    __tablename__ = "Cadet_Snapshots"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id    = Column(Integer, ForeignKey("Stats_Snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    cin            = Column(BigInteger, nullable=False, index=True)
+    name           = Column(Text, nullable=False)
+    flight         = Column(Text, nullable=True)
+    rank           = Column(Text, nullable=True)
+    classification = Column(Text, nullable=True)
+    junior         = Column(Boolean, nullable=False)
+    # Dashboard badge key -> held level label ("Bronze"); badges not held are absent.
+    badges         = Column(JSON, nullable=False)
+
+
+class StatsTarget(Base):
+    """A squadron goal for a dashboard badge, e.g. 80% of non-juniors holding
+    Blue or better First Aid by 1 July. Staff set them; the stats page charts
+    progress and projects when the current trend gets there."""
+    __tablename__ = "Stats_Targets"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    badge      = Column(Text, nullable=False)         # dashboard badge key, e.g. "first_aid"
+    min_level  = Column(Text, nullable=True)          # "Blue" = Blue or better; None = any level
+    flight     = Column(Text, nullable=True)          # None = whole squadron
+    exclude_juniors = Column(Boolean, nullable=False, default=False, server_default="0")
+    target_pct = Column(Integer, nullable=False)      # 1-100
+    due        = Column(Date, nullable=False)
+    created_by = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 # ─── Stores tables ────────────────────────────────────────────────────────────
 
 # Maps item type → gender category stored in the DB
