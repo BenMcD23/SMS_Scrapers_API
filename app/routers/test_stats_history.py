@@ -52,7 +52,7 @@ def _snapshot(db, at: datetime, cadets: list[dict]) -> StatsSnapshot:
 
 # ── access ────────────────────────────────────────────────────────────────────
 
-READS = ["/stats/cadets", "/stats/funnel", "/stats/retention", "/stats/targets"]
+READS = ["/stats/cadets", "/stats/funnel", "/stats/retention", "/stats/targets", "/stats/badge-levels"]
 
 
 @pytest.mark.parametrize("path", READS)
@@ -361,3 +361,14 @@ def test_a_target_for_a_badge_or_level_that_doesnt_exist_is_rejected(api, change
 @pytest.mark.parametrize("change", [{"target_pct": 0}, {"target_pct": 101}, {"due": "soon"}, {"badge": None}])
 def test_a_malformed_target_is_a_422(api, change):
     assert api.post("/stats/targets", headers=api.as_("staff"), json={**TARGET, **change}).status_code == 422
+
+
+def test_badge_levels_come_from_the_catalog_lowest_first(api):
+    body = api.get("/stats/badge-levels", headers=api.as_("nco")).json()
+    assert body["first_aid"] == ["Blue", "Bronze", "Silver", "Gold"]
+    # Ladders that differ: no Blue for Cyber, Nijmegen above Gold, swimming's own names.
+    assert body["cyber"] == ["Bronze", "Silver", "Gold"]
+    assert body["road_marching"][-1] == "Nijmegen"
+    assert body["swimming_proficiency"] == ["Basic", "Intermediate", "Advanced"]
+    # Every leveled badge the stats count, ATP Ground School included.
+    assert set(body) == stats.STAT_BADGE_KEYS

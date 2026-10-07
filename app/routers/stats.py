@@ -530,6 +530,13 @@ def _target_out(t: StatsTarget) -> dict:
     }
 
 
+@router.get("/stats/badge-levels")
+def get_badge_levels(idinfo: dict = Depends(require_staff_or_nco)):
+    """Each dashboard badge's levels, lowest first, from the shared catalog —
+    so the targets form offers exactly the levels the API will accept."""
+    return {BADGE_KEY_ALIAS.get(b.key, b.key): _badge_levels(BADGE_KEY_ALIAS.get(b.key, b.key)) for b in STAT_BADGES}
+
+
 @router.get("/stats/targets")
 def list_targets(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff_or_nco)):
     """Every target, soonest due first. `levels` lists the levels that count
