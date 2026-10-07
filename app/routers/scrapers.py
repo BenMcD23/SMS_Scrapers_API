@@ -25,9 +25,9 @@ from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
 from core.security import require_staff
 from database.database import SessionLocal, engine
-from database.models import AttachmentCheckQual, ScraperRun, ScraperSchedule, StatsSnapshot
+from database.models import AttachmentCheckQual, ScraperRun, ScraperSchedule
 from routers.cadets import invalidate_cadet_caches
-from routers.stats import compute_stats
+from routers.stats import save_snapshot
 from scripts.scraper_calls import (
     absence_scraper,
     cadet_event_scraper,
@@ -225,10 +225,9 @@ def _quit_context(state: dict):
 
 def _save_stats_snapshot(db: Session):
     try:
-        snapshot = StatsSnapshot(captured_at=datetime.now(), data=compute_stats(db))
-        db.add(snapshot)
-        db.commit()
+        save_snapshot(db)
     except Exception as snap_err:
+        db.rollback()
         logger.error(f"stats snapshot failed: {snap_err}")
 
 

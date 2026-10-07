@@ -5,13 +5,14 @@ from datetime import date as date_type
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
 from core import cache
 from core.db import get_db
 from core.qualifications import BADGE_TYPES, LEVELED, held_level, quali_expiry_cutoff
 from core.security import require_staff, require_staff_or_nco
-from database.models import Cadet, CadetQualification, StatsSnapshot
+from database.models import Cadet, CadetQualification, CadetSnapshot, StatsSnapshot, StatsTarget
 
 router = APIRouter()
 
@@ -255,12 +256,312 @@ def get_expiring_quals(
     ]
 
 
+def _quals_by_cadet(db: Session) -> dict:
+    out: dict = defaultdict(list)
+    for q in db.query(CadetQualification).all():
+        out[q.cadet_id].append(q.qual_type)
+    return out
+
+
+def _held_levels(quals: list[str]) -> dict:
+    """Dashboard badge key -> held level label, for the badges the cadet holds."""
+    out = {}
+    for badge in STAT_BADGES:
+        lvl = held_level(badge, quals)
+        if lvl:
+            out[BADGE_KEY_ALIAS.get(badge.key, badge.key)] = lvl.capitalize()
+    return out
+
+
+def save_snapshot(db: Session) -> StatsSnapshot:
+    """Capture the squadron totals and every cadet as they stand now, in one
+    commit. Shared by the cadet-quali scraper, the manual endpoint and the
+    weekly job, so all three leave the same history behind."""
+    snapshot = StatsSnapshot(captured_at=datetime.now(), data=compute_stats(db))
+    db.add(snapshot)
+    db.flush()
+    quals = _quals_by_cadet(db)
+    db.add_all(
+        CadetSnapshot(
+            snapshot_id=snapshot.id,
+            cin=c.cin,
+            name=f"{c.first_name or ''} {c.last_name or ''}".strip(),
+            flight=c.flight,
+            rank=c.rank,
+            classification=c.classification,
+            junior=is_junior(c),
+            badges=_held_levels(quals.get(c.cin, [])),
+        )
+        for c in db.query(Cadet).all()
+    )
+    db.commit()
+    return snapshot
+
+
 @router.post("/stats/snapshot")
 def create_stats_snapshot(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    snapshot = StatsSnapshot(captured_at=datetime.now(), data=compute_stats(db))
-    db.add(snapshot)
-    db.commit()
+    snapshot = save_snapshot(db)
     return {"status": "ok", "captured_at": snapshot.captured_at.isoformat()}
+
+
+# ── drill-down ────────────────────────────────────────────────────────────────
+
+LEVEL_LABELS = {lvl.level.capitalize() for b in STAT_BADGES for lvl in b.levels} | {"None"}
+STAT_BADGE_KEYS = {BADGE_KEY_ALIAS.get(b.key, b.key) for b in STAT_BADGES}
+
+
+def _latest_snapshot_on(db: Session, day: date_type) -> StatsSnapshot | None:
+    """The last snapshot captured on or before `day` that has per-cadet rows
+    (snapshots from before those existed only hold totals)."""
+    until = datetime.combine(day, datetime.min.time()) + timedelta(days=1)
+    return (
+        db.query(StatsSnapshot)
+        .filter(StatsSnapshot.captured_at < until)
+        .filter(db.query(CadetSnapshot.id).filter(CadetSnapshot.snapshot_id == StatsSnapshot.id).exists())
+        .order_by(StatsSnapshot.captured_at.desc())
+        .first()
+    )
+
+
+@router.get("/stats/cadets")
+def get_stats_cadets(
+    badge: str | None = Query(None, description="Dashboard badge key; pair with level"),
+    level: str | None = Query(None, description='Held level label, or "None" for not held'),
+    classification: str | None = None,
+    flight: str | None = Query(None, description='Flight letter, or "Unknown" for none'),
+    exclude_juniors: bool = False,
+    on: date_type | None = Query(None, description="As of this day, from the per-cadet snapshots"),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """The cadets behind a number on the stats page: who holds a badge at a
+    level, who is at a classification. Live by default; `on` a past day reads
+    the last per-cadet snapshot taken by then."""
+    if (badge is None) != (level is None):
+        raise HTTPException(status_code=400, detail="badge and level go together")
+    if badge is not None and badge not in STAT_BADGE_KEYS:
+        raise HTTPException(status_code=400, detail=f"Unknown badge {badge!r}")
+    if level is not None and level not in LEVEL_LABELS:
+        raise HTTPException(status_code=400, detail=f"Unknown level {level!r}")
+
+    if on is not None and on < date_type.today():
+        snap = _latest_snapshot_on(db, on)
+        if snap is None:
+            raise HTTPException(status_code=404, detail="No per-cadet snapshot on or before that day")
+        rows = [
+            {"cin": r.cin, "name": r.name, "flight": r.flight or "Unknown", "rank": r.rank or "",
+             "classification": r.classification or JUNIOR_CLASSIFICATION, "junior": r.junior, "badges": r.badges}
+            for r in db.query(CadetSnapshot).filter(CadetSnapshot.snapshot_id == snap.id)
+        ]
+        as_of = snap.captured_at.isoformat()
+    else:
+        quals = _quals_by_cadet(db)
+        rows = [
+            {**_cadet_ref(c), "rank": c.rank or "", "classification": c.classification or JUNIOR_CLASSIFICATION,
+             "badges": _held_levels(quals.get(c.cin, []))}
+            for c in db.query(Cadet).all()
+        ]
+        as_of = None
+
+    def keep(r: dict) -> bool:
+        if flight is not None and r["flight"] != flight:
+            return False
+        if exclude_juniors and r["junior"]:
+            return False
+        if classification is not None and r["classification"] != classification:
+            return False
+        if badge is not None and r["badges"].get(badge, "None") != level:
+            return False
+        return True
+
+    cadets = sorted((r for r in rows if keep(r)), key=lambda r: r["name"].casefold())
+    for r in cadets:
+        r["level"] = r["badges"].get(badge, "None") if badge else None
+        del r["badges"]
+    return {"as_of": as_of, "cadets": cadets}
+
+
+# ── history per cadet: funnel and retention ───────────────────────────────────
+
+CLASSIFICATION_STEPS = ["Junior Cadet", "First Class Cadet", "Leading Cadet", "Senior Cadet", "Master Air Cadet"]
+
+
+def _step(classification: str | None) -> int:
+    c = classification or JUNIOR_CLASSIFICATION
+    return CLASSIFICATION_STEPS.index(c) if c in CLASSIFICATION_STEPS else 0
+
+
+def _cadet_timelines(db: Session) -> tuple[dict, list[datetime]]:
+    """cin -> [(captured_at, row)] oldest first, plus every per-cadet snapshot
+    date. ponytail: loads every per-cadet row (~cadets × weeks, tens of
+    thousands after years); aggregate in SQL if it ever gets slow."""
+    timelines: dict = defaultdict(list)
+    dates: set = set()
+    q = (
+        db.query(StatsSnapshot.captured_at, CadetSnapshot)
+        .join(CadetSnapshot, CadetSnapshot.snapshot_id == StatsSnapshot.id)
+        .order_by(StatsSnapshot.captured_at.asc())
+    )
+    for captured_at, row in q:
+        timelines[row.cin].append((captured_at, row))
+        dates.add(captured_at)
+    return timelines, sorted(dates)
+
+
+@router.get("/stats/funnel")
+def get_classification_funnel(
+    flight: str | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """How many cadets on strength have reached each classification, and the
+    typical time between steps where the per-cadet history saw it happen.
+
+    A step is only timed for a cadet seen moving into it *and* seen moving
+    into the one before: someone already Leading when tracking began says
+    nothing about how long Leading takes. Weekly snapshots make it accurate
+    to about a week."""
+    cadets = [c for c in db.query(Cadet).all() if flight is None or (c.flight or "Unknown") == flight]
+    reached = [sum(1 for c in cadets if _step(c.classification) >= i) for i in range(len(CLASSIFICATION_STEPS))]
+
+    timelines, _ = _cadet_timelines(db)
+    durations: dict = defaultdict(list)
+    for points in timelines.values():
+        if flight is not None and (points[-1][1].flight or "Unknown") != flight:
+            continue
+        entered: dict = {}  # step -> first time seen at it, only if seen arriving
+        prev = _step(points[0][1].classification)
+        for at, row in points[1:]:
+            step = _step(row.classification)
+            if step > prev:
+                entered.setdefault(step, at)
+            prev = step
+        for step, at in entered.items():
+            if step - 1 in entered:
+                durations[step].append((at - entered[step - 1]).days)
+
+    steps = []
+    for i, name in enumerate(CLASSIFICATION_STEPS):
+        times = durations.get(i, [])
+        steps.append({
+            "name": name,
+            "reached": reached[i],
+            "pct_of_previous": None if i == 0 or not reached[i - 1] else round(100 * reached[i] / reached[i - 1]),
+            "median_days_from_previous": sorted(times)[len(times) // 2] if times else None,
+            "timed_cadets": len(times),
+        })
+    return {"total": len(cadets), "steps": steps}
+
+
+RETENTION_MARKS = {"6m": 182, "12m": 365}
+
+
+@router.get("/stats/retention")
+def get_intake_retention(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Cadets grouped by the month they first appeared in a per-cadet snapshot,
+    and how many were still turning up in snapshots 6 and 12 months later.
+
+    The first snapshot's cadets are left out: they were already on strength,
+    so it isn't when they joined. A mark is null until enough time has passed
+    for every cadet in the intake to have reached it."""
+    timelines, dates = _cadet_timelines(db)
+    if not dates:
+        return []
+    first_ever, latest = dates[0], dates[-1]
+    on_strength = {cin for (cin,) in db.query(Cadet.cin)}
+
+    intakes: dict = defaultdict(list)
+    for cin, points in timelines.items():
+        joined = points[0][0]
+        if joined.date() == first_ever.date():
+            continue
+        intakes[joined.strftime("%Y-%m")].append((cin, joined, points[-1][0]))
+
+    out = []
+    for month in sorted(intakes):
+        group = intakes[month]
+        row = {"intake": month, "joined": len(group), "still_on_strength": sum(1 for c, _, _ in group if c in on_strength)}
+        for key, days in RETENTION_MARKS.items():
+            due = max(j for _, j, _ in group) + timedelta(days=days)
+            row[key] = None if latest < due else sum(1 for _, j, last in group if last >= j + timedelta(days=days))
+        out.append(row)
+    return out
+
+
+# ── targets ───────────────────────────────────────────────────────────────────
+
+class TargetIn(BaseModel):
+    badge: str
+    min_level: str | None = None
+    flight: str | None = None
+    exclude_juniors: bool = False
+    target_pct: int = Field(ge=1, le=100)
+    due: date_type
+
+
+def _badge_levels(key: str) -> list[str]:
+    for b in STAT_BADGES:
+        if BADGE_KEY_ALIAS.get(b.key, b.key) == key:
+            return [lvl.level.capitalize() for lvl in reversed(b.levels)]  # lowest first
+    return []
+
+
+def _check_target(body: TargetIn) -> None:
+    levels = _badge_levels(body.badge)
+    if not levels:
+        raise HTTPException(status_code=400, detail=f"Unknown badge {body.badge!r}")
+    if body.min_level is not None and body.min_level not in levels:
+        raise HTTPException(status_code=400, detail=f"{body.min_level!r} isn't a level of that badge")
+
+
+def _target_out(t: StatsTarget) -> dict:
+    return {
+        "id": t.id, "badge": t.badge, "min_level": t.min_level, "flight": t.flight,
+        "exclude_juniors": t.exclude_juniors, "target_pct": t.target_pct, "due": t.due.isoformat(),
+        "levels": [lvl for lvl in _badge_levels(t.badge)
+                   if t.min_level is None or _badge_levels(t.badge).index(lvl) >= _badge_levels(t.badge).index(t.min_level)],
+        "created_by": t.created_by,
+    }
+
+
+@router.get("/stats/targets")
+def list_targets(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff_or_nco)):
+    """Every target, soonest due first. `levels` lists the levels that count
+    toward it, so the page can sum them from any snapshot."""
+    return [_target_out(t) for t in db.query(StatsTarget).order_by(StatsTarget.due, StatsTarget.id)]
+
+
+@router.post("/stats/targets", status_code=201)
+def create_target(body: TargetIn, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    _check_target(body)
+    t = StatsTarget(**body.model_dump(), created_by=idinfo.get("email"), created_at=datetime.now())
+    db.add(t)
+    db.commit()
+    return _target_out(t)
+
+
+@router.put("/stats/targets/{target_id}")
+def update_target(target_id: int, body: TargetIn, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    t = db.get(StatsTarget, target_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    _check_target(body)
+    for k, v in body.model_dump().items():
+        setattr(t, k, v)
+    db.commit()
+    return _target_out(t)
+
+
+@router.delete("/stats/targets/{target_id}", status_code=204)
+def delete_target(target_id: int, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    t = db.get(StatsTarget, target_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    db.delete(t)
+    db.commit()
