@@ -331,6 +331,7 @@ def get_stats_cadets(
     badge: str | None = Query(None, description="Dashboard badge key; pair with level"),
     level: str | None = Query(None, description='Held level label, or "None" for not held'),
     classification: str | None = None,
+    min_classification: str | None = Query(None, description="At this classification or beyond (the funnel)"),
     flight: str | None = Query(None, description='Flight letter, or "Unknown" for none'),
     exclude_juniors: bool = False,
     on: date_type | None = Query(None, description="As of this day, from the per-cadet snapshots"),
@@ -346,6 +347,8 @@ def get_stats_cadets(
         raise HTTPException(status_code=400, detail=f"Unknown badge {badge!r}")
     if level is not None and level not in LEVEL_LABELS:
         raise HTTPException(status_code=400, detail=f"Unknown level {level!r}")
+    if min_classification is not None and min_classification not in CLASSIFICATION_STEPS:
+        raise HTTPException(status_code=400, detail=f"Unknown classification {min_classification!r}")
 
     if on is not None and on < date_type.today():
         snap = _latest_snapshot_on(db, on)
@@ -372,6 +375,8 @@ def get_stats_cadets(
         if exclude_juniors and r["junior"]:
             return False
         if classification is not None and r["classification"] != classification:
+            return False
+        if min_classification is not None and _step(r["classification"]) < CLASSIFICATION_STEPS.index(min_classification):
             return False
         if badge is not None and r["badges"].get(badge, "None") != level:
             return False

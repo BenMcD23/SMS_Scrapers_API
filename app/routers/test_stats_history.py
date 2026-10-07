@@ -213,7 +213,16 @@ def test_drill_down_on_today_is_live(api, squadron):
     assert res.json()["as_of"] is None and len(res.json()["cadets"]) == 3
 
 
+def test_drill_down_by_reached_classification_includes_those_beyond_it(api, db, squadron):
+    db.add(Cadet(cin=4, first_name="Max", last_name="Master", classification="Master Air Cadet"))
+    db.commit()
+    nco = api.as_("nco")
+    assert _names(api.get("/stats/cadets?min_classification=Leading Cadet", headers=nco)) == ["Max Master", "Zoë Ó Briain"]
+    assert len(api.get("/stats/cadets?min_classification=Junior Cadet", headers=nco).json()["cadets"]) == 4
+
+
 @pytest.mark.parametrize("query, why", [
+    ("min_classification=Wizard", "Unknown classification"),
     ("badge=leadership", "together"),
     ("level=Blue", "together"),
     ("badge=knitting&level=Blue", "Unknown badge"),
