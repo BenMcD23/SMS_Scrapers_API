@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import date as date_type
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
 from core import cache
@@ -126,19 +126,39 @@ def get_current_stats(
 WEEKLY_AFTER_DAYS = 183
 
 
+def _window(days: int | None, start: date_type | None, end: date_type | None) -> tuple[datetime | None, datetime | None]:
+    """[since, until) for a look-back of `days`, or an absolute `start`..`end`
+    (both inclusive dates, either open-ended). None means unbounded."""
+    if days is not None and (start or end):
+        raise HTTPException(status_code=400, detail="Give either days or start/end, not both")
+    if start and end and start > end:
+        raise HTTPException(status_code=400, detail="start must be on or before end")
+    if days is not None:
+        return datetime.now() - timedelta(days=days), None
+    since = datetime.combine(start, datetime.min.time()) if start else None
+    until = datetime.combine(end, datetime.min.time()) + timedelta(days=1) if end else None
+    return since, until
+
+
 @router.get("/stats/history")
 def get_stats_history(
-    days: int | None = Query(None, ge=1, le=36500, description="Look-back window; omit for all history"),
+    days: int | None = Query(None, ge=1, le=36500, description="Look-back window"),
+    start: date_type | None = Query(None, description="First day of an absolute range"),
+    end: date_type | None = Query(None, description="Last day of an absolute range"),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     """Snapshots oldest first, the last one per day (or per ISO week for long
     ranges). A snapshot lands on every cadet-quali scrape, so a day with three
-    manual runs would otherwise plot three points on one date."""
+    manual runs would otherwise plot three points on one date. With no window
+    at all, everything ever captured."""
+    since, until = _window(days, start, end)
     query = db.query(StatsSnapshot).order_by(StatsSnapshot.captured_at.asc())
-    if days is not None:
-        query = query.filter(StatsSnapshot.captured_at >= datetime.now() - timedelta(days=days))
-    weekly = days is None or days > WEEKLY_AFTER_DAYS
+    if since:
+        query = query.filter(StatsSnapshot.captured_at >= since)
+    if until:
+        query = query.filter(StatsSnapshot.captured_at < until)
+    weekly = since is None or ((until or datetime.now()) - since).days > WEEKLY_AFTER_DAYS
 
     # ponytail: buckets in Python over every row in range; a few hundred small
     # rows today. Move to a SQL window query if snapshots ever number thousands.
@@ -170,20 +190,27 @@ def _badge_award(qual_type: str) -> tuple[str, str] | None:
 
 @router.get("/stats/awards")
 def get_recent_awards(
-    days: int = Query(30, ge=1, le=3660),
+    days: int | None = Query(None, ge=1, le=36500, description="Look-back window; 30 if no range given"),
+    start: date_type | None = Query(None, description="First day of an absolute range"),
+    end: date_type | None = Query(None, description="Last day of an absolute range"),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    """Dashboard badges gained in the last `days`, newest first. Read live from
-    the qualifications' award dates, so it needs no snapshot history."""
-    since = datetime.now() - timedelta(days=days)
-    quals = (
+    """Dashboard badges gained in a window, newest first. Read live from the
+    qualifications' award dates, so it needs no snapshot history."""
+    if days is None and not (start or end):
+        days = 30
+    since, until = _window(days, start, end)
+    query = (
         db.query(CadetQualification)
         .options(joinedload(CadetQualification.cadet))
-        .filter(CadetQualification.date_achieved >= since)
-        .order_by(CadetQualification.date_achieved.desc())
-        .all()
+        .filter(CadetQualification.date_achieved.isnot(None))
     )
+    if since:
+        query = query.filter(CadetQualification.date_achieved >= since)
+    if until:
+        query = query.filter(CadetQualification.date_achieved < until)
+    quals = query.order_by(CadetQualification.date_achieved.desc()).all()
     out = []
     for q in quals:
         award = _badge_award(q.qual_type)
