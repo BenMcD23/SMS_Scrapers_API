@@ -47,6 +47,7 @@ from routers import (
     stats,
     stores,
     texts,
+    volunteer_portal,
 )
 from routers import usage as usage_router
 
@@ -165,6 +166,7 @@ app.include_router(portal.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
 app.include_router(scrapers.router)
+app.include_router(volunteer_portal.router)
 app.include_router(settings.router)
 app.include_router(form_generators.router)
 app.include_router(events.router)
