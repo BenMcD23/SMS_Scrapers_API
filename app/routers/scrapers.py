@@ -515,7 +515,8 @@ def scraper_last_runs(
     idinfo: dict = Depends(require_staff),
 ):
     result = {}
-    for name in NAMED_SCRAPERS:
+    # vp-sync is imported, not run here, but its card shows a last run too.
+    for name in [*NAMED_SCRAPERS, "vp-sync"]:
         run = (
             db.query(ScraperRun)
             .filter(ScraperRun.scraper_id == name)

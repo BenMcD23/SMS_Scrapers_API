@@ -48,6 +48,7 @@ class Cadet(Base):
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
     appraisals        = relationship("NcoAppraisal",          back_populates="cadet", cascade="all, delete-orphan")
     appraisal_reminders = relationship("NcoAppraisalReminder", back_populates="cadet", cascade="all, delete-orphan")
+    portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -184,6 +185,22 @@ class CadetAttendance(Base):
     unit          = Column(Text,       nullable=True)  # unit attended
 
     cadet = relationship("Cadet", back_populates="attendance")
+
+
+class CadetPortalData(Base):
+    """One Volunteer Portal data set for a cadet (WHTs, flying history, ...),
+    as the portal returned it. Stored raw because the portal's JSON shapes are
+    undocumented — dashboards parse it; see routers/volunteer_portal.py."""
+    __tablename__ = "Cadet_Portal_Data"
+    __table_args__ = (UniqueConstraint("cadet_id", "dataset"),)
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    dataset   = Column(Text,       nullable=False)  # one of volunteer_portal.DATASETS
+    data      = Column(JSON,       nullable=False)
+    synced_at = Column(DateTime,   nullable=False)
+
+    cadet = relationship("Cadet", back_populates="portal_data")
 
 
 class CadetLeavingProcess(Base):
