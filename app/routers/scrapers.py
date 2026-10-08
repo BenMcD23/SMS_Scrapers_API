@@ -8,6 +8,7 @@ job_id so any number can run simultaneously (subject to the RAM guard).
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 import traceback
@@ -487,6 +488,16 @@ def stop_upload_job(job_id: str, idinfo: dict = Depends(require_staff)):
     state["stop_event"].set()
     _quit_context(state)
     return {"status": "stopping"}
+
+
+@router.get("/scraper-host")
+def scraper_host(idinfo: dict = Depends(require_staff)):
+    """Which node this pod runs on. The API fails over to oracle2 when home is
+    down, and the Bader scrapers don't work from the Oracle nodes, so the
+    scraper page warns while we're there. NODE_NAME comes from the downward API
+    (deploy/base/api.yaml); unset locally, which reads as "not Oracle"."""
+    node = os.environ.get("NODE_NAME", "")
+    return {"node": node or None, "on_oracle": node.startswith("oracle")}
 
 
 @router.get("/scrapers-running")
