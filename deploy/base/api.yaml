@@ -76,6 +76,12 @@ spec:
             - secretRef:
                 name: sms-api-secrets
           env:
+            # The node this pod landed on, so the scraper page can warn when
+            # we've failed over to Oracle (GET /scraper-host).
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             # Written by CloudNativePG: postgresql://app:...@sms-db-rw:5432/app
             - name: DATABASE_URL
               valueFrom:
