@@ -190,6 +190,16 @@ def seed_stores(client, headers: dict) -> None:
         ]})
     post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 4, "items": [{"badgeName": "ATC"}]})
 
+    # What each of those cadets was last given, so the orders page's Sizes
+    # popover and the record's Uniform tab have history to show.
+    for n, cin in enumerate((FIRST_CIN + 4, FIRST_CIN + 11, FIRST_CIN + 18)):
+        given = []
+        for item in sized[n::2]:
+            sizes = ref["sizes"][item]
+            given.append({"itemType": item, "sizeGiven": sizes[min(n + 2, len(sizes) - 1)],
+                          "lastGiven": f"2025-{n + 3:02d}-14"})
+        post(f"/stores/issuances/{cin}", {"givenBy": "Dev Owner", "items": given})
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
