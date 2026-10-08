@@ -54,6 +54,7 @@ def _messages(state):
     ("post", "/stop-upload/x"), ("get", "/scrapers-running"), ("get", "/scraper-last-runs"),
     ("get", "/scraper-runs"), ("get", "/scraper-runs/1"), ("get", "/scraper-schedules"),
     ("put", "/scraper-schedules/medical"), ("get", "/attachment-check-quals"), ("put", "/attachment-check-quals"),
+    ("get", "/scraper-host"),
 ])
 @pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
 def test_staff_only(api, method, path, persona):
@@ -445,3 +446,23 @@ def test_upload_job_with_a_failed_qualification_finishes_but_is_not_clean(db, mo
     sc.run_upload_job(job_id, 1, "s", [1, 2])
     assert _messages(state)[-1] == {"type": "status", "value": "done"}
     assert db.query(ScraperRun).one().success is False
+
+
+# ── which node we're on ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("node,on_oracle", [
+    ("home", False), ("oracle2", True), ("oracle", True), ("squadron", False),
+])
+def test_scraper_host_flags_the_oracle_nodes(api, monkeypatch, node, on_oracle):
+    monkeypatch.setenv("NODE_NAME", node)
+    assert api.get("/scraper-host", headers=STAFF).json() == {"node": node, "on_oracle": on_oracle}
+
+
+def test_scraper_host_needs_a_token(api):
+    assert api.get("/scraper-host").status_code == 401
+
+
+def test_scraper_host_unset_locally_is_not_oracle(api, monkeypatch):
+    # Local dev has no downward API; no warning there.
+    monkeypatch.delenv("NODE_NAME", raising=False)
+    assert api.get("/scraper-host", headers=STAFF).json() == {"node": None, "on_oracle": False}
