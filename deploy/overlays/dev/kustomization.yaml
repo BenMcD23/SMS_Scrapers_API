@@ -10,7 +10,7 @@ resources:
 # newTag is rewritten by .github/workflows/deploy.yml on every push to development.
 images:
   - name: ghcr.io/benmcd23/sms_scrapers_api
-    newTag: v1.0.526-dev
+    newTag: f6edeb7386a5
 
 configMapGenerator:
   - name: sms-api-config
@@ -25,13 +25,8 @@ patches:
       - op: replace
         path: /spec/instances
         value: 1
-  - target: { kind: Ingress, name: sms-api-public }
+  - target: { kind: Ingress, name: sms-api }
     patch: |-
       - op: replace
-        path: /spec/rules/0/host
-        value: smsapi-dev.317atc.co.uk
-  - target: { kind: Certificate, name: sms-api-tls }
-    patch: |-
-      - op: replace
-        path: /spec/dnsNames/0
-        value: smsapi-dev.317atc.co.uk
+        path: /spec/tls/0/hosts/0
+        value: sms-api-dev
