@@ -10,9 +10,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from core import cache
 from core.db import get_db
-from core.qualifications import BADGE_TYPES, LEVELED, held_level, quali_expiry_cutoff
+from core.qualifications import BADGE_TYPES, LEVELED, held_level, qual_names_with_flights, quali_expiry_cutoff
 from core.security import require_staff, require_staff_or_nco
-from database.models import Cadet, CadetQualification, CadetSnapshot, StatsSnapshot, StatsTarget
+from database.models import Cadet, CadetFlight, CadetQualification, CadetSnapshot, StatsSnapshot, StatsTarget
 
 router = APIRouter()
 
@@ -88,9 +88,7 @@ def compute_stats(db: Session) -> dict:
             age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
             age_counts[str(age)] = age_counts.get(str(age), 0) + 1
 
-    quals_by_cadet: dict = defaultdict(list)
-    for q in db.query(CadetQualification).all():
-        quals_by_cadet[q.cadet_id].append(q.qual_type)
+    quals_by_cadet = _quals_by_cadet(db)
 
     cadets_by_flight: dict = defaultdict(list)
     for c in cadets:
@@ -257,9 +255,17 @@ def get_expiring_quals(
 
 
 def _quals_by_cadet(db: Session) -> dict:
+    """cin -> qualification names, plus what each cadet's flying record proves
+    (qual_names_with_flights), so the dashboards count Blue Flying the same way
+    the audit and badge orders do."""
     out: dict = defaultdict(list)
     for q in db.query(CadetQualification).all():
         out[q.cadet_id].append(q.qual_type)
+    flights: dict = defaultdict(list)
+    for f in db.query(CadetFlight).all():
+        flights[f.cadet_id].append(f)
+    for cin, cadet_flights in flights.items():
+        out[cin] = qual_names_with_flights(out[cin], cadet_flights)
     return out
 
 

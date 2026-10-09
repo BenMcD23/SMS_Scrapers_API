@@ -33,6 +33,10 @@ class Cadet(Base):
     flight        = Column(Text, nullable=True)
     banned        = Column(Boolean, nullable=False, default=False, server_default="0")
     classification = Column(Text, nullable=True)  # highest classification passed, e.g. "Leading Cadet"
+    # From the Volunteer Portal sync: when they joined this squadron, and the
+    # date each classification was passed ({"Leading Cadet": "2025-07-16", ...}).
+    joined_on            = Column(Date, nullable=True)
+    classification_dates = Column(JSON, nullable=True)
 
     qualifications    = relationship("CadetQualification", back_populates="cadet")
     cadet_events      = relationship("CadetEvent",         back_populates="cadet")
@@ -48,6 +52,9 @@ class Cadet(Base):
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
     appraisals        = relationship("NcoAppraisal",          back_populates="cadet", cascade="all, delete-orphan")
     appraisal_reminders = relationship("NcoAppraisalReminder", back_populates="cadet", cascade="all, delete-orphan")
+    portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
+    flights           = relationship("CadetFlight",           back_populates="cadet", cascade="all, delete-orphan",
+                                     order_by="CadetFlight.date.desc()")
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""
@@ -184,6 +191,42 @@ class CadetAttendance(Base):
     unit          = Column(Text,       nullable=True)  # unit attended
 
     cadet = relationship("Cadet", back_populates="attendance")
+
+
+class CadetPortalData(Base):
+    """One Volunteer Portal data set for a cadet (WHTs, flying history, ...),
+    exactly as the portal returned it — the import's raw copy. What the squadron
+    uses is written into the normal tables from it (flights, theory progress,
+    join and classification dates); see routers/volunteer_portal.py."""
+    __tablename__ = "Cadet_Portal_Data"
+    __table_args__ = (UniqueConstraint("cadet_id", "dataset"),)
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    dataset   = Column(Text,       nullable=False)  # one of volunteer_portal.DATASETS
+    data      = Column(JSON,       nullable=False)
+    synced_at = Column(DateTime,   nullable=False)
+
+    cadet = relationship("Cadet", back_populates="portal_data")
+
+
+class CadetFlight(Base):
+    """One flight or simulator session from the cadet's Volunteer Portal flying
+    record. Replaced wholesale on each sync that returns a record."""
+    __tablename__ = "Cadet_Flights"
+
+    id       = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    date     = Column(Date,       nullable=False)
+    activity = Column(Text,       nullable=False)  # "powered" | "gliding" | "simulator"
+    aircraft = Column(Text,       nullable=True)   # "Tutor", "Viking", "PTT", ...
+    category = Column(Text,       nullable=True)   # portal's AEF category: "AEF", "VGS", "PTT", "Military"
+    duty     = Column(Text,       nullable=True)   # "Blue ATP", "GIF", "AEF", ...
+    sortie   = Column(Text,       nullable=True)
+    unit     = Column(Text,       nullable=True)   # flying unit, e.g. "11 AEF (RAF Leeming)"
+    minutes  = Column(Integer,    nullable=True)
+
+    cadet = relationship("Cadet", back_populates="flights")
 
 
 class CadetLeavingProcess(Base):
