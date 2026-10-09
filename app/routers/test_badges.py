@@ -406,3 +406,72 @@ def test_order_list_errors(api):
     assert api.delete("/stores/badges/order-lists/entries/9", headers=STAFF).status_code == 404
     assert api.post("/stores/badges/order-lists/entries/9/mark-ordered", json={}, headers=STAFF).status_code == 404
     assert api.post("/stores/badges/order-lists/entries/9/mark-received", json={}, headers=STAFF).status_code == 404
+
+
+# ── Blue Flying from the Volunteer Portal flying record ───────────────────────
+
+def _flight(db, cin=1, activity="powered", aircraft="Tutor"):
+    from database.models import CadetFlight
+    db.add(CadetFlight(cadet_id=cin, date=datetime(2025, 8, 6).date(), activity=activity, aircraft=aircraft))
+    db.commit()
+
+
+def _flying_blue(api):
+    return _order(api, items=[{"badgeName": "Flying – Blue"}])["items"][0]
+
+
+def test_blue_flying_is_held_once_the_flying_record_completes_the_stages(api, db):
+    # Bader has stage 1 only; the portal record has the PTT session and a Tutor flight.
+    _cadet(db)
+    db.add(CadetQualification(cadet_id=1, qual_type="Blue ATP Ground School", status="true"))
+    db.commit()
+    _flight(db, activity="simulator", aircraft="PTT")
+    _flight(db, aircraft="Tutor")
+    item = _flying_blue(api)
+    assert item["qualHeld"] is True
+    assert [s["done"] for s in item["qualStages"]] == [True, True, True]
+
+
+@pytest.mark.parametrize("quals,flights,stages", [
+    ([], [], [False, False, False]),
+    (["Blue ATP Ground School"], [], [True, False, False]),
+    # Bader's PTT Blue counts for stage 2 without a portal session.
+    (["Blue ATP Ground School", "PTT Blue"], [], [True, True, False]),
+    # A flight in something other than a Tutor or Viking isn't stage 3.
+    (["Blue ATP Ground School", "PTT Blue"], [("powered", "A400M Atlas")], [True, True, False]),
+    # Nor is the simulator itself.
+    (["Blue ATP Ground School"], [("simulator", "PTT")], [True, True, False]),
+])
+def test_blue_flying_isnt_held_until_every_stage_is_done(api, db, quals, flights, stages):
+    _cadet(db)
+    for q in quals:
+        db.add(CadetQualification(cadet_id=1, qual_type=q, status="true"))
+    db.commit()
+    for activity, aircraft in flights:
+        _flight(db, activity=activity, aircraft=aircraft)
+    item = _flying_blue(api)
+    assert item["qualHeld"] is False
+    assert [s["done"] for s in item["qualStages"]] == stages
+
+
+def test_a_viking_flight_counts_as_stage_three(api, db):
+    _cadet(db)
+    for q in ("Blue ATP Ground School", "PTT Blue"):
+        db.add(CadetQualification(cadet_id=1, qual_type=q, status="true"))
+    db.commit()
+    _flight(db, activity="gliding", aircraft="Viking")
+    assert _flying_blue(api)["qualHeld"] is True
+
+
+def test_bader_recording_the_badge_still_counts_without_a_flying_record(api, db):
+    _cadet(db)
+    for q in ("Blue ATP Ground School", "RAFAC Aviation Training Package Blue Training Badge"):
+        db.add(CadetQualification(cadet_id=1, qual_type=q, status="true"))
+    db.commit()
+    assert _flying_blue(api)["qualHeld"] is True
+
+
+def test_only_blue_flying_orders_carry_stages(api, db):
+    _cadet(db)
+    order = _order(api, items=[{"badgeName": "Leadership – Blue"}, {"badgeName": "Flying – Bronze"}])
+    assert [i["qualStages"] for i in order["items"]] == [None, None]
