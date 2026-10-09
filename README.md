@@ -214,6 +214,11 @@ with tight permissions, or skip it.
 
 Lint and tests: `ruff check app` and `pytest` (see below).
 
+Just need the API up with data, e.g. to look at the frontend? Run
+`python app/scripts/dev_server.py`: it uses SQLite with seeded data and fake
+auth, and needs no `.env` or cluster access. The rest of this section is the
+full setup against Postgres and the real dev secrets.
+
 Set up the Python environment:
 
 ```bash

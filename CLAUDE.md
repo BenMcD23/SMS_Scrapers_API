@@ -63,3 +63,19 @@ whose file already holds unit tests go in `test_<thing>_api.py`.
   block — CI never runs those.
 - The frontends pin some of the same numbers (assessment pass marks, text
   limits); change them together.
+
+## Running it locally for a UI preview
+
+`python app/scripts/dev_server.py` serves the API on :8000 from a seeded SQLite
+file (`data/dev.db`, gitignored). It needs no Postgres, Google, Gmail or cluster
+access, so it works in a cloud session. It sets `DEV_FAKE_AUTH`, CORS for
+localhost and email-off itself. `--reset` re-seeds; `--port`/`--db` move it.
+The site's `scripts/preview.sh` starts this and the frontend together; see the
+site's CLAUDE.md.
+
+The seed lives in the same file and is tested (`scripts/test_dev_server.py`).
+When a model or a stored format changes (rank spellings, qualification names,
+flight letters), update the seed too, or the preview stops looking like
+production. Roster data is written directly, because only the scrapers create
+it. Stores data goes through the real endpoints, so it always passes
+validation.

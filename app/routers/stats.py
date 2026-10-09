@@ -6,12 +6,21 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import cache
 from core.db import get_db
-from core.qualifications import BADGE_TYPES, LEVELED, held_level, qual_names_with_flights, quali_expiry_cutoff
+from core.qualifications import (
+    BADGE_TYPE_BY_KEY,
+    BADGE_TYPES,
+    LEVELED,
+    flying_blue_stages,
+    held_level,
+    qual_names_with_flights,
+    quali_expiry_cutoff,
+)
 from core.security import require_staff, require_staff_or_nco
+from core.theory_lessons import LEADING, SENIOR_MASTER, THEORY_LESSON_BY_KEY, THEORY_LESSONS
 from database.models import Cadet, CadetFlight, CadetQualification, CadetSnapshot, StatsSnapshot, StatsTarget
 
 router = APIRouter()
@@ -341,12 +350,28 @@ def get_stats_cadets(
     flight: str | None = Query(None, description='Flight letter, or "Unknown" for none'),
     exclude_juniors: bool = False,
     on: date_type | None = Query(None, description="As of this day, from the per-cadet snapshots"),
+    blue_flying: str | None = Query(None, description="Blue Flying state from /stats/progress"),
+    exam: str | None = Query(None, description="Theory lesson key; the cadets who still need it"),
+    exam_passed: bool | None = Query(None, description="With exam: passed it, or not yet"),
+    service: str | None = Query(None, description="Time-at-317 band from /stats/progress"),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     """The cadets behind a number on the stats page: who holds a badge at a
-    level, who is at a classification. Live by default; `on` a past day reads
-    the last per-cadet snapshot taken by then."""
+    level, who is at a classification, where they are with Blue Flying or an
+    exam, how long they've served. Live by default; `on` a past day reads the
+    last per-cadet snapshot taken by then (badges and classification only)."""
+    progress_filters = (blue_flying, exam, exam_passed, service)
+    if any(f is not None for f in progress_filters) and on is not None and on < date_type.today():
+        raise HTTPException(status_code=400, detail="Flying, exam and service filters are live only")
+    if blue_flying is not None and blue_flying not in BLUE_FLYING_STATES:
+        raise HTTPException(status_code=400, detail=f"Unknown Blue Flying state {blue_flying!r}")
+    if (exam is None) != (exam_passed is None):
+        raise HTTPException(status_code=400, detail="exam and exam_passed go together")
+    if exam is not None and exam not in EXAM_LESSON_KEYS:
+        raise HTTPException(status_code=400, detail=f"Unknown exam {exam!r}")
+    if service is not None and service not in SERVICE_BANDS:
+        raise HTTPException(status_code=400, detail=f"Unknown service band {service!r}")
     if (badge is None) != (level is None):
         raise HTTPException(status_code=400, detail="badge and level go together")
     if badge is not None and badge not in STAT_BADGE_KEYS:
@@ -368,10 +393,13 @@ def get_stats_cadets(
         as_of = snap.captured_at.isoformat()
     else:
         quals = _quals_by_cadet(db)
+        today = date_type.today()
         rows = [
             {**_cadet_ref(c), "rank": c.rank or "", "classification": c.classification or JUNIOR_CLASSIFICATION,
-             "badges": _held_levels(quals.get(c.cin, []))}
-            for c in db.query(Cadet).all()
+             "badges": _held_levels(quals.get(c.cin, [])),
+             "blue_flying": _blue_flying_state(c), "service": _service_band(c.joined_on, today),
+             "theory": {t.lesson_key for t in c.theory_progress}}
+            for c in _load_progress(db)
         ]
         as_of = None
 
@@ -386,12 +414,23 @@ def get_stats_cadets(
             return False
         if badge is not None and r["badges"].get(badge, "None") != level:
             return False
+        if blue_flying is not None and r["blue_flying"] != blue_flying:
+            return False
+        if service is not None and r["service"] != service:
+            return False
+        if exam is not None:
+            lesson = THEORY_LESSON_BY_KEY[exam]
+            if r["classification"] not in EXAM_COHORTS[lesson.category]:
+                return False
+            if (exam in r["theory"]) != exam_passed:
+                return False
         return True
 
     cadets = sorted((r for r in rows if keep(r)), key=lambda r: r["name"].casefold())
     for r in cadets:
         r["level"] = r["badges"].get(badge, "None") if badge else None
-        del r["badges"]
+        for key in ("badges", "blue_flying", "service", "theory"):
+            r.pop(key, None)
     return {"as_of": as_of, "cadets": cadets}
 
 
@@ -429,18 +468,30 @@ def get_classification_funnel(
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     """How many cadets on strength have reached each classification, and the
-    typical time between steps where the per-cadet history saw it happen.
+    typical time between steps.
 
-    A step is only timed for a cadet seen moving into it *and* seen moving
-    into the one before: someone already Leading when tracking began says
-    nothing about how long Leading takes. Weekly snapshots make it accurate
-    to about a week."""
+    Cadets the Volunteer Portal sync has dated are timed exactly: joining to
+    First Class, then classification to classification. Anyone else is timed
+    from the per-cadet history, and only for a step they were seen moving into
+    *and* seen moving into the one before — someone already Leading when
+    tracking began says nothing about how long Leading takes. Weekly snapshots
+    make those accurate to about a week."""
     cadets = [c for c in db.query(Cadet).all() if flight is None or (c.flight or "Unknown") == flight]
     reached = [sum(1 for c in cadets if _step(c.classification) >= i) for i in range(len(CLASSIFICATION_STEPS))]
 
-    timelines, _ = _cadet_timelines(db)
     durations: dict = defaultdict(list)
-    for points in timelines.values():
+    # The Volunteer Portal sync gives exact dates (joined, then each
+    # classification passed); those cadets are timed from them.
+    dated = set()
+    for c in cadets:
+        for step, days in _portal_step_days(c).items():
+            durations[step].append(days)
+            dated.add(c.cin)
+
+    timelines, _ = _cadet_timelines(db)
+    for cin, points in timelines.items():
+        if cin in dated:
+            continue
         if flight is not None and (points[-1][1].flight or "Unknown") != flight:
             continue
         entered: dict = {}  # step -> first time seen at it, only if seen arriving
@@ -465,6 +516,21 @@ def get_classification_funnel(
             "timed_cadets": len(times),
         })
     return {"total": len(cadets), "steps": steps}
+
+
+def _portal_step_days(c: Cadet) -> dict[int, int]:
+    """step -> days it took this cadet to reach it from the step before, from
+    the portal's dates. Step 1 (First Class) counts from joining 317; a cadet
+    who arrived already First Class from another squadron isn't timed for it."""
+    dates = {CLASSIFICATION_STEPS.index(name): date_type.fromisoformat(d)
+             for name, d in (c.classification_dates or {}).items() if name in CLASSIFICATION_STEPS}
+    if c.joined_on:
+        dates[0] = c.joined_on
+    return {
+        step: (when - dates[step - 1]).days
+        for step, when in dates.items()
+        if step > 0 and step - 1 in dates and when >= dates[step - 1]
+    }
 
 
 RETENTION_MARKS = {"6m": 182, "12m": 365}
@@ -583,3 +649,113 @@ def delete_target(target_id: int, db: Session = Depends(get_db), idinfo: dict = 
         raise HTTPException(status_code=404, detail="Target not found")
     db.delete(t)
     db.commit()
+
+
+# ── training progress: Blue Flying, classification exams, time served ─────────
+
+# Where a cadet is with Blue Flying (core.qualifications.flying_blue_stages):
+# done, missing PTT and/or a flight, or not started (no Blue ATP ground school,
+# which comes with First Class training).
+BLUE_FLYING_STATES = ["done", "needs_ptt", "needs_flight", "needs_ptt_and_flight", "not_started"]
+
+# Who still needs each classification exam: Leading subjects are what First
+# Class cadets are working on, Senior/Master subjects what Leading and Senior
+# cadets are working on.
+EXAM_COHORTS = {
+    LEADING: ("First Class Cadet",),
+    SENIOR_MASTER: ("Leading Cadet", "Senior Cadet"),
+}
+EXAM_LESSON_KEYS = {lesson.key for lesson in THEORY_LESSONS if lesson.category in EXAM_COHORTS}
+
+# Time at 317 from the join date: (label, months from, months to).
+SERVICE_BAND_MONTHS = [
+    ("Under 6 months", 0, 6),
+    ("6–12 months", 6, 12),
+    ("1–2 years", 12, 24),
+    ("2–3 years", 24, 36),
+    ("3+ years", 36, None),
+]
+SERVICE_UNKNOWN = "Not synced"
+SERVICE_BANDS = [label for label, _, _ in SERVICE_BAND_MONTHS] + [SERVICE_UNKNOWN]
+
+
+def _load_progress(db: Session, flight: str | None = None, exclude_juniors: bool = False) -> list[Cadet]:
+    cadets = (
+        db.query(Cadet)
+        .options(selectinload(Cadet.qualifications), selectinload(Cadet.flights),
+                 selectinload(Cadet.theory_progress))
+        .all()
+    )
+    return [c for c in cadets
+            if (flight is None or (c.flight or "Unknown") == flight) and not (exclude_juniors and is_junior(c))]
+
+
+def _blue_flying_state(c: Cadet) -> str:
+    names = qual_names_with_flights([q.qual_type for q in c.qualifications], c.flights)
+    # Held outright — the flying record, or Bader, says so (Bronze and up count too).
+    if held_level(BADGE_TYPE_BY_KEY["flying"], names):
+        return "done"
+    ground, ptt, flown = (s["done"] for s in flying_blue_stages(names, c.flights))
+    if not ground:
+        return "not_started"
+    if ptt and not flown:
+        return "needs_flight"
+    if flown and not ptt:
+        return "needs_ptt"
+    return "needs_ptt_and_flight"
+
+
+def _service_band(joined: date_type | None, today: date_type) -> str:
+    if joined is None:
+        return SERVICE_UNKNOWN
+    months = (today.year - joined.year) * 12 + today.month - joined.month - (today.day < joined.day)
+    for label, lo, hi in SERVICE_BAND_MONTHS:
+        if months >= lo and (hi is None or months < hi):
+            return label
+    return SERVICE_BAND_MONTHS[0][0]  # a join date in the future reads as just joined
+
+
+@router.get("/stats/progress")
+def get_training_progress(
+    flight: str | None = None,
+    exclude_juniors: bool = False,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """Live training progress from the Volunteer Portal data: where cadets are
+    with Blue Flying, who has flown in the last year, how many of the cadets
+    who need each classification exam have passed it, and time served at 317.
+    Each count has a matching /stats/cadets filter for the drill-down."""
+    today = date_type.today()
+    year_ago = today - timedelta(days=365)
+    cadets = _load_progress(db, flight, exclude_juniors)
+
+    blue = dict.fromkeys(BLUE_FLYING_STATES, 0)
+    service = dict.fromkeys(SERVICE_BANDS, 0)
+    flown = 0
+    for c in cadets:
+        blue[_blue_flying_state(c)] += 1
+        service[_service_band(c.joined_on, today)] += 1
+        flown += any(f.activity != "simulator" and f.date >= year_ago for f in c.flights)
+
+    exams = []
+    for lesson in THEORY_LESSONS:
+        cohort = EXAM_COHORTS.get(lesson.category)
+        if cohort is None:
+            continue
+        needing = [c for c in cadets if c.classification in cohort]
+        exams.append({
+            "key": lesson.key,
+            "name": lesson.name,
+            "category": lesson.category,
+            "cadets": len(needing),
+            "passed": sum(1 for c in needing if any(t.lesson_key == lesson.key for t in c.theory_progress)),
+        })
+
+    return {
+        "total": len(cadets),
+        "flown_last_year": flown,
+        "blue_flying": blue,
+        "exams": exams,
+        "service": service,
+    }
