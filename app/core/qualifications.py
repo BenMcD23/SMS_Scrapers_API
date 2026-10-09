@@ -333,3 +333,51 @@ def order_badge_held(badge_name: str, qual_names, classification: str | None) ->
     if key == "flying" and level in (BLUE, BRONZE):
         held = held and _has_rung("atp_ground_school", level, names)
     return held
+
+
+# ─── Flying badge from the Volunteer Portal flying record ─────────────────────
+# Blue Flying is three stages:
+#   1. Blue aviation, delivered through First Class training — Bader records it
+#      as "Blue ATP Ground School";
+#   2. Blue PTT, simulator training from a wing PTT instructor — Bader's
+#      "PTT Blue", or a PTT session on the portal's flying record;
+#   3. a flight in a Grob Tutor or Viking, recorded on the Volunteer Portal.
+# Bader often hasn't recorded the badge (or the PTT) yet when the stages are
+# done, so the flying record fills the gap: every badge check reads a cadet's
+# qualifications through qual_names_with_flights().
+
+FLYING_BLUE_BADGE = "RAFAC Aviation Training Package Blue Training Badge"
+BLUE_GROUND_SCHOOL = "Blue ATP Ground School"
+BLUE_PTT = "PTT Blue"
+BLUE_FLYING_AIRCRAFT = ("tutor", "viking")
+
+
+def flying_blue_stages(qual_names, flights) -> list[dict]:
+    """The three Blue Flying stages and whether each is done. ``flights`` are
+    CadetFlight rows (anything with ``activity`` and ``aircraft``)."""
+    names = {n.strip().casefold() for n in qual_names}
+    flights = list(flights)
+    return [
+        {"stage": 1, "name": "Blue aviation (ATP ground school)",
+         "done": BLUE_GROUND_SCHOOL.casefold() in names},
+        {"stage": 2, "name": "Blue PTT (simulator)",
+         "done": BLUE_PTT.casefold() in names or any(f.activity == "simulator" for f in flights)},
+        {"stage": 3, "name": "Flight in a Grob Tutor or Viking",
+         "done": any(f.activity != "simulator" and (f.aircraft or "").casefold() in BLUE_FLYING_AIRCRAFT
+                     for f in flights)},
+    ]
+
+
+def qual_names_with_flights(qual_names, flights) -> list[str]:
+    """A cadet's qualification names plus what their flying record proves:
+    Blue PTT from a portal simulator session, and the Blue Flying badge once all
+    three stages are done. Used by every badge check — audit, badge orders,
+    stats, theory — so they all agree."""
+    names = list(qual_names)
+    held = {n.strip().casefold() for n in names}
+    stages = flying_blue_stages(names, flights)
+    if stages[1]["done"] and BLUE_PTT.casefold() not in held:
+        names.append(BLUE_PTT)
+    if all(s["done"] for s in stages) and FLYING_BLUE_BADGE.casefold() not in held:
+        names.append(FLYING_BLUE_BADGE)
+    return names

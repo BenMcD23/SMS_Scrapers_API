@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from core import stock_events
 from core.db import get_db
 from core.emailer import ready_to_collect_email_html, send_email
-from core.qualifications import order_badge_held
+from core.qualifications import flying_blue_stages, order_badge_held, qual_names_with_flights
 from core.security import require_staff
 from database.models import (
     BadgeGridCell,
@@ -73,9 +73,13 @@ def _get_or_create_badge_config(db: Session) -> BadgeGridConfig:
     return cfg
 
 
+FLYING_BLUE_ORDER = "Flying – Blue"
+
+
 def badge_order_to_dict(order: BadgeOrder) -> dict:
     # ponytail: expiry ignored — an earned badge stays earned even if e.g. first aid lapses.
-    qual_names = [q.qual_type for q in order.cadet.qualifications]
+    # The flying record can prove Blue Flying before Bader records it.
+    qual_names = qual_names_with_flights([q.qual_type for q in order.cadet.qualifications], order.cadet.flights)
     return {
         "id":        str(order.id),
         "cadetName": f"{order.cadet.first_name} {order.cadet.last_name}",
@@ -88,6 +92,9 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "badgeName":      oi.badge_name,
                 "replacement":    bool(oi.replacement),
                 "qualHeld":       order_badge_held(oi.badge_name, qual_names, order.cadet.classification),
+                # Which Blue Flying stages are done, so staff can see what's missing.
+                "qualStages":     flying_blue_stages(qual_names, order.cadet.flights)
+                                  if oi.badge_name == FLYING_BLUE_ORDER else None,
                 "qmNotes":        json.loads(oi.qm_notes) if oi.qm_notes and oi.qm_notes.strip().startswith("[") else [],
                 "givenAt":        oi.given_at.isoformat() if oi.given_at else None,
                 "givenBy":        oi.given_by,
@@ -320,6 +327,7 @@ def badge_orders_list(
         db.query(BadgeOrder)
         .options(
             joinedload(BadgeOrder.cadet).selectinload(Cadet.qualifications),
+            joinedload(BadgeOrder.cadet).selectinload(Cadet.flights),
             selectinload(BadgeOrder.order_items),
         )
         .order_by(BadgeOrder.created_at.desc())

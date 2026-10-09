@@ -14,7 +14,13 @@ from core import cache
 from core.attendance import attendance_state
 from core.db import escape_like, get_db
 from core.http import content_disposition
-from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level
+from core.qualifications import (
+    BADGE_TYPE_BY_KEY,
+    BADGE_TYPES,
+    flying_blue_stages,
+    held_level,
+    qual_names_with_flights,
+)
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 from core.theory_lessons import THEORY_LESSON_BY_KEY, THEORY_LESSONS, lesson_qual_held
 from core.xlsx_export import table_to_xlsx
@@ -139,7 +145,7 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
                 q.qual_type for q in active_quals if q.has_attachment is False
             ]
         if badges:
-            qual_names = [q.qual_type for q in active_quals]
+            qual_names = qual_names_with_flights([q.qual_type for q in active_quals], c.flights)
             entry["qualifications_check"] = [
                 {
                     "qual_type": b.key,
@@ -238,7 +244,7 @@ def _audit_load_options(body) -> list:
     """Eager-load only the relationships this audit will actually serialise,
     so the result is built in a fixed number of queries however many cadets
     are checked."""
-    opts = [selectinload(Cadet.qualifications)]
+    opts = [selectinload(Cadet.qualifications), selectinload(Cadet.flights)]
     if body.include_medical:
         opts.append(selectinload(Cadet.medical))
     if body.include_dietary:
@@ -425,14 +431,14 @@ def theory_check(
     cadets = (
         db.query(Cadet)
         .filter(Cadet.cin.in_(progress.keys()))
-        .options(selectinload(Cadet.qualifications))
+        .options(selectinload(Cadet.qualifications), selectinload(Cadet.flights))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
     )
     results = []
     for c in cadets:
         held = progress.get(c.cin, {})
-        qual_names = [q.qual_type for q in c.qualifications]
+        qual_names = qual_names_with_flights([q.qual_type for q in c.qualifications], c.flights)
         lessons_check = [
             {
                 "lesson_key": key,
@@ -475,6 +481,7 @@ def get_cadet(
             .defer(AssessmentSheet.lesson_plan_pdf),
             selectinload(Cadet.medical),
             selectinload(Cadet.dietary),
+            selectinload(Cadet.flights),
         )
         .first()
     )
@@ -520,8 +527,25 @@ def get_cadet(
         "email": cadet.email,
         "phone_number": cadet.phone_number,
         "date_of_birth": cadet.date_of_birth.isoformat() if cadet.date_of_birth else None,
+        "joined_on": cadet.joined_on.isoformat() if cadet.joined_on else None,
+        "classification_dates": cadet.classification_dates or {},
         "banned": cadet.banned,
         "qualifications": qualifications,
+        "flights": [
+            {
+                "id": f.id,
+                "date": f.date.isoformat(),
+                "activity": f.activity,
+                "aircraft": f.aircraft,
+                "category": f.category,
+                "duty": f.duty,
+                "sortie": f.sortie,
+                "unit": f.unit,
+                "minutes": f.minutes,
+            }
+            for f in cadet.flights
+        ],
+        "flying_blue_stages": flying_blue_stages([q.qual_type for q in cadet.qualifications], cadet.flights),
         "events": events,
         "assessments": assessments,
         "allergies": [

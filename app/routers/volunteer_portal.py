@@ -7,13 +7,16 @@ page, which posts it here with their Google token. So this endpoint only ever
 receives data — it is staff-only, size-capped, strictly validated, and only
 writes for cadets already in our roster.
 
-Each data set is stored raw (Cadet_Portal_Data) because the portal's response
-shapes are undocumented; the dashboards built on it parse what they need.
+Each data set is kept raw (Cadet_Portal_Data), then written into the normal
+tables so the rest of 317 SMS needn't know where it came from: flights
+(Cadet_Flights, which also prove the Blue Flying badge stages — see
+core/qualifications.py), join date and classification dates on the cadet, and
+passed classification exams as theory lessons.
 """
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,7 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from core import portal_data
 from core.db import get_db
 from core.security import require_staff
-from database.models import Cadet, CadetPortalData, CadetTheoryProgress, ScraperRun
+from database.models import Cadet, CadetFlight, CadetPortalData, CadetTheoryProgress, ScraperRun
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +92,16 @@ def apply_sync(db: Session, payload: PortalSync, now: datetime) -> dict:
     portal may show people we don't track), a failed call (None) never touches
     the stored copy, and an empty answer never replaces a non-empty one — the
     same rule as every scraper: a fetch that returned nothing mustn't wipe data."""
-    known = {cin for (cin,) in db.query(Cadet.cin).filter(Cadet.cin.in_([c.cin for c in payload.cadets]))}
+    known = {
+        c.cin: c for c in db.query(Cadet)
+        .filter(Cadet.cin.in_([c.cin for c in payload.cadets]))
+        .options(selectinload(Cadet.flights))
+    }
     existing = {
         (row.cadet_id, row.dataset): row
         for row in db.query(CadetPortalData).filter(CadetPortalData.cadet_id.in_(known))
     }
-    counts = {"matched": 0, "unmatched": 0, "saved": 0, "failed": 0, "kept": 0, "theory": 0}
+    counts = {"matched": 0, "unmatched": 0, "saved": 0, "failed": 0, "kept": 0, "theory": 0, "flights": 0}
     for cadet in payload.cadets:
         if cadet.cin not in known:
             counts["unmatched"] += 1
@@ -114,25 +121,54 @@ def apply_sync(db: Session, payload: PortalSync, now: datetime) -> dict:
                 db.add(row)
                 existing[(cadet.cin, dataset)] = row  # a CIN sent twice updates, not duplicates
                 counts["saved"] += 1
-        counts["theory"] += _mark_passed_exams(db, cadet.cin, cadet.data.get("exams"))
+        # Written from the stored copy, so the keep rules above apply here too.
+        stored = {ds: row.data for (cin, ds), row in existing.items() if cin == cadet.cin}
+        counts["flights"] += _write_flights(known[cadet.cin], stored.get("flying"))
+        _write_dates(known[cadet.cin], stored)
+        counts["theory"] += _write_theory(db, cadet.cin, stored.get("exams"))
+        db.flush()  # a CIN sent twice must see what was just written
     return counts
 
 
-def _mark_passed_exams(db: Session, cin: int, raw_exams) -> int:
-    """Tick the ACP theory lessons a cadet has passed on the portal, so staff
-    don't mark them by hand. Only ever adds — a lesson staff marked stays."""
-    passed = portal_data.completed_theory(raw_exams)
-    if not passed:
+def _write_flights(cadet: Cadet, raw) -> int:
+    """Replace the cadet's flights with the portal's record. A record with no
+    flights never replaces one with some — a blip mustn't wipe flying history."""
+    flights = portal_data.flights(raw)
+    if not flights and cadet.flights:
         return 0
-    held = {
-        key for (key,) in db.query(CadetTheoryProgress.lesson_key)
-        .filter(CadetTheoryProgress.cadet_id == cin, CadetTheoryProgress.lesson_key.in_(passed))
-    }
+    cadet.flights = [CadetFlight(**f) for f in flights]
+    return len(flights)
+
+
+def _write_dates(cadet: Cadet, stored: dict) -> None:
+    joined = portal_data.joined_on(stored.get("unit_history"))
+    if joined:
+        cadet.joined_on = joined
+    dates = portal_data.classification_dates(stored.get("classification"))
+    if dates:
+        cadet.classification_dates = dates
+
+
+PORTAL = "Volunteer Portal"
+
+
+def _write_theory(db: Session, cin: int, raw_exams) -> int:
+    """Make the cadet's portal-recorded theory lessons match their passed portal
+    exams. Lessons staff marked are never touched; a portal-recorded lesson the
+    exams no longer show is removed. No exam results at all changes nothing."""
+    if not (isinstance(raw_exams, dict) and raw_exams.get("results")):
+        return 0
+    passed = portal_data.completed_theory(raw_exams)
+    rows = {r.lesson_key: r for r in db.query(CadetTheoryProgress).filter(CadetTheoryProgress.cadet_id == cin)}
+    for key, row in rows.items():
+        if row.recorded_by == PORTAL and key not in passed:
+            db.delete(row)
+    added = 0
     for key, when in passed.items():
-        if key not in held:
-            db.add(CadetTheoryProgress(cadet_id=cin, lesson_key=key, completed_at=when, recorded_by="Volunteer Portal"))
-    db.flush()  # a CIN sent twice must see the rows just added
-    return len(passed.keys() - held)
+        if key not in rows:
+            db.add(CadetTheoryProgress(cadet_id=cin, lesson_key=key, completed_at=when, recorded_by=PORTAL))
+            added += 1
+    return added
 
 
 @router.post("/vp-sync")
@@ -157,66 +193,3 @@ async def vp_sync(
     db.commit()
     logger.info(f"vp-sync by {idinfo['email']}: {summary}")
     return counts
-
-
-# ── Reading it back ───────────────────────────────────────────────────────────
-
-@router.get("/vp/cadets/{cin}")
-def cadet_portal_data(cin: int, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
-    """One cadet's portal data, parsed. A data set never synced is null."""
-    cadet = db.get(Cadet, cin)
-    if cadet is None:
-        raise HTTPException(status_code=404, detail="Cadet not found")
-    return portal_data.parse_all(cadet.portal_data)
-
-
-def _overview_row(cadet: Cadet, today: date) -> dict:
-    p = portal_data.parse_all(cadet.portal_data)
-    flights = p["flying"] or []
-    exams = p["exams"] or {"enrolments": [], "results": []}
-    units = p["unit_history"] or []
-    learning = p["learning"] or []
-    fieldcraft = p["fieldcraft"] or []
-    return {
-        "cin": cadet.cin,
-        "name": f"{cadet.first_name} {cadet.last_name}",
-        "rank": cadet.rank,
-        "flight": cadet.flight,
-        "synced_at": p["synced_at"],
-        "whts": None if p["whts"] is None else portal_data.wht_summary(p["whts"], today),
-        "shooting": None if p["shooting_log"] is None else {
-            "shoots": len(p["shooting_log"]),
-            "last": p["shooting_log"][0]["date"] if p["shooting_log"] else None,
-        },
-        "fieldcraft": None if p["fieldcraft"] is None else {
-            level: sum(1 for r in fieldcraft if r["level"] == level) for level in portal_data.FIELDCRAFT_LEVELS
-        },
-        "exams": None if p["exams"] is None else {
-            "enrolled": len(exams["enrolments"]),
-            "completed": sum(1 for r in exams["results"] if r["status"] == "completed"),
-            "in_progress": sum(1 for r in exams["results"] if r["status"] == "in_progress"),
-        },
-        "flying": None if p["flying"] is None else {
-            "sorties": len(flights),
-            "minutes": sum(r["minutes"] or 0 for r in flights),
-            "last": flights[0]["date"] if flights else None,
-        },
-        "learning": None if p["learning"] is None else {
-            "complete": sum(1 for r in learning if r["complete"]),
-            "total": len(learning),
-        },
-        # When they joined this squadron: the current primary unit's start date.
-        "joined": next((u["start"] for u in reversed(units) if u["primary"] and not u["end"]), None),
-        "classification": p["classification"],
-    }
-
-
-@router.get("/vp/overview")
-def portal_overview(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
-    """Every cadet's portal data summarised for the squadron dashboard."""
-    today = date.today()
-    cadets = db.query(Cadet).options(selectinload(Cadet.portal_data)).order_by(Cadet.last_name, Cadet.first_name).all()
-    rows = [_overview_row(c, today) for c in cadets]
-    weapons = sorted({w for r in rows for w in (r["whts"] or {})})
-    synced = [r["synced_at"] for r in rows if r["synced_at"]]
-    return {"weapons": weapons, "last_synced": max(synced) if synced else None, "cadets": rows}
