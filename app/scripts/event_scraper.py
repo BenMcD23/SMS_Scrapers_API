@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 UNIT_317 = "317 (Failsworth & Newton Heath)"
 EVENT_DETAIL_URL = "https://sms.bader.mod.uk/events/details/detail.aspx?eventId={}"
 EVENTS_TABLE_URL = "https://sms.bader.mod.uk/events/default.aspx"
+# The events page filters: our unit's events that cadets are attending, not
+# only the ones the logged-in adult is IC of.
+EVENT_FILTERS = {"cbAdultIC": False, "cbMyUnit": True, "cbAttending": True}
 # The 317 detail pages are plain GETs of server-rendered WebForms fields, so
 # they're fetched over HTTP rather than in the browser. Kept small: the win is
 # hiding Bader's latency, not saturating it.
@@ -53,6 +56,21 @@ def _ensure_events_table(page: Page, expected_rows: int | None = None):
     _ensure_all_rows_shown(page, expected_rows)
 
 
+def _set_filters(page: Page):
+    """Set each filter to the state we want rather than toggling it: Bader
+    remembers filters per account, so a blind click turned "My Unit" and
+    "Attending" *off* for anyone whose account already had them on."""
+    page.evaluate(
+        """filters => {
+            for (const [name, want] of Object.entries(filters)) {
+                const box = document.getElementsByName('ctl00$ctl00$cphBaseBody$cphBody$' + name)[0];
+                if (box && box.checked !== want) box.click();
+            }
+        }""",
+        EVENT_FILTERS,
+    )
+
+
 def _setup_events_table(page: Page):
     page.goto(EVENTS_TABLE_URL)
     wait_for_aspx_load(page)
@@ -63,10 +81,7 @@ def _setup_events_table(page: Page):
         "[name='ctl00$ctl00$cphBaseBody$cphBody$cbAdultIC']", timeout=20000
     )
 
-    for checkbox in ["cbAdultIC", "cbMyUnit", "cbAttending"]:
-        page.evaluate(
-            f"document.getElementsByName('ctl00$ctl00$cphBaseBody$cphBody${checkbox}')[0].click();"
-        )
+    _set_filters(page)
     wait_for_preloader(page)
     wait_for_aspx_load(page)
 
