@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 import core.security as security
 from core.qualifications import BADGE_TYPES
 from database.database import Base
-from database.models import Cadet, CadetAttendance, CadetQualification, Staff
+from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
 from scripts.dev_server import CADET_COUNT, PARADE_NIGHTS, _parade_nights, seed, seed_stores
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
@@ -95,3 +95,19 @@ def test_stores_seed_goes_through_the_api(api, db):
     # Cadets with orders have sizes on record too, for the orders page's Sizes popover.
     issued = [api.get(f"/stores/issuances/{o['cadetCin']}", headers=staff).json() for o in orders]
     assert sum(1 for i in issued if i) == 3
+
+
+def test_the_portal_data_gives_every_progress_card_something_to_show(api, db):
+    # The stats page's Blue Flying, exam and time-served cards read this.
+    seed(db, now=NOW)
+    assert db.query(CadetFlight).count() > 0
+    assert db.query(CadetTheoryProgress).count() > 0
+    assert all(c.joined_on for c in db.query(Cadet))
+    for c in db.query(Cadet):
+        # A classification date for every classification reached, in order.
+        dates = list((c.classification_dates or {}).values())
+        assert dates == sorted(dates)
+        assert bool(dates) == bool(c.classification)
+    body = api.get("/stats/progress", headers=api.as_("staff")).json()
+    assert sum(1 for n in body["blue_flying"].values() if n) >= 4  # most pipeline states occur
+    assert body["flown_last_year"] > 0

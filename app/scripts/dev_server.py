@@ -135,6 +135,8 @@ def seed(db, now: datetime | None = None) -> bool:
             db.add(CadetQualification(cadet_id=c.cin, qual_type=_qual_name(level), status="true",
                                       date_achieved=achieved, date_expires=expires, has_attachment=True))
 
+    seed_portal(db, cadets, rng, now)
+
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
     db.add(CadetMedical(cadet_id=cadets[9].cin, allergy_name="Asthma", details="Blue inhaler"))
@@ -157,6 +159,56 @@ def seed(db, now: datetime | None = None) -> bool:
 
     db.commit()
     return True
+
+
+# What a Volunteer Portal sync would have filled in: join and classification
+# dates, flights (so Blue Flying has every stage state), passed exams.
+FLYING_MIX = ["none", "none", "ptt", "flight", "both", "both"]
+
+
+def seed_portal(db, cadets, rng, now: datetime) -> None:
+    from core.theory_lessons import CLASSIFICATION_ORDER, LEADING, SENIOR_MASTER, THEORY_LESSONS
+    from database.models import CadetFlight, CadetQualification, CadetTheoryProgress
+
+    today = now.date()
+    for c in cadets:
+        c.joined_on = today - timedelta(days=rng.randint(20, 1500))
+        # Classification dates climb from joining, a few months a step.
+        reached = CLASSIFICATION_ORDER.index(c.classification) if c.classification else 0
+        when, dates = c.joined_on, {}
+        for name in CLASSIFICATION_ORDER[1:reached + 1]:
+            when = min(when + timedelta(days=rng.randint(60, 300)), today)
+            dates[name] = when.isoformat()
+        c.classification_dates = dates or None
+        if not reached:
+            continue
+
+        # Blue aviation comes with First Class training.
+        db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
+                                  date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
+        mix = rng.choice(FLYING_MIX)
+        if mix in ("ptt", "both"):
+            db.add(CadetFlight(cadet_id=c.cin, date=today - timedelta(days=rng.randint(30, 600)),
+                               activity="simulator", aircraft="PTT", category="PTT", duty="Blue ATP", unit="AEF"))
+        if mix in ("flight", "both"):
+            glider = rng.random() < 0.4
+            db.add(CadetFlight(
+                cadet_id=c.cin, date=today - timedelta(days=rng.randint(10, 700)),
+                activity="gliding" if glider else "powered", aircraft="Viking" if glider else "Tutor",
+                category="VGS" if glider else "AEF", duty="GIF" if glider else "Blue ATP",
+                sortie="Gliding Induction Flight" if glider else "Sortie 1 - AEF",
+                unit="645 VGS (RAF Topcliffe)" if glider else "11 AEF (RAF Leeming)",
+                minutes=rng.randint(10, 30)))
+
+        # All of a set of exams passed once the classification they lead to is
+        # reached (Leading's at Leading, Senior/Master's at Master); about half
+        # for the cadets still working through them.
+        for lesson in THEORY_LESSONS:
+            working, done = {LEADING: ((1,), 2), SENIOR_MASTER: ((2, 3), 4)}.get(lesson.category, ((), 99))
+            if reached >= done or (reached in working and rng.random() < 0.5):
+                db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
+                                           completed_at=now - timedelta(days=rng.randint(5, 300)),
+                                           recorded_by="Volunteer Portal"))
 
 
 def seed_stores(client, headers: dict) -> None:
