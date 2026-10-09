@@ -339,3 +339,18 @@ def test_theory_check_filters_and_empty_cases(api, roster):
     only = api.post("/cadets/theory/check", json={"lesson_keys": ["blue_radio"], "cadet_cins": [2]},
                     headers=STAFF).json()
     assert [r["cin"] for r in only] == [2]
+
+
+def test_the_audit_shows_blue_flying_proved_by_the_flying_record(api, db):
+    from database.models import CadetFlight
+    db.add_all([
+        Cadet(cin=7, first_name="Fay", last_name="Flyer"),
+        CadetQualification(cadet_id=7, qual_type="Blue ATP Ground School", status="true"),
+        CadetQualification(cadet_id=7, qual_type="PTT Blue", status="true"),
+        CadetFlight(cadet_id=7, date=datetime(2025, 8, 6).date(), activity="powered", aircraft="Tutor"),
+    ])
+    db.commit()
+    rows = api.post("/cadets/audit/check", json={"qualifications": ["flying"]}, headers=STAFF).json()
+    [flying] = rows[0]["qualifications_check"]
+    # Bader hasn't recorded the badge yet, so there's no award date to show.
+    assert flying == {**flying, "has": True, "level": "blue", "date_achieved": None}

@@ -278,3 +278,15 @@ def test_a_single_day_range_works(api, db):
     db.commit()
     day = _iso(_today() - timedelta(days=3))
     assert len(api.get(f"/stats/history?start={day}&end={day}", headers=api.as_("nco")).json()) == 1
+
+
+def test_the_dashboard_counts_blue_flying_proved_by_the_flying_record(api, db, squadron):
+    from database.models import CadetFlight
+    db.add_all([
+        CadetQualification(cadet_id=1, qual_type="Blue ATP Ground School", status="true"),
+        CadetFlight(cadet_id=1, date=datetime(2023, 4, 13).date(), activity="simulator", aircraft="PTT"),
+        CadetFlight(cadet_id=1, date=datetime(2025, 8, 6).date(), activity="gliding", aircraft="Viking"),
+    ])
+    db.commit()
+    body = api.get("/stats/current", headers=api.as_("nco")).json()
+    assert body["flights"]["A"]["badges"]["flying_badge"] == {"Blue": 1}

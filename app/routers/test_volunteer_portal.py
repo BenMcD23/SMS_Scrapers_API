@@ -52,7 +52,7 @@ def test_a_sync_saves_each_data_set_and_logs_who_ran_it(api, db, cadet):
     whts = [{"weaponCategory": "L98A2", "dateExpires": "2027-01-01"}]
     r = _sync(api, [{"cin": CIN, "data": {"whts": whts, "classification": {"leadingCadetPassed": None}}}])
 
-    assert r.json() == {"matched": 1, "unmatched": 0, "saved": 2, "failed": 0, "kept": 0, "theory": 0}
+    assert r.json() == {"matched": 1, "unmatched": 0, "saved": 2, "failed": 0, "kept": 0, "theory": 0, "flights": 0}
     assert _stored(db, "whts") == whts
     assert _stored(db, "classification") == {"leadingCadetPassed": None}
     run = db.query(ScraperRun).one()
@@ -184,58 +184,83 @@ def test_resyncing_doesnt_duplicate_or_override_a_staff_mark(api, db, cadet):
     assert _theory(db) == {("acp_32_2", "staff@317atc.co.uk")}
 
 
-# ── reading it back ───────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("path", ["/vp/overview", f"/vp/cadets/{CIN}"])
-def test_reads_need_a_token(api, path):
-    assert api.get(path).status_code == 401
-
-
-@pytest.mark.parametrize("path", ["/vp/overview", f"/vp/cadets/{CIN}"])
-@pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
-def test_reads_are_staff_only(api, cadet, path, persona):
-    assert api.get(path, headers=api.as_(persona)).status_code == 403
-
-
-def test_an_unknown_cadet_is_404(api):
-    assert api.get("/vp/cadets/1", headers=api.as_("staff")).status_code == 404
-
-
-def test_a_cadet_never_synced_reads_as_null_not_empty(api, cadet):
-    body = api.get(f"/vp/cadets/{CIN}", headers=api.as_("staff")).json()
-    assert body["whts"] is None and body["synced_at"] is None
-
-
-def test_a_cadet_reads_back_parsed(api, cadet):
-    _sync(api, [{"cin": CIN, "data": {
-        "whts": {"whTs": [{"weaponCategory": "L98A2", "status": "Pass", "whtDateExpires": "2030-01-01T00:00:00"}]},
-        "exams": PASSED_NAV,
-    }}])
-    body = api.get(f"/vp/cadets/{CIN}", headers=api.as_("staff")).json()
-    assert body["whts"] == [{"weapon": "L98A2", "status": "Pass", "expires": "2030-01-01"}]
-    assert body["exams"]["results"][0]["status"] == "completed"
-    assert body["synced_at"]
-
-
-def test_the_overview_summarises_each_cadet(api, db, cadet):
-    db.add(Cadet(cin=2, first_name="Never", last_name="Synced"))
+def test_a_lesson_the_portal_no_longer_shows_as_passed_is_unticked(api, db, cadet):
+    # e.g. the old mapping ticked Piston Propulsion for a Jet Engine pass.
+    from database.models import CadetTheoryProgress
+    db.add(CadetTheoryProgress(cadet_id=CIN, lesson_key="acp_33_3", completed_at=datetime(2026, 1, 1),
+                               recorded_by="Volunteer Portal"))
     db.commit()
+    _sync(api, [{"cin": CIN, "data": {"exams": PASSED_NAV}}])
+    assert _theory(db) == {("acp_32_2", "Volunteer Portal")}
+
+
+def test_exams_with_no_results_leave_theory_alone(api, db, cadet):
+    _sync(api, [{"cin": CIN, "data": {"exams": PASSED_NAV}}])
+    _sync(api, [{"cin": CIN, "data": {"exams": {"enrolments": [], "results": []}}}])
+    assert _theory(db) == {("acp_32_2", "Volunteer Portal")}
+
+
+# ── flights, join date and classification dates ───────────────────────────────
+
+FLYING = {"createUrl": "x", "gliding": [], "powered": [
+    {"groupName": "AEF", "entries": [
+        {"date": "2025-08-06T00:00:00", "duty": "Blue ATP", "type": "Tutor", "sortie": "Sortie 1 - AEF",
+         "isPowered": True, "flyingUnit": "11 AEF (RAF Leeming)", "aefCategory": "AEF", "durationMinutes": 25}]},
+    {"groupName": "PTT", "entries": [
+        {"date": "2023-04-13T00:00:00", "duty": "Blue ATP", "type": "PTT", "isPowered": True,
+         "aefCategory": "PTT", "durationMinutes": 0}]},
+]}
+NEVER_FLOWN = {"createUrl": "x", "gliding": [], "powered": []}
+
+
+def _flights(db):
+    from database.models import CadetFlight
+    db.expire_all()
+    return [(f.date.isoformat(), f.activity, f.aircraft) for f in db.query(CadetFlight).filter_by(cadet_id=CIN).order_by(CadetFlight.date)]
+
+
+def test_the_flying_record_becomes_the_cadets_flights(api, db, cadet):
+    r = _sync(api, [{"cin": CIN, "data": {"flying": FLYING}}])
+    assert r.json()["flights"] == 2
+    assert _flights(db) == [("2023-04-13", "simulator", "PTT"), ("2025-08-06", "powered", "Tutor")]
+
+
+def test_a_resync_replaces_flights_rather_than_adding_duplicates(api, db, cadet):
+    _sync(api, [{"cin": CIN, "data": {"flying": FLYING}}])
+    _sync(api, [{"cin": CIN, "data": {"flying": FLYING}}])
+    assert len(_flights(db)) == 2
+
+
+def test_an_empty_flying_record_never_wipes_flights(api, db, cadet):
+    _sync(api, [{"cin": CIN, "data": {"flying": FLYING}}])
+    _sync(api, [{"cin": CIN, "data": {"flying": NEVER_FLOWN}}])
+    _sync(api, [{"cin": CIN, "data": {"flying": None}}])
+    assert len(_flights(db)) == 2
+
+
+def test_join_date_and_classification_dates_land_on_the_cadet(api, db, cadet):
     _sync(api, [{"cin": CIN, "data": {
-        "whts": {"whTs": [{"weaponCategory": "L98A2", "status": "Pass", "whtDateExpires": "2000-01-01T00:00:00"}]},
-        "flying": {"powered": [{"entries": [{"date": "2026-05-01T00:00:00", "durationMinutes": 20}]}]},
         "unit_history": [{"unitName": "317", "startDate": "2024-03-27T00:00:00", "endDate": None, "isPrimaryUnit": True}],
-        "exams": PASSED_NAV,
+        "classification": {"firstClassPart3Passed": "2024-08-30T00:00:00", "leadingCadetPassed": None},
     }}])
-    body = api.get("/vp/overview", headers=api.as_("staff")).json()
-    assert body["weapons"] == ["L98A2"]
-    rows = {r["cin"]: r for r in body["cadets"]}
-    zoe = rows[CIN]
-    assert zoe["whts"]["L98A2"]["state"] == "expired"
-    assert zoe["flying"] == {"sorties": 1, "minutes": 20, "last": "2026-05-01"}
-    assert zoe["joined"] == "2024-03-27"
-    assert zoe["exams"] == {"enrolled": 0, "completed": 1, "in_progress": 1}
-    assert rows[2]["whts"] is None and rows[2]["synced_at"] is None
+    db.expire_all()
+    zoe = db.get(Cadet, CIN)
+    assert zoe.joined_on.isoformat() == "2024-03-27"
+    assert zoe.classification_dates == {"First Class Cadet": "2024-08-30"}
 
 
-def test_the_overview_with_no_cadets(api):
-    assert api.get("/vp/overview", headers=api.as_("staff")).json() == {"weapons": [], "last_synced": None, "cadets": []}
+def test_a_failed_read_keeps_the_dates_we_had(api, db, cadet):
+    _sync(api, [{"cin": CIN, "data": {
+        "unit_history": [{"unitName": "317", "startDate": "2024-03-27T00:00:00", "endDate": None, "isPrimaryUnit": True}],
+    }}])
+    _sync(api, [{"cin": CIN, "data": {"unit_history": None, "classification": None}}])
+    db.expire_all()
+    assert db.get(Cadet, CIN).joined_on.isoformat() == "2024-03-27"
+
+
+def test_the_cadet_page_shows_flights_and_dates_with_everything_else(api, cadet):
+    _sync(api, [{"cin": CIN, "data": {"flying": FLYING, "classification": {"leadingCadetPassed": "2025-07-16T00:00:00"}}}])
+    body = api.get(f"/cadets/{CIN}", headers=api.as_("staff")).json()
+    assert [f["aircraft"] for f in body["flights"]] == ["Tutor", "PTT"]  # newest first
+    assert body["classification_dates"] == {"Leading Cadet": "2025-07-16"}
+    assert [s["done"] for s in body["flying_blue_stages"]] == [False, True, True]
