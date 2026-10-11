@@ -63,6 +63,7 @@ def get_cadet_events(
         {
             "id":          e.id,
             "title":       e.title,
+            "category":    e.category,
             "cadet_count": len(e.cadet_events),
             "cadets":      cadet_list(e),
             "sub_apps": [
