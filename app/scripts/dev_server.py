@@ -153,6 +153,7 @@ def seed(db, now: datetime | None = None) -> bool:
                                       date_achieved=achieved, date_expires=expires, has_attachment=True))
 
     seed_portal(db, cadets, rng, now)
+    seed_flying_paperwork(db, cadets, now)
 
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
@@ -176,6 +177,32 @@ def seed(db, now: datetime | None = None) -> bool:
 
     db.commit()
     return True
+
+
+def seed_flying_paperwork(db, cadets, now: datetime) -> None:
+    """What the event scraper would have tracked: an upcoming AEF day part
+    ticked off, a gliding day nobody's started, and a finished one kept open
+    because it has ticks."""
+    from database.models import FlyingEvent, FlyingPaperwork
+    from scripts.flying_paperwork import FLYING_CATEGORIES
+
+    aef, gliding = FLYING_CATEGORIES
+    events = [
+        ("90001", "11 AEF Flying Day", aef, 12, True, cadets[2:8]),
+        ("90002", "632 VGS Gliding Induction", gliding, 26, True, cadets[10:14]),
+        ("90003", "11 AEF Flying Day (September)", aef, -20, False, cadets[20:23]),
+    ]
+    for i, (event_id, title, category, days, on_bader, on_event) in enumerate(events, start=1):
+        start = (now + timedelta(days=days)).replace(hour=8, minute=0, second=0, microsecond=0)
+        fe = FlyingEvent(bader_event_id=event_id, title=title, category=category, date_from=start,
+                         date_to=start.replace(hour=17), on_bader=on_bader,
+                         created_at=now - timedelta(days=30), last_seen_at=now if on_bader else start)
+        for n, cadet in enumerate(on_event):
+            started = i != 2  # the gliding day is untouched
+            fe.cadets.append(FlyingPaperwork(cadet_id=cadet.cin, on_event=not (i == 1 and n == 0),
+                                             tg21=started and n % 2 == 0, tg23=started and n % 3 == 0,
+                                             av_med=started and n < 2))
+        db.add(fe)
 
 
 # What a Volunteer Portal sync would have filled in: join and classification

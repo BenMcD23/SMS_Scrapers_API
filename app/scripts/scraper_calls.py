@@ -26,6 +26,7 @@ from database.models import (
     CadetMedical,
     CadetQualification,
     CadetTheoryProgress,
+    FlyingPaperwork,
     StoresItemIssuance,
     StoresOrder,
     StoresOrderItem,
@@ -33,7 +34,13 @@ from database.models import (
 from scripts.absence_scraper import get_absences
 from scripts.add_quali import add_qualification_with_attachment
 from scripts.alergies import get_cadet_medical
-from scripts.event_scraper import get_317_event_info, get_event_attendees, get_event_names_and_317_links
+from scripts.event_scraper import (
+    get_317_event_info,
+    get_event_attendees,
+    get_event_details,
+    get_event_names_and_317_links,
+)
+from scripts.flying_paperwork import sync_flying_events
 from scripts.quali_scraper import get_cadet_info_and_qualifications, get_cadet_names
 from scripts.scraper_utils import init_scraper, login, match_email, push_to_google_apps_script
 
@@ -66,7 +73,7 @@ def remove_departed_cadets(db_session, scraped_cins):
     for model in (
         StoresOrder, BadgeOrder, StoresItemIssuance, AssessmentSheet,
         CadetQualification, CadetEvent, CadetMedical, CadetDietary,
-        CadetTheoryProgress, CadetAbsence, BanNotification,
+        CadetTheoryProgress, CadetAbsence, BanNotification, FlyingPaperwork,
     ):
         db_session.query(model).filter(model.cadet_id.in_(departed)).delete(synchronize_session=False)
 
@@ -467,6 +474,25 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 scraper_messages.append(json.dumps({"type": "error", "value": "Scraper stopped: Timeout reached."}))
             return
 
+        # Category (and dates) off every event's detail page, over HTTP in one
+        # batch. Best effort: an event missing from `details` just has no
+        # category this run.
+        event_ids = [e.get("event_id") for e in event_attendees if e.get("event_id")]
+        try:
+            details, detail_pages = get_event_details(page, event_ids, scraper_messages, scraper_lock)
+        except Exception as e:
+            details, detail_pages = {}, {}
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "warning",
+                    "value": f"Could not read event categories: {str(e)}",
+                }))
+        with scraper_lock:
+            scraper_messages.append(json.dumps({
+                "type": "info",
+                "value": f"Read categories for {len(details)} of {len(event_ids)} event(s).",
+            }))
+
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": "Saving events to database..."}))
 
@@ -482,7 +508,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             for c in all_cadets
         }
 
-        def _save_cadet_events(event_db_id, attendees, matched_ref, unmatched_ref):
+        def _save_cadet_events(event_db_id, attendees, matched_ref, unmatched_ref, cins):
             for row in attendees:
                 if not isinstance(row, list) or len(row) < 3:
                     continue
@@ -497,28 +523,48 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     )
                 if cin:
                     db_session.add(CadetEvent(event_id=event_db_id, cadet_id=cin))
+                    cins.add(cin)
                     matched_ref[0] += 1
                 else:
                     unmatched_ref[0] += 1
 
         matched_ref = [0]
         unmatched_ref = [0]
+        # Every event the walk saw, with its matched cadets (sub-apps included),
+        # for the flying paperwork sync below.
+        scraped_events = []
 
         for entry in event_attendees:
             attendees = entry.get("attendees")
             sub_apps = entry.get("sub_apps", [])
             has_direct = isinstance(attendees, list)
             has_subs = any(isinstance(s.get("attendees"), list) for s in sub_apps)
+            event_id = entry.get("event_id")
+            detail = details.get(event_id, {}) if event_id else {}
+            cins = set()
+            scraped_events.append({
+                "event_id": event_id,
+                "title": entry.get("event_name"),
+                "category": detail.get("category"),
+                "date_from": detail.get("date_from"),
+                "date_to": detail.get("date_to"),
+                "cadets": cins,
+            })
 
             if not has_direct and not has_subs:
                 continue
 
-            parent_event = AllEvent(title=entry["event_name"], parent_id=None)
+            parent_event = AllEvent(
+                title=entry["event_name"],
+                parent_id=None,
+                bader_event_id=event_id,
+                category=detail.get("category"),
+            )
             db_session.add(parent_event)
             db_session.flush()
 
             if has_direct:
-                _save_cadet_events(parent_event.id, attendees, matched_ref, unmatched_ref)
+                _save_cadet_events(parent_event.id, attendees, matched_ref, unmatched_ref, cins)
                 saved_events += 1
 
             for sub in sub_apps:
@@ -528,7 +574,7 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                 sub_event = AllEvent(title=sub["sub_app_name"], parent_id=parent_event.id)
                 db_session.add(sub_event)
                 db_session.flush()
-                _save_cadet_events(sub_event.id, sub_attendees, matched_ref, unmatched_ref)
+                _save_cadet_events(sub_event.id, sub_attendees, matched_ref, unmatched_ref, cins)
                 saved_events += 1
 
         matched_cadets = matched_ref[0]
@@ -562,6 +608,28 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     "value": f"Ban-notification check failed: {str(e)}",
                 }))
 
+        # AEF and gliding events feed the flying paperwork tracker. Never fatal:
+        # attendance is already committed.
+        try:
+            flying = sync_flying_events(db_session, scraped_events)
+            if flying["tracked"] or flying["removed"] or flying["kept"]:
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "info",
+                        "value": (
+                            f"Flying paperwork: {flying['tracked']} flying event(s) on Bader "
+                            f"({flying['added']} new); {flying['removed']} finished event(s) with nothing "
+                            f"ticked removed, {flying['kept']} kept until closed."
+                        ),
+                    }))
+        except Exception as e:
+            db_session.rollback()
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "warning",
+                    "value": f"Flying paperwork sync failed: {str(e)}",
+                }))
+
         # 317's own events get their full details pulled in the same pass — the
         # links came off the table walk above, so this costs one page load per
         # 317 event instead of a second full scrape. Left until last because it
@@ -576,7 +644,10 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                     "value": f"Syncing details for {len(event_links_317)} 317 event(s)...",
                 }))
             try:
-                get_317_event_info(page, event_links_317, scraper_messages, scraper_lock, stop_event=stop_event)
+                get_317_event_info(
+                    page, event_links_317, scraper_messages, scraper_lock,
+                    stop_event=stop_event, prefetched=detail_pages,
+                )
                 with scraper_lock:
                     if not stop_event.is_set():
                         scraper_messages.append(json.dumps({"type": "info", "value": "317 event details synced."}))

@@ -51,7 +51,8 @@ def test_events_list_serialises(api, event):
 def test_cadet_events_tree(api, db):
     db.add_all([Cadet(cin=1, first_name="A", last_name="One", flight="A"),
                 Cadet(cin=2, first_name="B", last_name="Two")])
-    db.add_all([AllEvent(id=1, title="Camp"), AllEvent(id=2, title="Camp – Week 2", parent_id=1),
+    db.add_all([AllEvent(id=1, title="Camp", category="Adventure Training"),
+                AllEvent(id=2, title="Camp – Week 2", parent_id=1),
                 AllEvent(id=3, title="Parade")])
     db.add_all([CadetEvent(event_id=1, cadet_id=1), CadetEvent(event_id=2, cadet_id=2)])
     db.commit()
@@ -59,6 +60,7 @@ def test_cadet_events_tree(api, db):
     assert set(tree) == {1, 3}  # sub-apps hang off their parent, not the top level
     camp = tree[1]
     assert camp["cadet_count"] == 1 and camp["cadets"][0]["cin"] == 1
+    assert camp["category"] == "Adventure Training" and tree[3]["category"] is None
     assert camp["sub_apps"] == [{"id": 2, "title": "Camp – Week 2", "cadet_count": 1,
                                  "cadets": [{"cin": 2, "first_name": "B", "last_name": "Two",
                                              "rank": None, "flight": None}]}]

@@ -135,3 +135,15 @@ def test_the_leaving_process_has_lapsed_cadets_and_parent_emails_to_show(db):
 
     parents = [c.parent_emails for c in db.query(Cadet)]
     assert any(parents) and not all(parents)  # some on file, some missing
+
+
+def test_flying_paperwork_has_a_started_an_untouched_and_a_finished_event(db):
+    from database.models import FlyingEvent
+    from scripts.flying_paperwork import event_has_ticks
+
+    seed(db, now=NOW)
+    events = {e.title: e for e in db.query(FlyingEvent)}
+    assert len(events) == 3
+    assert [event_has_ticks(e) for e in events.values()] == [True, False, True]
+    assert [e.on_bader for e in events.values()] == [True, True, False]
+    assert any(not r.on_event for e in events.values() for r in e.cadets)

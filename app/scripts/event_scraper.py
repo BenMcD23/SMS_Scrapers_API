@@ -384,10 +384,33 @@ def _get_textarea(page: Page, label_text: str) -> str:
     return value.strip()
 
 
+def _clean_category(text) -> str | None:
+    """Collapse the whitespace Bader pads the category with; blank is None."""
+    cleaned = " ".join((text or "").split())
+    return cleaned or None
+
+
+def _read_category_from_page(page: Page) -> str | None:
+    """The category off a live page. Never raises: a missing category is not a
+    reason to lose the rest of the event."""
+    try:
+        return _clean_category(page.evaluate(
+            """() => {
+                const select = document.getElementById('category');
+                if (select && select.selectedIndex >= 0) return select.options[select.selectedIndex].text;
+                const shown = document.getElementById('select2-category-container');
+                return shown ? (shown.getAttribute('title') || shown.textContent) : null;
+            }"""
+        ))
+    except Exception:
+        return None
+
+
 def _read_detail_from_page(page: Page) -> dict:
     """Read the detail fields by driving the browser. The slow, always-correct path."""
     fields = {key: _get_input_text(page, label) for key, label in DETAIL_FIELDS.items()}
     fields["description"] = clean_html(_get_textarea(page, "Description"))
+    fields["category"] = _read_category_from_page(page)
     return fields
 
 
@@ -412,6 +435,28 @@ def _soup_field(soup, label_text: str, tag: str) -> str:
     return (value or "").strip()
 
 
+def _parse_category(soup) -> str | None:
+    """The event's category ("Road Marching", "RAFAC Gliding", ...).
+
+    It's a select2 dropdown: the page ships a plain ``<select id="category">``
+    with the chosen option marked selected, and select2 draws the visible box
+    (``select2-category-container``, whose title is the same name) in the
+    browser. The WHQ/RHQ badges beside the name are drawn by select2 too, so
+    neither source carries them into the text.
+    """
+    select = soup.find("select", id="category") or soup.find(
+        "select", id=lambda v: bool(v) and "category" in v.lower()
+    )
+    if select:
+        option = select.find("option", selected=True)
+        if option:
+            return _clean_category(option.get_text())
+    shown = soup.find(id="select2-category-container")
+    if shown:
+        return _clean_category(shown.get("title") or shown.get_text())
+    return None
+
+
 def _parse_detail_html(html: str) -> dict | None:
     """Read the detail fields straight out of the server-rendered HTML.
 
@@ -430,6 +475,7 @@ def _parse_detail_html(html: str) -> dict | None:
     if not fields["title"] or not fields["date_from"]:
         return None
     fields["description"] = clean_html(_soup_field(soup, "Description", "textarea"))
+    fields["category"] = _parse_category(soup)
     return fields
 
 
@@ -485,19 +531,45 @@ def _fetch_detail_pages(page: Page, links, scraper_messages, scraper_lock) -> di
     return fetched
 
 
-def get_317_event_info(page: Page, event_links_317, scraper_messages, scraper_lock, stop_event=None):
-    def parse_date(d):
-        if not d:
-            return None
-        try:
-            return datetime.strptime(d, "%d/%m/%Y %H:%M")
-        except ValueError:
-            return None
+def get_event_details(page: Page, event_ids, scraper_messages, scraper_lock) -> tuple[dict, dict]:
+    """Category and dates for every event cadets are on, read off the detail
+    pages over HTTP in one batch.
 
+    Returns ``({event_id: fields}, {link: html})``. An event whose page didn't
+    fetch or parse is simply absent from the first dict — callers must treat
+    that as "unknown", never as "not a flying event". The raw pages come back
+    too so the 317 sync can reuse them instead of fetching its own again.
+    There's no browser fallback here: one page load per attended event would
+    double the length of the scrape for the sake of a label.
+    """
+    links = {event_id: EVENT_DETAIL_URL.format(event_id) for event_id in event_ids if event_id}
+    fetched = _fetch_detail_pages(page, list(links.values()), scraper_messages, scraper_lock)
+    details = {}
+    for event_id, link in links.items():
+        fields = _parse_detail_html(fetched[link]) if link in fetched else None
+        if fields:
+            details[event_id] = fields
+    return details, fetched
+
+
+def parse_event_date(d):
+    """A detail page's "dd/mm/yyyy hh:mm", or None if it's blank or malformed."""
+    if not d:
+        return None
+    try:
+        return datetime.strptime(d, "%d/%m/%Y %H:%M")
+    except ValueError:
+        return None
+
+
+def get_317_event_info(page: Page, event_links_317, scraper_messages, scraper_lock, stop_event=None, prefetched=None):
     session = SessionLocal()
     try:
         num_links = len(event_links_317)
-        fetched = _fetch_detail_pages(page, event_links_317, scraper_messages, scraper_lock)
+        # Pages the category pass already fetched aren't fetched twice.
+        fetched = {link: prefetched[link] for link in event_links_317 if link in (prefetched or {})}
+        missing = [link for link in event_links_317 if link not in fetched]
+        fetched.update(_fetch_detail_pages(page, missing, scraper_messages, scraper_lock))
 
         parsed = {}
         for link, html in fetched.items():
@@ -553,12 +625,13 @@ def get_317_event_info(page: Page, event_links_317, scraper_messages, scraper_lo
                 reference=fields["reference"] or "Error",
                 adult_ic=fields["adult_ic"] or "N/A",
                 contact_number=int(contact_number) if contact_number and contact_number.isdigit() else 0,
-                date_from=parse_date(fields["date_from"]),
-                date_to=parse_date(fields["date_to"]),
+                date_from=parse_event_date(fields["date_from"]),
+                date_to=parse_event_date(fields["date_to"]),
                 location_id=location.id,
                 cost=cost_int,
                 dress=fields["dress"] or "Unknown",
                 description=fields["description"] or "Unknown",
+                category=fields.get("category"),
             )
             session.add(event)
             session.commit()
