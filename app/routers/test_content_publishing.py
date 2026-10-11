@@ -321,8 +321,11 @@ def test_f1771e_validation(api):
     assert api.post("/form-generators/f1771e", headers=STAFF, json={"journeys": [bad]}).status_code == 422
 
 
+OC = {"Authorization": "Bearer oc"}
+
+
 def test_htd_fills_the_form(api):
-    res = api.post("/form-generators/htd", headers=STAFF, json={
+    res = api.post("/form-generators/htd", headers=OC, json={
         "rank": "Sgt", "initials": "S", "surname": "o'brien", "service_number": "30-12-34-56-789",
         "bank_last3": "1a2b3c4", "distance": 10, "date": "01/04/2026",
         "months": [{"label": "01/26", "journeys": 8}, {"label": "02/26", "journeys": 6}]})
@@ -336,18 +339,18 @@ def test_htd_fills_the_form(api):
 
 
 def test_htd_with_nothing_filled_in(api):
-    res = api.post("/form-generators/htd", headers=STAFF, json={})
+    res = api.post("/form-generators/htd", headers=OC, json={})
     assert res.status_code == 200 and 'filename="HTD_UNKNOWN.docx"' in res.headers["content-disposition"]
 
 
 def test_htd_accented_surname_downloads(api):
-    res = api.post("/form-generators/htd", headers=STAFF, json={"surname": "Ñúñez"})
+    res = api.post("/form-generators/htd", headers=OC, json={"surname": "Ñúñez"})
     assert res.status_code == 200
 
 
 def test_htd_more_than_six_months_is_capped_not_an_error(api):
     months = [{"label": f"{m:02d}/26", "journeys": 1} for m in range(1, 9)]
-    assert api.post("/form-generators/htd", headers=STAFF, json={"months": months}).status_code == 200
+    assert api.post("/form-generators/htd", headers=OC, json={"months": months}).status_code == 200
 
 
 # ── backups ───────────────────────────────────────────────────────────────────
