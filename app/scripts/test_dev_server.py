@@ -11,7 +11,15 @@ import core.security as security
 from core.qualifications import BADGE_TYPES
 from database.database import Base
 from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
-from scripts.dev_server import CADET_COUNT, PARADE_NIGHTS, _parade_nights, seed, seed_stores
+from scripts.dev_server import (
+    CADET_COUNT,
+    LAPSED_CADETS,
+    LAPSED_WEEKS,
+    PARADE_NIGHTS,
+    _parade_nights,
+    seed,
+    seed_stores,
+)
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
 
@@ -25,7 +33,9 @@ def fresh_session():
 def test_seeds_a_squadron_into_an_empty_database(db):
     assert seed(db, now=NOW) is True
     assert db.query(Cadet).count() == CADET_COUNT
-    assert db.query(CadetAttendance).count() == CADET_COUNT * PARADE_NIGHTS
+    # Everyone has every night except the lapsed cadets, who miss the last LAPSED_WEEKS.
+    missed = len(LAPSED_CADETS) * LAPSED_WEEKS
+    assert db.query(CadetAttendance).count() == CADET_COUNT * PARADE_NIGHTS - missed
     assert db.query(Cadet).filter(Cadet.banned).count() == 1
     # Flights are stored as the letter, as the scraper stores them.
     assert {c.flight for c in db.query(Cadet)} <= {"A", "B", "C"}
@@ -111,3 +121,17 @@ def test_the_portal_data_gives_every_progress_card_something_to_show(api, db):
     body = api.get("/stats/progress", headers=api.as_("staff")).json()
     assert sum(1 for n in body["blue_flying"].values() if n) >= 4  # most pipeline states occur
     assert body["flown_last_year"] > 0
+
+
+def test_the_leaving_process_has_lapsed_cadets_and_parent_emails_to_show(db):
+    seed(db, now=NOW)
+    from core.leaving import gap_days, is_lapsed
+    from routers.leaving import _current_parade_night, _last_attended_by_cadet
+
+    current, last = _current_parade_night(db), _last_attended_by_cadet(db)
+    lapsed = [c.cin for c in db.query(Cadet) if is_lapsed(last.get(c.cin), current)]
+    assert len(lapsed) == len(LAPSED_CADETS)
+    assert all(gap_days(last[cin], current) >= 56 for cin in lapsed)
+
+    parents = [c.parent_emails for c in db.query(Cadet)]
+    assert any(parents) and not all(parents)  # some on file, some missing

@@ -89,10 +89,10 @@ BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)
 # member can then review it, so this defaults to the shared notifications group
 # rather than one person.
 SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
-# Where replies to the leaving-process email land. It goes out from the
-# unmonitored noreply account, so this is the mailbox a cadet actually reaches.
-# Staff can override it per send.
-LEAVING_PROCESS_REPLY_TO = os.getenv("LEAVING_PROCESS_REPLY_TO", OWNER_EMAIL)
+# The adjutant, who removes a cadet from the squadron. The OC dashboard's
+# "Request removal" button emails this address. Unset = the button refuses
+# rather than silently dropping the request.
+ADJUTANT_EMAIL = os.getenv("ADJUTANT_EMAIL", "")
 
 # Browser origins allowed to call the API directly (the SMS site does; the cadet
 # portal proxies through its own server). Comma-separated; localhost is added

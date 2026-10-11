@@ -4,20 +4,23 @@ Pure date arithmetic, kept out of the router so it can be checked without a
 database (see routers/test_leaving.py).
 """
 
+import re
 from datetime import datetime
 
-# "Last parade was 4 weeks from the current parade night."
-LAPSE_DAYS = 28
+from core.emailer import EMAIL_RE
+
+# "Last parade was 8 weeks (two months) before the current parade night."
+LAPSE_DAYS = 56
 # How long a cadet gets to reply before staff start the discharge.
 RESPONSE_DAYS = 14
 
-FLAGGED = "flagged"              # lapsed, no email sent yet
-WAITING = "waiting"              # email sent, still inside the two weeks
+FLAGGED = "flagged"              # lapsed, parents not yet notified
+WAITING = "waiting"              # parents notified, still inside the two weeks
 START_LEAVING = "start_leaving"  # two weeks elapsed with no return
 
 
 def is_lapsed(last_attended: datetime | None, current_parade: datetime | None) -> bool:
-    """True when the cadet's last parade is at least four weeks before the most
+    """True when the cadet's last parade is at least eight weeks before the most
     recent parade night. Unknown either way (no register at all, or a brand new
     cadet with nothing scraped yet) is never lapsed — we can't measure a gap we
     have no endpoints for, and guessing would flag people wrongly.
@@ -45,3 +48,20 @@ def leaving_status(sent_at: datetime | None, now: datetime) -> tuple[str, int | 
     if elapsed < RESPONSE_DAYS:
         return WAITING, RESPONSE_DAYS - elapsed
     return START_LEAVING, 0
+
+
+def parse_emails(raw: str | None) -> list[str]:
+    """Split a pasted blob of addresses (``;``, commas, spaces or newlines) into
+    a de-duplicated list, keeping first-seen order. Raises ``ValueError`` naming
+    the first thing that isn't an address, so a typo is caught on save rather
+    than when it silently bounces from the OC's BCC. Duplicates are matched
+    case-insensitively — siblings share a parent.
+    """
+    seen: dict[str, str] = {}
+    for part in re.split(r"[;,\s]+", raw or ""):
+        if not part:
+            continue
+        if not EMAIL_RE.match(part):
+            raise ValueError(f"'{part}' is not an email address")
+        seen.setdefault(part.lower(), part)
+    return list(seen.values())
