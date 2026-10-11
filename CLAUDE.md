@@ -10,6 +10,11 @@ the endpoints, `core/` shared helpers, `scripts/` the Bader scrapers and jobs,
 `texts/` parade-night texts, `assessment_builders/` and `form_generators/` the
 PDF/Word/Excel output, `database/` models and Alembic migrations.
 
+The scrapers drive the old `sms.bader.mod.uk` pages. The newer
+`volunteers.bader.mod.uk` portal has an undocumented JSON API. Its routes and
+fields are written up in `docs/volunteer-portal-api.md`, which is worth reading
+before you build a new scraper.
+
 Schema changes go through an Alembic migration (`app/database/alembic/versions`),
 never `create_all`.
 
