@@ -27,6 +27,9 @@ class Cadet(Base):
     # Mobile the cadet gets parade-night texts on. Owned by the cadet — they set
     # it themselves on the portal — so nothing scraped ever overwrites it.
     phone_number = Column(Text, nullable=True)
+    # Parents'/guardians' addresses, ";"-separated, entered by the OC on the OC
+    # dashboard (SMS has no scrapable source), so no scraper ever overwrites it.
+    parent_emails = Column(Text, nullable=True)
 
     date_of_birth = Column(DateTime, nullable=True)
     rank          = Column(Text, nullable=True)
@@ -230,22 +233,28 @@ class CadetFlight(Base):
 
 
 class CadetLeavingProcess(Base):
-    """A leaving-process email that has been sent to a lapsed cadet.
+    """An open leaving process for a lapsed cadet.
 
-    One open row per cadet — the row's existence *is* the "email sent" state,
-    and deleting it is how staff cancel when a cadet comes back. The status the
-    UI shows (waiting / start leaving) is derived from ``sent_at``, never
-    stored, so a countdown can't go stale.
+    The OC emails the parents from their own mailbox (the site only supplies the
+    addresses) and records it here; ``sent_at`` starts the two-week notice
+    clock. One open row per cadet — the row's existence *is* the "parents
+    notified" state, and deleting it is how the OC cancels when a cadet comes
+    back. The status the UI shows (waiting / ready) is derived from ``sent_at``,
+    never stored, so a countdown can't go stale.
     """
     __tablename__ = "Cadet_Leaving_Process"
 
     id        = Column(Integer,    primary_key=True, autoincrement=True)
     cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
                        nullable=False, unique=True)
-    sent_at   = Column(DateTime,   nullable=False)
-    sent_to   = Column(Text,       nullable=False)   # address staff typed at send time
-    reply_to  = Column(Text,       nullable=False)
-    sent_by   = Column(Text,       nullable=True)    # staff email, for the audit trail
+    sent_at   = Column(DateTime,   nullable=False)   # when the OC said they'd sent the query
+    sent_to   = Column(Text,       nullable=False)   # parent addresses at that moment
+    reply_to  = Column(Text,       nullable=True)    # unused since the site stopped sending the query
+    sent_by   = Column(Text,       nullable=True)    # OC email, for the audit trail
+    # The adjutant is emailed once to remove the cadet; these record that.
+    adj_requested_at = Column(DateTime, nullable=True)
+    adj_requested_by = Column(Text,     nullable=True)
+    adj_sent_to      = Column(Text,     nullable=True)
 
     cadet = relationship("Cadet", back_populates="leaving_process")
 

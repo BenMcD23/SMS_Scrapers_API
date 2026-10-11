@@ -9,10 +9,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from core.db import get_current_cadet, get_current_user, get_db
-from core.security import get_roles_for_emails, require_staff
+from core.security import get_roles_for_emails, is_oc, require_staff
 from database.models import (
     BadgeOrder,
     BadgeOrderItem,
@@ -462,28 +463,51 @@ def list_users(
     ]
 
 
+def own_staff(db: Session, email: str) -> Staff | None:
+    """The signed-in account's own row on the staff roster, by email."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    return db.query(Staff).filter(func.lower(Staff.email) == email).first()
+
+
+def staff_to_dict(s: Staff, private: bool, user_id: int | None = None) -> dict:
+    """A staff roster row. Home address and the HTD attendance counts are
+    personal, so they're only filled in when ``private`` — for the OC, or the
+    person themselves; everyone else gets None."""
+    return {
+        "cin":         s.cin,
+        "firstName":   s.first_name,
+        "lastName":    s.last_name,
+        "rank":        s.rank,
+        "email":       s.email,
+        "phoneNumber": s.phone_number,
+        "address":     s.address if private else None,
+        "attendance":  s.attendance if private else None,
+        "userId":      user_id,
+    }
+
+
 @router.get("/staff")
 def list_staff(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    """Scraped SMS staff roster. `userId` is set only where a portal User
-    shares the email, so the detail page can show their uniform issuances."""
+    """Scraped SMS staff roster. Any staff member can read it (the text
+    recipients picker needs names and numbers), but addresses and attendance
+    are the OC's to see, bar your own. `userId` is set only where a portal
+    User shares the email, so the detail page can show their uniform issuances."""
+    email = (idinfo.get("email") or "").lower()
+    oc = is_oc(email)
     user_by_email = {
         u.email.lower(): u.id for u in db.query(User).all() if u.email
     }
     return [
-        {
-            "cin":       s.cin,
-            "firstName": s.first_name,
-            "lastName":  s.last_name,
-            "rank":      s.rank,
-            "email":     s.email,
-            "phoneNumber": s.phone_number,
-            "address":   s.address,
-            "attendance": s.attendance,
-            "userId":    user_by_email.get((s.email or "").lower()),
-        }
+        staff_to_dict(
+            s,
+            private=oc or (s.email or "").lower() == email,
+            user_id=user_by_email.get((s.email or "").lower()),
+        )
         for s in db.query(Staff).all()
     ]
 
@@ -495,7 +519,11 @@ def staff_attendance(
     idinfo: dict = Depends(require_staff),
 ):
     """Full scraped attendance register, newest first. Same shape as the cadet
-    endpoint so both feed the same UI."""
+    endpoint so both feed the same UI. The OC's, or your own."""
+    if not is_oc(idinfo.get("email", "")):
+        me = own_staff(db, idinfo.get("email", ""))
+        if not me or me.cin != cin:
+            raise HTTPException(status_code=403, detail="OC access required")
     rows = (
         db.query(StaffAttendance)
         .filter(StaffAttendance.staff_id == cin)

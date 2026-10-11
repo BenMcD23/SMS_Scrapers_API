@@ -414,29 +414,30 @@ def session_plan_approved_html(plan_id: int, session_name: str, session_ic: str,
     """
 
 
-def leaving_process_email_html(cadet_name: str, weeks_absent: int, reply_to: str) -> str:
-    """To a cadet who has stopped attending, asking whether they intend to stay.
+def leaver_removal_request_email_html(cadet_name: str, cin: int, last_attended: str | None,
+                                      weeks_absent: int | None, notified_on: str,
+                                      requested_by: str) -> str:
+    """To the adjutant, asking them to remove a cadet who has stopped attending.
 
-    Deliberately omits the shared FOOTER: this one is sent with a Reply-To
-    pointing at a real mailbox, so telling the reader not to reply would be
-    wrong — replying is the whole point.
+    Drops the shared FOOTER: it goes out with the OC as Reply-To, and the
+    adjutant answering the OC is the point.
     """
+    absent = f"{weeks_absent} weeks" if weeks_absent is not None else "an unknown time"
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
-      <h2 style="margin:0 0 4px">Are you still with us?</h2>
+      <h2 style="margin:0 0 4px">Cadet removal request</h2>
       <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
-      <p>Hi {_esc(cadet_name)},</p>
-      <p>We've noticed you haven't been to parade for around {weeks_absent} weeks, and we
-         wanted to check in before doing anything else.</p>
-      <p>If you'd like to stay with 317 Squadron, just come along to the next parade
-         night &mdash; there's nothing you need to do here.</p>
-      <p>If you've decided to leave, or something is making it hard to attend, please
-         reply to this email and let us know. We'd rather hear from you than assume.</p>
-      <p><strong>If we don't hear from you within two weeks, we'll begin the process of
-         discharging you from the squadron.</strong></p>
-      <p style="margin-top:20px">Thanks,<br>317 (Failsworth) Squadron</p>
+      <p>Hi,</p>
+      <p>Please remove <strong>{_esc(cadet_name)}</strong> (CIN {cin}) from the squadron.</p>
+      <ul>
+        <li>Last on parade: {_esc(last_attended or "no parade on record")}</li>
+        <li>Not paraded for: {absent}</li>
+        <li>Parents were sent a leaver query on {_esc(notified_on)}, giving two weeks'
+            notice, and the notice period has now passed.</li>
+      </ul>
+      <p style="margin-top:20px">Thanks,<br>{_esc(requested_by)}</p>
       <p style="margin:20px 0 0;font-size:12px;color:#999">
-        Replies to this email go to {_esc(reply_to)}.</p>
+        Replies to this email go to {_esc(requested_by)}.</p>
     </div>
     """
 

@@ -34,6 +34,10 @@ DEV_ENV = {
     "CORS_ALLOW_LOCALHOST": "true",
     "SCHEDULER_ENABLED": "false",
     "EMAIL_DISABLED": "true",
+    # The OC dashboard (leaving process, parent emails) is OC-only; make the dev
+    # owner login the OC, and give "request removal" somewhere to point.
+    "OC_EMAIL": "ci.mcdonald@317atc.co.uk",
+    "ADJUTANT_EMAIL": "adjutant@example.com",
     "DB_BACKUP_ENABLED": "false",
     # A throwaway key: the seed stores nothing secret, it just has to import.
     "ENCRYPTION_KEY": "5-6ZgtVJdBRAJfCPIhLdyUFqGgb0ChZfBGB4fL0jTOo=",
@@ -55,6 +59,10 @@ UNIT = "317 (Failsworth) Sqn"
 CADET_COUNT = 60
 FIRST_CIN = 2_100_000
 PARADE_NIGHTS = 16
+# Indexes of cadets who haven't paraded for LAPSED_WEEKS+ weeks (so the leaving
+# process lists them).
+LAPSED_CADETS = (20, 21, 22)
+LAPSED_WEEKS = 9
 # Days from now each first aid expiry lands, taken in turn: one expired, two in
 # the record page's 60-day warning, the rest fine.
 FIRST_AID_EXPIRY_DAYS = [-20, 25, 50, 150, 300, 420]
@@ -109,6 +117,10 @@ def seed(db, now: datetime | None = None) -> bool:
             email=f"cadet{i}@example.com",
             # Ofcom's drama range: real-looking, never anyone's phone.
             phone_number=f"07700900{i:03d}",
+            # Every third cadet has none, so "missing" shows; 9 and 10 are
+            # siblings sharing one address, so the BCC de-duplicates.
+            parent_emails=None if i % 3 == 2 else (
+                "shared.parent@example.com" if i in (9, 10) else f"parent{i}@example.com"),
             date_of_birth=datetime(now.year - age, rng.randint(1, 12), rng.randint(1, 28)),
             rank=rng.choice(RANKS),
             flight=rng.choice(FLIGHTS),
@@ -121,8 +133,13 @@ def seed(db, now: datetime | None = None) -> bool:
     cadets[7].banned = True
     db.add_all(cadets)
 
+    # Cadets who stopped coming: no parade in the last LAPSED_WEEKS weeks, so
+    # the OC dashboard's leaving process has someone to list.
+    lapsed = {cadets[i].cin for i in LAPSED_CADETS}
     for c in cadets:
         for night in nights:
+            if c.cin in lapsed and night > nights[-1] - timedelta(weeks=LAPSED_WEEKS):
+                continue
             status = rng.choice(["Present Correctly Dressed"] * 6 + ["Present Incorrectly Dressed", "Absent"])
             db.add(CadetAttendance(cadet_id=c.cin, date=night, register_type="Parade Night",
                                    status=status, unit=UNIT))

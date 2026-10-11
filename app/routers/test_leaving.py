@@ -1,5 +1,7 @@
-"""Self-checks for the leaving-process date rules."""
+"""Self-checks for the leaving-process date rules and the parent-address parser."""
 from datetime import datetime, timedelta
+
+import pytest
 
 from core.leaving import (
     FLAGGED,
@@ -10,13 +12,14 @@ from core.leaving import (
     gap_days,
     is_lapsed,
     leaving_status,
+    parse_emails,
 )
 
 PARADE = datetime(2026, 8, 6)
 
 
 def test_is_lapsed():
-    # Exactly four weeks is lapsed; a day under is not.
+    # Exactly eight weeks is lapsed; a day under is not.
     assert is_lapsed(PARADE - timedelta(days=LAPSE_DAYS), PARADE)
     assert not is_lapsed(PARADE - timedelta(days=LAPSE_DAYS - 1), PARADE)
     assert is_lapsed(PARADE - timedelta(days=90), PARADE)
@@ -57,3 +60,24 @@ def test_leaving_status():
     assert leaving_status(now - timedelta(days=RESPONSE_DAYS - 1), now) == (WAITING, 1)
     assert leaving_status(now - timedelta(days=RESPONSE_DAYS), now) == (START_LEAVING, 0)
     assert leaving_status(now - timedelta(days=365), now) == (START_LEAVING, 0)
+
+
+def test_lapse_is_eight_weeks():
+    assert LAPSE_DAYS == 56
+
+
+def test_parse_emails_splits_on_anything_and_dedupes_case_insensitively():
+    raw = "a@x.co; B@y.co,\n a@X.co  c@z.co;;"
+    # Siblings share a parent, so the second a@x.co (any case) is dropped.
+    assert parse_emails(raw) == ["a@x.co", "B@y.co", "c@z.co"]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  ;, \n"])
+def test_parse_emails_empty_is_an_empty_list(raw):
+    assert parse_emails(raw) == []
+
+
+@pytest.mark.parametrize("raw", ["not-an-email", "a@x.co; oops", "a@@x.co"])
+def test_parse_emails_rejects_a_bad_address_by_name(raw):
+    with pytest.raises(ValueError, match="is not an email address"):
+        parse_emails(raw)

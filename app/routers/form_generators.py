@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from core.db import get_db, get_or_create_user
 from core.http import content_disposition
 from core.paths import TEMPLATES_DIR
-from core.security import require_staff
+from core.security import is_oc, require_staff
+from database.models import Staff
 
 router = APIRouter()
 
@@ -53,6 +54,8 @@ class HTDMonth(BaseModel):
 
 
 class HTDRequest(BaseModel):
+    # Whose claim this is: anyone but the OC may only generate their own.
+    cin: int | None = None
     rank: str = ""
     initials: str = ""
     surname: str = ""
@@ -174,12 +177,36 @@ def generate_f1771e(
     )
 
 
+@router.get("/form-generators/htd/staff")
+def htd_staff(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Who the signed-in user can raise an HTD claim for: everyone for the OC,
+    otherwise just themselves (an empty list if they're not on the roster)."""
+    from routers.portal import own_staff, staff_to_dict
+
+    if is_oc(idinfo.get("email", "")):
+        return [staff_to_dict(s, private=True) for s in db.query(Staff).all()]
+    me = own_staff(db, idinfo.get("email", ""))
+    return [staff_to_dict(me, private=True)] if me else []
+
+
 @router.post("/form-generators/htd")
 def generate_htd(
     data: HTDRequest,
+    db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
     from form_generators.HTD_gen import compute_htd, fill_form
+    from routers.portal import own_staff
+
+    if not is_oc(idinfo.get("email", "")):
+        me = own_staff(db, idinfo.get("email", ""))
+        if not me:
+            raise HTTPException(status_code=403, detail="You're not on the staff roster, so there's no claim to make")
+        if data.cin != me.cin:
+            raise HTTPException(status_code=403, detail="You can only generate your own HTD claim")
 
     calc = compute_htd(data.distance, [m.journeys for m in data.months])
 

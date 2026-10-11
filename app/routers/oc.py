@@ -6,12 +6,14 @@ coverage and expiries); the committee-request section lives on the frontend.
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from core import cache
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.db import get_db
+from core.leaving import parse_emails
 from core.qualifications import quali_expiry_cutoff
 from core.security import require_oc
 from database.models import (
@@ -179,3 +181,67 @@ async def oc_dashboard(
         "qual_summary": _qual_summary(db, today, exclude_juniors),
         "expiring_quals": expiring_quals,
     }
+
+
+class ParentEmails(BaseModel):
+    emails: str = ""
+
+
+def _cadet_parent_emails(raw: str | None) -> list[str]:
+    try:
+        return parse_emails(raw)
+    except ValueError:
+        # Saved values were validated; a hand-edited bad row shouldn't 500 the page.
+        return [p for p in (raw or "").split(";") if "@" in p]
+
+
+@router.get("/oc/parent-emails")
+def parent_emails(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """Every parent address on file, ready to paste into a BCC.
+
+    ``bcc`` is ``a@x;b@y;c@z``, de-duplicated across cadets (siblings share a
+    parent). The site never emails parents itself — the OC sends from their own
+    account. ``cadets`` lets the dashboard edit each cadet's addresses and shows
+    who is still missing.
+    """
+    rows = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
+    cadets = [
+        {
+            "cin": c.cin,
+            "name": f"{c.first_name} {c.last_name}".strip(),
+            "flight": c.flight,
+            "parentEmails": _cadet_parent_emails(c.parent_emails),
+        }
+        for c in rows
+    ]
+    unique: dict[str, str] = {}
+    for c in cadets:
+        for email in c["parentEmails"]:
+            unique.setdefault(email.lower(), email)
+    return {
+        "bcc": ";".join(unique.values()),
+        "count": len(unique),
+        "missing": sum(1 for c in cadets if not c["parentEmails"]),
+        "cadets": cadets,
+    }
+
+
+@router.put("/oc/parent-emails/{cin}")
+def set_parent_emails(
+    cin: int,
+    body: ParentEmails,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    """Replace one cadet's parent addresses. Accepts ``;``, comma or newline
+    separated text; an empty string clears them."""
+    cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
+    if not cadet:
+        raise HTTPException(status_code=404, detail=f"Cadet with CIN {cin} not found.")
+    try:
+        emails = parse_emails(body.emails)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    cadet.parent_emails = ";".join(emails) or None
+    db.commit()
+    return {"cin": cin, "parentEmails": emails}

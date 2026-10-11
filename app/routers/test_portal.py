@@ -309,5 +309,40 @@ def test_staff_attendance_newest_first(api, db):
         StaffAttendance(staff_id=10, date=datetime(2026, 2, 1), status="Absent"),
     ])
     db.commit()
-    rows = api.get("/staff/10/attendance", headers=STAFF).json()
+    rows = api.get("/staff/10/attendance", headers=api.as_("oc")).json()
     assert [(r["date"][:7], r["state"]) for r in rows] == [("2026-02", "absent"), ("2026-01", "present")]
+
+
+@pytest.fixture
+def roster(db):
+    db.add_all([
+        Staff(cin=10, first_name="Sam", last_name="Staff", email="Staff@317atc.co.uk",
+              address="1 Home Rd", attendance={"2026-01": 4}, phone_number="07700900001"),
+        Staff(cin=11, first_name="Sue", last_name="Second", email="staff2@317atc.co.uk",
+              address="2 Other Rd", attendance={"2026-01": 2}, phone_number="07700900002"),
+        Staff(cin=12, first_name="No", last_name="Email", address="3 Lane"),
+    ])
+    db.commit()
+
+
+def test_staff_see_names_and_numbers_but_only_their_own_address(api, roster):
+    """The texts picker needs everyone's name and number; addresses and HTD
+    attendance are personal, so only your own row carries them."""
+    rows = {s["cin"]: s for s in api.get("/staff", headers=STAFF).json()}
+    assert rows[10]["address"] == "1 Home Rd" and rows[10]["attendance"] == {"2026-01": 4}
+    for cin in (11, 12):
+        assert rows[cin]["address"] is None and rows[cin]["attendance"] is None
+    assert rows[11]["phoneNumber"] == "07700900002" and rows[11]["lastName"] == "Second"
+
+
+def test_the_oc_sees_every_address(api, roster):
+    rows = api.get("/staff", headers=api.as_("oc")).json()
+    assert {s["cin"]: s["address"] for s in rows} == {10: "1 Home Rd", 11: "2 Other Rd", 12: "3 Lane"}
+
+
+@pytest.mark.parametrize("persona, cin, status", [
+    ("oc", 11, 200), ("staff", 10, 200),  # the OC anyone's, staff their own
+    ("staff", 11, 403), ("staff2", 10, 403), ("owner", 10, 403),
+])
+def test_staff_attendance_is_the_ocs_or_your_own(api, roster, persona, cin, status):
+    assert api.get(f"/staff/{cin}/attendance", headers=api.as_(persona)).status_code == status
