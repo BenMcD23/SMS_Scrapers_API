@@ -22,6 +22,8 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     CadetQualification,
+    FlyingEvent,
+    FlyingPaperwork,
     StoresOrder,
     StoresOrderItem,
 )
@@ -259,9 +261,10 @@ def test_absence_crash_keeps_the_old_rows(db, bader, monkeypatch):
 
 # ── events and ban alerts ─────────────────────────────────────────────────────
 
-def _events(monkeypatch, attendees, links_317=()):
+def _events(monkeypatch, attendees, links_317=(), details=None, pages=None):
     monkeypatch.setattr(calls, "get_event_names_and_317_links", lambda page: (["e"], 1, list(links_317)))
     monkeypatch.setattr(calls, "get_event_attendees", lambda *a, **k: attendees)
+    monkeypatch.setattr(calls, "get_event_details", lambda *a, **k: (details or {}, pages or {}))
     monkeypatch.setattr(calls, "get_317_event_info", lambda *a, **k: None)
 
 
@@ -330,6 +333,89 @@ def test_317_detail_sync_failure_is_only_a_warning(db, bader, monkeypatch):
     run = Run()
     calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
     assert run.errors() == [] and any("detail sync failed" in w for w in run.warnings())
+
+
+def test_event_categories_are_stored_on_every_event_read(db, bader, monkeypatch):
+    db.add(Cadet(cin=1, first_name="Amy", last_name="Able"))
+    db.commit()
+    _events(monkeypatch, [
+        {"event_name": "March", "event_id": "10", "attendees": [["x", "Amy", "Able"]]},
+        {"event_name": "Unread", "event_id": "11", "attendees": [["x", "Amy", "Able"]]},
+        {"event_name": "No id", "event_id": None, "attendees": [["x", "Amy", "Able"]]},
+    ], details={"10": {"category": "Road Marching"}})
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    rows = {e.title: (e.bader_event_id, e.category) for e in db.query(AllEvent).all()}
+    assert rows == {"March": ("10", "Road Marching"), "Unread": ("11", None), "No id": (None, None)}
+    assert any("Read categories for 1 of 2" in str(m["value"]) for m in run.parsed())
+
+
+def test_a_category_read_failure_still_saves_the_events(db, bader, monkeypatch):
+    db.add(Cadet(cin=1, first_name="Amy", last_name="Able"))
+    db.commit()
+    _events(monkeypatch, [{"event_name": "Camp", "event_id": "10", "attendees": [["x", "Amy", "Able"]]}])
+
+    def boom(*a, **k):
+        raise RuntimeError("bader down")
+
+    monkeypatch.setattr(calls, "get_event_details", boom)
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert run.errors() == [] and any("Could not read event categories" in w for w in run.warnings())
+    assert [(e.title, e.category) for e in db.query(AllEvent).all()] == [("Camp", None)]
+
+
+def test_flying_events_are_tracked_with_cadets_from_their_sub_apps(db, bader, monkeypatch):
+    db.add_all([Cadet(cin=1, first_name="Amy", last_name="Able"),
+                Cadet(cin=2, first_name="Bob", last_name="Baker")])
+    db.commit()
+    _events(monkeypatch, [
+        {"event_name": "AEF Day", "event_id": "10", "attendees": [["x", "Amy", "Able"]],
+         "sub_apps": [{"sub_app_name": "PM slot", "attendees": [["x", "Bob", "Baker"]]}]},
+        {"event_name": "March", "event_id": "11", "attendees": [["x", "Amy", "Able"]]},
+    ], details={"10": {"category": "RAFAC Air Experience Flying (AEF)", "date_from": "01/11/2026 08:00"},
+                "11": {"category": "Road Marching"}})
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    [fe] = db.query(FlyingEvent).all()
+    assert (fe.bader_event_id, fe.title, fe.date_from) == ("10", "AEF Day", datetime(2026, 11, 1, 8))
+    assert sorted(r.cadet_id for r in fe.cadets) == [1, 2]
+    assert any("Flying paperwork: 1 flying event(s)" in str(m["value"]) for m in run.parsed())
+
+
+def test_a_flying_sync_failure_is_only_a_warning(db, bader, monkeypatch):
+    _events(monkeypatch, [{"event_name": "AEF", "event_id": "10", "attendees": []}],
+            details={"10": {"category": "RAFAC Gliding"}})
+
+    def boom(*a, **k):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(calls, "sync_flying_events", boom)
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert run.errors() == [] and any("Flying paperwork sync failed" in w for w in run.warnings())
+    assert run.parsed()[-1] == {"type": "status", "value": "done"}
+
+
+def test_the_317_sync_reuses_the_pages_the_category_pass_fetched(db, bader, monkeypatch):
+    _events(monkeypatch, [], links_317=["link"], pages={"link": "<html/>"})
+    seen = {}
+    monkeypatch.setattr(calls, "get_317_event_info", lambda *a, **k: seen.update(k))
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert seen["prefetched"] == {"link": "<html/>"}
+
+
+def test_departing_cadets_take_their_flying_paperwork_with_them(db):
+    db.add_all([Cadet(cin=1, first_name="Amy", last_name="Able"),
+                Cadet(cin=2, first_name="Bob", last_name="Baker")])
+    db.add(FlyingEvent(id=1, bader_event_id="10", title="AEF", category="RAFAC Gliding",
+                       created_at=datetime.now(), last_seen_at=datetime.now()))
+    db.add_all([FlyingPaperwork(flying_event_id=1, cadet_id=1, tg21=True),
+                FlyingPaperwork(flying_event_id=1, cadet_id=2)])
+    db.commit()
+    assert calls.remove_departed_cadets(db, {2}) == 1
+    assert [r.cadet_id for r in db.query(FlyingPaperwork).all()] == [2]
 
 
 # ── medical ───────────────────────────────────────────────────────────────────

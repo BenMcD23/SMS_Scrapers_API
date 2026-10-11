@@ -30,6 +30,7 @@ from routers import (
     chat,
     committee,
     events,
+    flying,
     form_generators,
     inspections,
     leaving,
@@ -170,6 +171,7 @@ app.include_router(volunteer_portal.router)
 app.include_router(settings.router)
 app.include_router(form_generators.router)
 app.include_router(events.router)
+app.include_router(flying.router)
 app.include_router(programme.router)
 app.include_router(newsletters.router)
 app.include_router(assessments.router)

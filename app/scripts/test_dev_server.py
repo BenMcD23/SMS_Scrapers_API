@@ -111,3 +111,15 @@ def test_the_portal_data_gives_every_progress_card_something_to_show(api, db):
     body = api.get("/stats/progress", headers=api.as_("staff")).json()
     assert sum(1 for n in body["blue_flying"].values() if n) >= 4  # most pipeline states occur
     assert body["flown_last_year"] > 0
+
+
+def test_flying_paperwork_has_a_started_an_untouched_and_a_finished_event(db):
+    from database.models import FlyingEvent
+    from scripts.flying_paperwork import event_has_ticks
+
+    seed(db, now=NOW)
+    events = {e.title: e for e in db.query(FlyingEvent)}
+    assert len(events) == 3
+    assert [event_has_ticks(e) for e in events.values()] == [True, False, True]
+    assert [e.on_bader for e in events.values()] == [True, True, False]
+    assert any(not r.on_event for e in events.values() for r in e.cadets)

@@ -291,6 +291,7 @@ class Event317(Base):
     cost           = Column(Float, nullable=False)
     dress          = Column(Text, nullable=False)
     description    = Column(Text, nullable=False)
+    category       = Column(Text, nullable=True)  # Bader's activity category, e.g. "Road Marching"
 
     location = relationship("Location", back_populates="events")
 
@@ -311,6 +312,10 @@ class AllEvent(Base):
     id        = Column(Integer, primary_key=True, autoincrement=True)
     title     = Column(Text, nullable=False)
     parent_id = Column(Integer, ForeignKey("All_Events.id", ondelete="CASCADE"), nullable=True)
+    # Off the event's detail page, so only set on parent events; None when the
+    # page couldn't be read this run.
+    bader_event_id = Column(Text, nullable=True)
+    category       = Column(Text, nullable=True)
 
     cadet_events = relationship("CadetEvent", back_populates="event")
     sub_apps     = relationship(
@@ -329,6 +334,45 @@ class CadetEvent(Base):
 
     cadet = relationship("Cadet", back_populates="cadet_events")
     event = relationship("AllEvent", back_populates="cadet_events")
+
+
+class FlyingEvent(Base):
+    """An AEF or gliding event whose paperwork (TG 21, TG 23, AV Med) is being
+    tracked. Unlike All_Events this outlives the scrape: it's keyed on Bader's
+    event id and only goes away on its own if nothing was ever ticked off;
+    once something has, it stays until staff close it by hand."""
+    __tablename__ = "Flying_Events"
+
+    id             = Column(Integer,  primary_key=True, autoincrement=True)
+    bader_event_id = Column(Text,     nullable=False, unique=True)
+    title          = Column(Text,     nullable=False)
+    category       = Column(Text,     nullable=False)
+    date_from      = Column(DateTime, nullable=True)
+    date_to        = Column(DateTime, nullable=True)
+    on_bader       = Column(Boolean,  nullable=False, default=True)  # False once the scrape stops finding it
+    created_at     = Column(DateTime, nullable=False)
+    last_seen_at   = Column(DateTime, nullable=False)
+
+    cadets = relationship("FlyingPaperwork", back_populates="event", cascade="all, delete-orphan")
+
+
+class FlyingPaperwork(Base):
+    """One cadet's paperwork for one flying event."""
+    __tablename__ = "Flying_Paperwork"
+    __table_args__ = (UniqueConstraint("flying_event_id", "cadet_id"),)
+
+    id              = Column(Integer,    primary_key=True, autoincrement=True)
+    flying_event_id = Column(Integer,    ForeignKey("Flying_Events.id", ondelete="CASCADE"), nullable=False, index=True)
+    cadet_id        = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    on_event        = Column(Boolean,    nullable=False, default=True)  # False once Bader drops them from it
+    tg21            = Column(Boolean,    nullable=False, default=False)
+    tg23            = Column(Boolean,    nullable=False, default=False)
+    av_med          = Column(Boolean,    nullable=False, default=False)
+    updated_at      = Column(DateTime,   nullable=True)
+    updated_by      = Column(Text,       nullable=True)
+
+    event = relationship("FlyingEvent", back_populates="cadets")
+    cadet = relationship("Cadet")
 
 
 class BanNotification(Base):
