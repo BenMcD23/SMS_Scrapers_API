@@ -13,11 +13,13 @@ from database.database import Base
 from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
 from scripts.dev_server import (
     CADET_COUNT,
+    INSPECTION_NIGHTS,
     LAPSED_CADETS,
     LAPSED_WEEKS,
     PARADE_NIGHTS,
     _parade_nights,
     seed,
+    seed_inspections,
     seed_stores,
 )
 
@@ -147,3 +149,28 @@ def test_flying_paperwork_has_a_started_an_untouched_and_a_finished_event(db):
     assert [event_has_ticks(e) for e in events.values()] == [True, False, True]
     assert [e.on_bader for e in events.values()] == [True, True, False]
     assert any(not r.on_event for e in events.values() for r in e.cadets)
+
+
+def test_inspections_give_the_audit_a_pattern_to_find(api, db):
+    # Each flight was seeded with a fault the audit should rank top, and B's and
+    # A's should trend the way they were seeded.
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_inspections(api, staff, now=NOW)
+
+    sheets = api.get("/inspections/sheets", headers=staff).json()
+    assert len(sheets) == INSPECTION_NIGHTS
+    assert {s["uniform"] for s in sheets} == {"blues", "mtp"}
+
+    squadron = api.get("/inspections/audit", headers=staff).json()
+    assert [f["flight"] for f in squadron["flights"]] == ["A", "B", "C"]
+    assert squadron["summary"]["awol"] > 0 and squadron["positives"]
+
+    def top(flight):
+        return api.get(f"/inspections/audit?scope=flight&flight={flight}", headers=staff).json()["faults"]
+
+    a, b, c = top("A"), top("B"), top("C")
+    assert a[0]["region"] == "Beret / Headdress" and a[0]["trend"] == "better"
+    assert b[0]["region"] == "Shoes" and b[0]["trend"] == "worse" and b[0]["persistent_cadets"] > 0
+    assert len(b[0]["texts"]) > 1
+    assert c[0]["region"] == "Hair / Face"
