@@ -33,6 +33,7 @@ from routers import (
     events,
     flying,
     form_generators,
+    inspection_audit,
     inspections,
     leaving,
     nco_appraisals,
@@ -167,6 +168,7 @@ def health_check(idinfo: dict = Depends(require_user)):
 app.include_router(portal.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
+app.include_router(inspection_audit.router)
 app.include_router(scrapers.router)
 app.include_router(volunteer_portal.router)
 app.include_router(settings.router)

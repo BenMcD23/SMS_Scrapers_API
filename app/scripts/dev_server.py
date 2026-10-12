@@ -305,6 +305,64 @@ def seed_stores(client, headers: dict) -> None:
         post(f"/stores/issuances/{cin}", {"givenBy": "Dev Owner", "items": given})
 
 
+INSPECTION_NIGHTS = 8
+# Each flight gets a pattern for the inspection audit to find: B's shoes are a
+# persistent fault that gets worse, A's berets get better, C's hair is spread
+# thin. The texts vary on purpose, as real inspectors' do, so the AI has
+# variants to merge.
+INSPECTION_PATTERNS = {
+    "A": ("Beret / Headdress", ["badge not over left eye", "beret not shaped", "Beret badge off centre"],
+          lambda night: 0.6 if night < INSPECTION_NIGHTS // 2 else 0.1),
+    "B": ("Shoes", ["not bulled", "dull toecaps", "shoes need polishing", "Scuffed heels"],
+          lambda night: 0.3 if night < INSPECTION_NIGHTS // 2 else 0.6),
+    "C": ("Hair / Face", ["hair over collar", "hair not in a bun", "loose hair"], lambda night: 0.25),
+}
+OCCASIONAL_FAULTS = [
+    ("Trousers", "creases not sharp"), ("Jumper / Shirt / Tie", "tie knot loose"),
+    ("Jumper / Shirt / Tie", "shirt not ironed"), ("Trousers", "fluff on trousers"),
+]
+INSPECTION_POSITIVES = [("Shoes", "excellent bulling"), ("Beret / Headdress", "well shaped beret"),
+                        ("Trousers", "sharp creases")]
+
+
+def seed_inspections(client, headers: dict, now: datetime | None = None) -> None:
+    """Weekly inspection sheets for the last INSPECTION_NIGHTS parade nights,
+    through the real submit endpoint so AWOLs and flight scores are worked out
+    the way the site's own submissions are. Every fourth night is MTP."""
+    rng = random.Random(1317)
+    nights = _parade_nights(now or datetime.now(), PARADE_NIGHTS)[-INSPECTION_NIGHTS:]
+    left = FIRST_CIN + 7  # the banned cadet
+    lapsed = {FIRST_CIN + i for i in LAPSED_CADETS}
+    roster = [c for c in client.get("/cadets", headers=headers).json() if c["cin"] != left]
+
+    for n, night in enumerate(nights):
+        mtp = n % 4 == 3
+        marks = []
+        for c in roster:
+            if c["cin"] in lapsed or rng.random() < 0.08:
+                marks.append({"cin": c["cin"], "absent": True})
+                continue
+            comments = []
+            region, texts, chance = INSPECTION_PATTERNS[c["flight"]]
+            if mtp and region == "Shoes":
+                region = "Boots"
+            if rng.random() < chance(n):
+                comments.append({"type": "fault", "region": region, "text": rng.choice(texts)})
+            if not mtp and rng.random() < 0.15:
+                where, text = rng.choice(OCCASIONAL_FAULTS)
+                comments.append({"type": "fault", "region": where, "text": text})
+            if rng.random() < 0.12:
+                where, text = rng.choice(INSPECTION_POSITIVES)
+                comments.append({"type": "positive", "region": where, "text": text})
+            faults = sum(1 for x in comments if x["type"] == "fault")
+            score = max(3.0, min(10.0, 8.5 - 1.5 * faults + rng.choice([-0.5, 0, 0.5, 1])))
+            marks.append({"cin": c["cin"], "score": score, "comments": comments})
+        res = client.post("/inspections", headers=headers, json={
+            "date": night.date().isoformat(), "uniform": "mtp" if mtp else "blues", "marks": marks,
+        })
+        assert res.status_code < 300, f"/inspections: {res.status_code} {res.text}"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8000)
@@ -332,7 +390,9 @@ def main() -> None:
     with SessionLocal() as db:
         fresh = seed(db)
     if fresh:
-        seed_stores(TestClient(app), {"Authorization": "Bearer dev-fake-token"})
+        client, headers = TestClient(app), {"Authorization": "Bearer dev-fake-token"}
+        seed_stores(client, headers)
+        seed_inspections(client, headers)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
