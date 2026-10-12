@@ -147,3 +147,13 @@ def test_flying_paperwork_has_a_started_an_untouched_and_a_finished_event(db):
     assert [event_has_ticks(e) for e in events.values()] == [True, False, True]
     assert [e.on_bader for e in events.values()] == [True, True, False]
     assert any(not r.on_event for e in events.values() for r in e.cadets)
+
+
+def test_the_classification_day_planner_has_every_group_to_show(api, db):
+    seed(db, now=NOW)
+    db.commit()
+    body = api.get("/classification-day", params={"date": NOW.date().isoformat()},
+                   headers=api.as_("staff")).json()
+    kinds = {c["kind"] for c in body["cadets"]}
+    assert {"exam", "lesson", "first_class", "complete"} <= kinds
+    assert any(c["attendance"]["flags"] for c in body["cadets"])
