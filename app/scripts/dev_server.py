@@ -247,12 +247,20 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
         # All of a set of exams passed once the classification they lead to is
         # reached (Leading's at Leading, Senior/Master's at Master); about half
         # for the cadets still working through them.
+        # A third of those still working through them have had their next lesson
+        # but not sat its exam, so the classification day planner has exams to give.
+        taught_next = rng.random() < 0.33
         for lesson in THEORY_LESSONS:
             working, done = {LEADING: ((1,), 2), SENIOR_MASTER: ((2, 3), 4)}.get(lesson.category, ((), 99))
             if reached >= done or (reached in working and rng.random() < 0.5):
                 db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
                                            completed_at=now - timedelta(days=rng.randint(5, 300)),
                                            recorded_by="Volunteer Portal"))
+            elif reached in working and taught_next:
+                taught_next = False
+                db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
+                                           completed_at=now - timedelta(days=rng.randint(5, 30)),
+                                           recorded_by="staff@example.com"))
 
 
 def seed_stores(client, headers: dict) -> None:
