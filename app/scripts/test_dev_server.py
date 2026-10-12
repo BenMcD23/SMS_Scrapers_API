@@ -174,3 +174,13 @@ def test_inspections_give_the_audit_a_pattern_to_find(api, db):
     assert b[0]["region"] == "Shoes" and b[0]["trend"] == "worse" and b[0]["persistent_cadets"] > 0
     assert len(b[0]["texts"]) > 1
     assert c[0]["region"] == "Hair / Face"
+
+
+def test_the_classification_day_planner_has_every_group_to_show(api, db):
+    seed(db, now=NOW)
+    db.commit()
+    body = api.get("/classification-day", params={"date": NOW.date().isoformat()},
+                   headers=api.as_("staff")).json()
+    kinds = {c["kind"] for c in body["cadets"]}
+    assert {"exam", "lesson", "first_class", "complete"} <= kinds
+    assert any(c["attendance"]["flags"] for c in body["cadets"])
