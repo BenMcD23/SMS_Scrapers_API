@@ -17,7 +17,7 @@ from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
-from database.models import AssessmentSheet, Cadet, CadetQualification, StatsSnapshot, StoresOrder
+from database.models import AssessmentSheet, Cadet, CadetQualification, StatsSnapshot
 from routers import scrapers, usage
 from routers.stats import save_snapshot
 from scripts.db_backup import run_db_backup
@@ -27,26 +27,6 @@ logger = logging.getLogger(__name__)
 
 LONDON = "Europe/London"
 COMPLETED_RETENTION = timedelta(days=182)
-
-
-def cleanup_old_completed_orders() -> None:
-    """Drop completed stores orders once they are six months old."""
-    cutoff = datetime.now() - COMPLETED_RETENTION
-    db = SessionLocal()
-    try:
-        orders = (
-            db.query(StoresOrder)
-            .filter(StoresOrder.completed == True, StoresOrder.created_at < cutoff)  # noqa: E712
-            .all()
-        )
-        for order in orders:
-            db.delete(order)
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.exception("completed-order cleanup failed")
-    finally:
-        db.close()
 
 
 def cleanup_old_completed_assessments() -> None:
@@ -141,7 +121,6 @@ def weekly_stats_snapshot() -> None:
 
 
 def register_jobs(scheduler: BaseScheduler) -> None:
-    scheduler.add_job(cleanup_old_completed_orders, "interval", hours=24)
     scheduler.add_job(cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     scheduler.add_job(usage.cleanup_old_usage, "interval", hours=24)
