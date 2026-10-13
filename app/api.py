@@ -41,6 +41,7 @@ from routers import (
     nco_holidays,
     newsletters,
     oc,
+    order_stats,
     portal,
     programme,
     reference,
@@ -179,6 +180,7 @@ app.include_router(programme.router)
 app.include_router(newsletters.router)
 app.include_router(assessments.router)
 app.include_router(stats.router)
+app.include_router(order_stats.router)
 app.include_router(stores.router)
 app.include_router(badges.router)
 app.include_router(texts.router)
