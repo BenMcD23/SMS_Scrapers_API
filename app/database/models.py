@@ -1090,6 +1090,8 @@ class StoresOrderItem(Base):
     # Append-only log of stock removals/returns for this item, so the QM can see
     # who took the item off the shelf and when: JSON [{id, action, timestamp, by, ...}]
     stock_events     = Column(Text, nullable=False, default="[]", server_default="[]")
+    # Append-only "given"/"undone" log (core/given_events.py); given_at/given_by above are the current state.
+    given_events     = Column(Text, nullable=False, default="[]", server_default="[]")
 
     order = relationship("StoresOrder", back_populates="order_items")
 
@@ -1163,6 +1165,8 @@ class BadgeOrderItem(Base):
     ready_to_collect = Column(DateTime, nullable=True)
     # See StoresOrderItem.stock_events — same append-only log, against the badge grid
     stock_events     = Column(Text, nullable=False, default="[]", server_default="[]")
+    # Append-only "given"/"undone" log (core/given_events.py); given_at/given_by above are the current state.
+    given_events     = Column(Text, nullable=False, default="[]", server_default="[]")
     # Where the badge was gained: "camp" | "sector_training_weekend" | "wing_training_weekend" | "on_sqn" | "other"
     gained_where        = Column(Text,     nullable=True)
     gained_where_detail = Column(Text,     nullable=True)  # free text when gained_where == "other"
