@@ -1,7 +1,7 @@
 """The local preview seed (scripts/dev_server.py). It's what every UI preview
 and screenshot runs against, so it has to keep working as the models move."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -21,6 +21,7 @@ from scripts.dev_server import (
     seed,
     seed_inspections,
     seed_stores,
+    seed_stores_history,
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
@@ -107,6 +108,25 @@ def test_stores_seed_goes_through_the_api(api, db):
     # Cadets with orders have sizes on record too, for the orders page's Sizes popover.
     issued = [api.get(f"/stores/issuances/{o['cadetCin']}", headers=staff).json() for o in orders]
     assert sum(1 for i in issued if i) == 3
+
+
+def test_stores_history_gives_the_insights_page_past_demand(api, db):
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_stores(api, staff)
+    seed_stores_history(api, staff, db, now=NOW)
+
+    orders = api.get("/stores/orders", headers=staff).json()
+    past = [o for o in orders if o["completed"]]
+    assert len(past) == 70
+    assert all(i["givenAt"] for o in past for i in o["items"])
+    # Spread over the last year and a bit, never in the future.
+    stamps = [datetime.fromisoformat(o["timestamp"]) for o in past]
+    assert min(stamps) >= NOW - timedelta(days=451) and max(stamps) <= NOW
+
+    insights = api.get("/stores/insights", headers=staff).json()
+    assert insights["summary"]["requested"] > 50
+    assert insights["toOrder"] and insights["unused"]
 
 
 def test_the_portal_data_gives_every_progress_card_something_to_show(api, db):

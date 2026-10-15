@@ -4,14 +4,14 @@ import hmac
 import io
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import stock_events
+from core import stock_events, stock_insights
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
@@ -530,6 +530,53 @@ def stores_delete_stock(
                 item_id, item.item_type, item.size, item.quantity, idinfo.get("email"))
     db.delete(item)
     db.commit()
+
+
+# ── Insights ──────────────────────────────────────────────────────────────────
+
+@router.get("/stores/insights")
+def stores_get_insights(
+    months: int = Query(12, ge=1, le=36),
+    cover: int = Query(3, ge=1, le=12),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Demand by item and size over the last ``months``, set against the shelf,
+    with how many of each to order to cover the next ``cover`` months."""
+    now = datetime.now()
+    since = now - timedelta(days=round(months * 30.44))
+    on_logs_form = {
+        oid for (oid,) in db.query(LogsFormEntry.order_item_id)
+        .filter(LogsFormEntry.order_item_id.isnot(None))
+    }
+    demand = []
+    last_requested: dict[tuple[str, str], datetime] = {}
+    for oi, created_at, completed in (
+        db.query(StoresOrderItem, StoresOrder.created_at, StoresOrder.completed)
+        .join(StoresOrder, StoresOrderItem.order_id == StoresOrder.id)
+    ):
+        if not (oi.item_type or "").strip():
+            continue
+        given = oi.given_at is not None
+        waiting = (not given and not completed and oi.id not in on_logs_form
+                   and not stock_events.is_removed(stock_events.events_list(oi.stock_events)))
+        demand.append(stock_insights.DemandRow(
+            item_type=oi.item_type, size=oi.size or "", need_sizing=bool(oi.need_sizing),
+            requested_at=created_at, given=given, waiting=waiting,
+        ))
+        size = stock_insights.demand_size(oi.item_type, oi.size or "", bool(oi.need_sizing))
+        if size is not None:
+            key = (oi.item_type, size)
+            if key not in last_requested or created_at > last_requested[key]:
+                last_requested[key] = created_at
+    stock = [stock_insights.StockRow(i.item_type, i.size, i.quantity)
+             for i in db.query(StoresItem).all()]
+    logger.info("stores insights: %d order items, %d stock rows, %d months for %s",
+                len(demand), len(stock), months, idinfo.get("email"))
+    return stock_insights.build_insights(
+        demand, stock, since=since, months=months, cover_months=cover,
+        last_requested=last_requested,
+    )
 
 
 # ── Orders (staff side) ───────────────────────────────────────────────────────

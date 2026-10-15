@@ -6,7 +6,7 @@ then each flow is driven through HTTP with its unhappy paths alongside.
 
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import openpyxl
 import pytest
@@ -34,6 +34,7 @@ STAFF_ONLY = [
     ("patch", "/stores/boxes/A/layout", {}),
     ("patch", "/stores/boxes/A/sections/reorder", {"sections": []}),
     ("get", "/stores/stock", None),
+    ("get", "/stores/insights", None),
     ("post", "/stores/stock", {}),
     ("patch", "/stores/stock/1", {}),
     ("delete", "/stores/stock/1", None),
@@ -843,3 +844,94 @@ def test_logs_form_model_defaults(db):
     db.commit()
     assert stores._logs_form_to_dict(form) == {
         "id": str(form.id), "createdAt": "2026-01-01T00:00:00", "orderedAt": None, "entries": []}
+
+
+# ── insights ──────────────────────────────────────────────────────────────────
+
+def _insights(api, **params):
+    res = api.get("/stores/insights", params=params, headers=STAFF)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _line(result, item, size):
+    sizes = next(i for i in result["items"] if i["itemType"] == item)["sizes"]
+    return next(r for r in sizes if r["size"] == size)
+
+
+def test_insights_on_an_empty_stores_is_an_empty_report(api):
+    result = _insights(api)
+    assert result["items"] == [] and result["toOrder"] == [] and result["unused"] == []
+    assert result["months"] == 12 and result["coverMonths"] == 3
+
+
+@pytest.mark.parametrize("params", [{"months": 0}, {"months": 37}, {"cover": 0}, {"cover": 13}, {"months": "x"}])
+def test_insights_rejects_windows_out_of_range(api, params):
+    assert api.get("/stores/insights", params=params, headers=STAFF).status_code == 422
+
+
+def test_insights_sets_demand_against_the_shelf(api, db):
+    _cadet(db)
+    box = _box(db, sections=("1", "2"))
+    _stock(db, box, "1", "Beret", "56", qty=1)
+    _stock(db, box, "2", "Beret", "56", qty=1)
+    _stock(db, box, "1", "Jumper", "94", qty=4)
+    _order(api, items=[{"itemType": "Beret", "size": "56"}] * 3 + [{"itemType": "Jumper", "needSizing": True}])
+
+    result = _insights(api)
+    beret = _line(result, "Beret", "56")
+    assert (beret["requested"], beret["waiting"], beret["inStock"]) == (3, 3, 2)
+    assert beret["status"] == "short" and beret["toOrder"] == 2
+    jumper = next(i for i in result["items"] if i["itemType"] == "Jumper")
+    assert jumper["awaitingSizing"] == 1 and jumper["inStock"] == 4
+    assert [(r["itemType"], r["size"]) for r in result["unused"]] == [("Jumper", "94")]
+
+
+def test_given_removed_logs_form_and_completed_items_are_not_still_waiting(api, db):
+    _cadet(db)
+    stock = _stock(db, _box(db), qty=5)
+    order = _order(api, items=[{"itemType": "Beret", "size": "55"}] * 4)
+    ids = [i["id"] for i in order["items"]]
+    assert api.post("/stores/issuances/1001", json={"givenBy": "QM", "items": [
+        {"itemType": "Beret", "sizeGiven": "55", "orderItemId": ids[0]}]}, headers=STAFF).status_code == 200
+    assert api.post(f"/stores/orders/{order['id']}/items/{ids[1]}/stock",
+                    json={"action": "remove", "stockItemId": stock.id}, headers=STAFF).status_code == 200
+    assert api.post("/stores/logs-forms/entries", json={"orderItemId": ids[2]}, headers=STAFF).status_code == 201
+
+    row = _line(_insights(api), "Beret", "55")
+    assert row["requested"] == 4 and row["given"] == 1 and row["waiting"] == 1
+
+    api.patch(f"/stores/orders/{order['id']}", json={"completed": True}, headers=STAFF)
+    assert _line(_insights(api), "Beret", "55")["waiting"] == 0
+
+
+def test_insights_window_drops_old_requests_but_keeps_when_they_were(api, db):
+    _cadet(db)
+    _stock(db, _box(db), qty=2)
+    order = _order(api)
+    db.get(StoresOrder, int(order["id"])).created_at = datetime.now() - timedelta(days=400)
+    db.get(StoresOrder, int(order["id"])).completed = True
+    db.commit()
+
+    result = _insights(api)
+    assert result["unused"][0]["size"] == "55"
+    assert result["unused"][0]["lastRequested"].startswith(str((datetime.now() - timedelta(days=400)).year))
+    # Two years back it is demand again.
+    assert _line(_insights(api, months=24), "Beret", "55")["requested"] == 1
+
+
+def test_insights_cover_changes_the_suggested_order(api, db):
+    _cadet(db)
+    _order(api, items=[{"itemType": "Beret", "size": "55"}] * 12)
+    db.query(StoresOrder).update({"completed": True})
+    db.commit()
+    assert _line(_insights(api, cover=3), "Beret", "55")["toOrder"] == 3
+    assert _line(_insights(api, cover=6), "Beret", "55")["toOrder"] == 6
+
+
+def test_insights_ignores_blank_item_rows(api, db):
+    _cadet(db)
+    order = _order(api)
+    db.add(StoresOrderItem(order_id=int(order["id"]), item_type="  ", size=""))
+    db.commit()
+    assert [i["itemType"] for i in _insights(api)["items"]] == ["Beret"]
