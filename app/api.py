@@ -50,6 +50,7 @@ from routers import (
     stats,
     stores,
     texts,
+    theory,
     volunteer_portal,
 )
 from routers import usage as usage_router
@@ -166,6 +167,7 @@ def health_check(idinfo: dict = Depends(require_user)):
 
 # portal must come before cadets so /cadets/me isn't swallowed by /cadets/{cin}
 app.include_router(portal.router)
+app.include_router(theory.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
 app.include_router(inspection_audit.router)

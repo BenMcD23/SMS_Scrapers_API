@@ -212,7 +212,7 @@ FLYING_MIX = ["none", "none", "ptt", "flight", "both", "both"]
 
 def seed_portal(db, cadets, rng, now: datetime) -> None:
     from core.theory_lessons import CLASSIFICATION_ORDER, LEADING, SENIOR_MASTER, THEORY_LESSONS
-    from database.models import CadetFlight, CadetQualification, CadetTheoryProgress
+    from database.models import CadetFlight, CadetQualification, CadetTheoryLesson, CadetTheoryProgress
 
     today = now.date()
     for c in cadets:
@@ -249,18 +249,27 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
         # for the cadets still working through them.
         # A third of those still working through them have had their next lesson
         # but not sat its exam, so the classification day planner has exams to give.
+        # Another third are part-way through a subject's lessons, some checked in
+        # by QR, so the Classifications page shows lessons 1 and 2 of 3.
         taught_next = rng.random() < 0.33
+        partway = not taught_next and rng.random() < 0.5
         for lesson in THEORY_LESSONS:
             working, done = {LEADING: ((1,), 2), SENIOR_MASTER: ((2, 3), 4)}.get(lesson.category, ((), 99))
             if reached >= done or (reached in working and rng.random() < 0.5):
                 db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
                                            completed_at=now - timedelta(days=rng.randint(5, 300)),
                                            recorded_by="Volunteer Portal"))
-            elif reached in working and taught_next:
-                taught_next = False
-                db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
-                                           completed_at=now - timedelta(days=rng.randint(5, 30)),
-                                           recorded_by="staff@example.com"))
+            elif reached in working and (taught_next or partway):
+                had = lesson.parts if taught_next else rng.randint(1, lesson.parts - 1)
+                by = "staff@example.com" if taught_next else rng.choice(["staff@example.com", "QR check-in"])
+                for part in range(1, had + 1):
+                    db.add(CadetTheoryLesson(cadet_id=c.cin, lesson_key=lesson.key, part=part,
+                                             attended_at=now - timedelta(days=7 * (had - part + 1)),
+                                             recorded_by=by))
+                if taught_next:
+                    db.add(CadetTheoryProgress(cadet_id=c.cin, lesson_key=lesson.key,
+                                               completed_at=now - timedelta(days=7), recorded_by=by))
+                taught_next = partway = False
 
 
 def seed_stores(client, headers: dict) -> None:

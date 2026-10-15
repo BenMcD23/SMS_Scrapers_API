@@ -125,6 +125,29 @@ def test_the_portal_data_gives_every_progress_card_something_to_show(api, db):
     assert body["flown_last_year"] > 0
 
 
+def test_the_classifications_page_has_lessons_part_done_and_taught_subjects_whole(api, db):
+    # A taught subject has every lesson, as the real recording keeps it; some
+    # cadets are part-way so the page shows "2 of 3", some by QR check-in.
+    from core.theory_lessons import THEORY_LESSON_BY_KEY
+    from core.theory_progress import PORTAL, QR_CHECK_IN
+    from database.models import CadetTheoryLesson
+
+    seed(db, now=NOW)
+    had = {}
+    for row in db.query(CadetTheoryLesson):
+        had.setdefault((row.cadet_id, row.lesson_key), set()).add(row.part)
+    taught = {(r.cadet_id, r.lesson_key) for r in db.query(CadetTheoryProgress) if r.recorded_by != PORTAL}
+    for key, parts in had.items():
+        whole = parts == set(range(1, THEORY_LESSON_BY_KEY[key[1]].parts + 1))
+        assert whole == (key in taught), key
+    assert taught <= set(had)
+    assert any(len(parts) < 3 for parts in had.values())
+    assert db.query(CadetTheoryLesson).filter_by(recorded_by=QR_CHECK_IN).count() > 0
+
+    rows = api.get("/cadets/theory/progress", headers=api.as_("staff")).json()
+    assert any(s["lessons"] and not s["taught"] for r in rows for s in r["subjects"].values())
+
+
 def test_the_leaving_process_has_lapsed_cadets_and_parent_emails_to_show(db):
     seed(db, now=NOW)
     from core.leaving import gap_days, is_lapsed

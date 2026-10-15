@@ -6,8 +6,9 @@ Kept free of the database so the rules can be tested on their own; the router
 
 Two sources decide where a cadet is:
 
-* **Lessons taught** — theory marks staff recorded on the Theory Progress page
-  (``Cadet_Theory_Progress`` rows *not* written by the portal sync).
+* **Lessons taught** — subjects whose lessons are all in, from staff on the
+  Classifications page or cadets' QR check-ins (``Cadet_Theory_Progress`` rows
+  *not* written by the portal sync; see core/theory_progress.py).
 * **Exams passed** — the Volunteer Portal exam results, plus everything below
   the classification they already hold (a Leading Cadet has passed all three
   Leading exams whether or not the portal sync has seen them).
@@ -71,12 +72,15 @@ def plan_cadet(
     taught,
     portal_passed,
     offered: list[str] | None = None,
+    started=(),
 ) -> dict:
     """The cadet's assignment for the day.
 
-    ``taught`` is the lesson keys staff have marked as taught, ``portal_passed``
+    ``taught`` is the subjects whose lessons are all done, ``portal_passed``
     the subjects the portal shows as passed, ``offered`` the lessons running
-    today (None = any). Returns {kind, lesson_key, ready_exams, awaiting}, where
+    today (None = any) and ``started`` the subjects they've had some but not
+    all of the lessons of. A subject already started comes before a new one, so
+    a cadet finishes what they began. Returns {kind, lesson_key, ready_exams, awaiting}, where
     ``awaiting`` names a classification whose subjects are all passed but which
     the cadet doesn't hold yet — worth chasing on the portal.
     """
@@ -103,6 +107,8 @@ def plan_cadet(
         subjects = ()
 
     todo = [s.key for s in subjects if s.key not in passed and s.key not in taught]
+    started = set(started)
+    todo.sort(key=lambda k: k not in started)  # stable: syllabus order within each
 
     if ready:
         kind, key = EXAM, ready[0]

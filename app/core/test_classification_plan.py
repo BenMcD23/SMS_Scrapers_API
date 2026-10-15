@@ -77,6 +77,23 @@ def test_every_senior_subject_passed_awaits_master():
     assert (p["kind"], p["awaiting"]) == (plan.COMPLETE, "Master Air Cadet")
 
 
+def test_a_subject_already_started_comes_before_a_new_one():
+    # Two of Airmanship's three lessons in: finish it before starting Basic Nav.
+    p = plan.plan_cadet("First Class Cadet", taught=set(), portal_passed=set(), started={AIRMANSHIP})
+    assert (p["kind"], p["lesson_key"]) == (plan.LESSON, AIRMANSHIP)
+
+
+def test_a_started_subject_not_running_tonight_gives_way_to_one_that_is():
+    p = plan.plan_cadet("First Class Cadet", taught=set(), portal_passed=set(), offered=[POF],
+                        started={AIRMANSHIP})
+    assert (p["kind"], p["lesson_key"]) == (plan.LESSON, POF)
+
+
+def test_a_started_subject_already_passed_is_not_picked_again():
+    p = plan.plan_cadet("First Class Cadet", taught=set(), portal_passed={AIRMANSHIP}, started={AIRMANSHIP})
+    assert (p["kind"], p["lesson_key"]) == (plan.LESSON, NAV)
+
+
 def test_only_offered_lessons_are_assigned():
     p = plan.plan_cadet("Leading Cadet", taught=set(), portal_passed=set(), offered=[JEP])
     assert (p["kind"], p["lesson_key"]) == (plan.LESSON, JEP)

@@ -15,12 +15,11 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from core import classification_plan as plan
-from core import portal_data
 from core.db import get_db
 from core.security import require_staff
 from core.theory_lessons import THEORY_LESSON_BY_KEY
-from database.models import Cadet, CadetAbsence, CadetAttendance, CadetPortalData, CadetTheoryProgress
-from routers.volunteer_portal import PORTAL
+from core.theory_progress import lessons_had, taught_and_passed
+from database.models import Cadet, CadetAbsence, CadetAttendance
 
 router = APIRouter()
 
@@ -56,19 +55,8 @@ def classification_day(
 
     cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
 
-    # Staff marks are lessons taught; the sync's marks are exams it saw passed.
-    taught: dict[int, set[str]] = defaultdict(set)
-    passed: dict[int, set[str]] = defaultdict(set)
-    for cin, key, by in db.query(
-        CadetTheoryProgress.cadet_id, CadetTheoryProgress.lesson_key, CadetTheoryProgress.recorded_by
-    ):
-        (passed if by == PORTAL else taught)[cin].add(key)
-    # The raw exam results too: when staff had already marked a lesson, the sync
-    # keeps their row and writes none of its own, so the pass only shows here.
-    for cin, raw in db.query(CadetPortalData.cadet_id, CadetPortalData.data).filter(
-        CadetPortalData.dataset == "exams"
-    ):
-        passed[cin] |= set(portal_data.completed_theory(raw))
+    taught, passed = taught_and_passed(db)
+    had = lessons_had(db)
 
     since = datetime.combine(date - plan.LOOKBACK, datetime.min.time())
     register: dict[int, list] = defaultdict(list)
@@ -86,8 +74,14 @@ def classification_day(
 
     rows = []
     for c in cadets:
-        assignment = plan.plan_cadet(c.classification, taught[c.cin], passed[c.cin], offered)
+        mine = had.get(c.cin, {})
+        assignment = plan.plan_cadet(c.classification, taught[c.cin], passed[c.cin], offered, started=mine)
         key = assignment["lesson_key"]
+        subject = THEORY_LESSON_BY_KEY[key] if key else None
+        # Which of the subject's lessons they're on: the first one they haven't had.
+        part = None
+        if subject and assignment["kind"] != plan.EXAM:
+            part = next((p for p in range(1, subject.parts + 1) if p not in mine.get(key, ())), None)
         rows.append({
             "cin": c.cin,
             "first_name": c.first_name,
@@ -96,7 +90,9 @@ def classification_day(
             "flight": c.flight,
             "classification": c.classification,
             **assignment,
-            "lesson_name": THEORY_LESSON_BY_KEY[key].name if key else None,
+            "lesson_name": subject.name if subject else None,
+            "lesson_part": part,
+            "lesson_parts": subject.parts if subject else None,
             "attendance": plan.attendance_outlook(register[c.cin], date, c.cin in absent),
         })
     return {"date": date.isoformat(), "weekday": date.strftime("%A"), "cadets": rows}
