@@ -25,6 +25,7 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     CadetQualification,
+    CadetTheoryLesson,
     CadetTheoryProgress,
     FlyingPaperwork,
     StoresItemIssuance,
@@ -73,7 +74,7 @@ def remove_departed_cadets(db_session, scraped_cins):
     for model in (
         StoresOrder, BadgeOrder, StoresItemIssuance, AssessmentSheet,
         CadetQualification, CadetEvent, CadetMedical, CadetDietary,
-        CadetTheoryProgress, CadetAbsence, BanNotification, FlyingPaperwork,
+        CadetTheoryProgress, CadetTheoryLesson, CadetAbsence, BanNotification, FlyingPaperwork,
     ):
         db_session.query(model).filter(model.cadet_id.in_(departed)).delete(synchronize_session=False)
 

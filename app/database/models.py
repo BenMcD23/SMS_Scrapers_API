@@ -50,6 +50,7 @@ class Cadet(Base):
     medical           = relationship("CadetMedical",       back_populates="cadet", cascade="all, delete-orphan")
     dietary           = relationship("CadetDietary",       back_populates="cadet", cascade="all, delete-orphan")
     theory_progress   = relationship("CadetTheoryProgress", back_populates="cadet", cascade="all, delete-orphan")
+    theory_lessons    = relationship("CadetTheoryLesson", back_populates="cadet", cascade="all, delete-orphan")
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
@@ -159,6 +160,47 @@ class CadetTheoryProgress(Base):
 
     __table_args__ = (
         UniqueConstraint("cadet_id", "lesson_key", name="uq_theory_cadet_lesson"),
+    )
+
+
+class CadetTheoryLesson(Base):
+    """One lesson of a subject that a cadet has had. ``part`` is 1 to the
+    subject's ``parts`` in ``core.theory_lessons``.
+
+    Once every part is in, ``core.theory_progress`` writes the subject's
+    ``CadetTheoryProgress`` row, so everything that reads "subject taught" (the
+    classification day planner, stats) keeps reading that one table.
+    ``recorded_by`` is the staff member's email, or ``QR check-in`` when the
+    cadet scanned the lesson's code."""
+    __tablename__ = "Cadet_Theory_Lessons"
+
+    id          = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id    = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    lesson_key  = Column(Text,       nullable=False)
+    part        = Column(Integer,    nullable=False)
+    attended_at = Column(DateTime,   nullable=False)
+    recorded_by = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="theory_lessons")
+
+    __table_args__ = (
+        UniqueConstraint("cadet_id", "lesson_key", "part", name="uq_theory_lesson_cadet_part"),
+    )
+
+
+class TheoryLessonCode(Base):
+    """The code in a lesson's check-in QR. It is random so a cadet can't type in
+    the URL for a lesson they weren't at, and it never changes once made so the
+    QR can stay on the lesson's slides for good."""
+    __tablename__ = "Theory_Lesson_Codes"
+
+    code       = Column(Text,     primary_key=True)
+    lesson_key = Column(Text,     nullable=False)
+    part       = Column(Integer,  nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("lesson_key", "part", name="uq_theory_code_lesson_part"),
     )
 
 

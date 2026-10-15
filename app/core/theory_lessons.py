@@ -8,8 +8,9 @@ their scraped Bader qualifications).
 
 This is the single source of truth consumed by:
 
-* the **record** view — mark cadets as having completed a lesson's theory, and
-* the **progress** view — filter cadets by any set of lessons.
+* the **Classifications** page — record which of a subject's lessons each cadet
+  has had, see everyone's progress, and print the check-in QR codes, and
+* the **classification day** planner (core/classification_plan.py).
 
 Lessons are grouped by ``category`` so the frontend can lay them out under the
 right heading (badge theory, then the classification exams under Leading and
@@ -36,6 +37,9 @@ class TheoryLesson(NamedTuple):
     #   ("badge", badge_key)          — held if held_level(badge) is not None
     #   ("classification", min_name)  — held if classification >= min_name
     qual: tuple[str, str]
+    # How many lessons the subject is taught over. Each has its own check-in QR
+    # code; the subject counts as taught once every one is attended.
+    parts: int = 1
 
 
 # ─── The catalog ──────────────────────────────────────────────────────────────
@@ -43,6 +47,9 @@ class TheoryLesson(NamedTuple):
 
 LEADING_CADET = "Leading Cadet"
 SENIOR_CADET = "Senior Cadet"
+
+# Every classification subject is taught over three lessons; badge theory is one.
+CLASSIFICATION_PARTS = 3
 
 THEORY_LESSONS: tuple[TheoryLesson, ...] = (
     # Badge theory
@@ -55,22 +62,22 @@ THEORY_LESSONS: tuple[TheoryLesson, ...] = (
     # the sync can tick them (core/portal_data.EXAM_LESSON_KEYWORDS). The acp_*
     # keys are kept from the older ACP-numbered list so existing rows still match.
     # Leading Cadet
-    TheoryLesson("acp_32_2", "Basic Navigation using Map and Compass", LEADING, ("classification", LEADING_CADET)),
-    TheoryLesson("acp_33_2", "Principles of Flight",                   LEADING, ("classification", LEADING_CADET)),
-    TheoryLesson("acp_34_2", "Airmanship",                             LEADING, ("classification", LEADING_CADET)),
+    TheoryLesson("acp_32_2", "Basic Navigation using Map and Compass", LEADING, ("classification", LEADING_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_33_2", "Principles of Flight",                   LEADING, ("classification", LEADING_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_34_2", "Airmanship",                             LEADING, ("classification", LEADING_CADET), CLASSIFICATION_PARTS),
 
     # Senior / Master Cadet
-    TheoryLesson("acp_32_3",              "Air Navigation",                          SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("air_power",             "Air Power",                               SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_34_3",              "Aircraft Handling and Flying Techniques", SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_33_4",              "Airframes",                               SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("jet_engine_propulsion", "Jet Engine Propulsion",                   SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("military_aircraft",     "Military Aircraft",                       SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_33_3",              "Piston Engine Propulsion",                SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_32_4",              "Principles of Pilot Navigation",          SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_35_3",              "Radio and Radar",                         SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("rocketry",              "Rocketry",                                SENIOR_MASTER, ("classification", SENIOR_CADET)),
-    TheoryLesson("acp_35_4",              "Satellites",                              SENIOR_MASTER, ("classification", SENIOR_CADET)),
+    TheoryLesson("acp_32_3",              "Air Navigation",                          SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("air_power",             "Air Power",                               SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_34_3",              "Aircraft Handling and Flying Techniques", SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_33_4",              "Airframes",                               SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("jet_engine_propulsion", "Jet Engine Propulsion",                   SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("military_aircraft",     "Military Aircraft",                       SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_33_3",              "Piston Engine Propulsion",                SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_32_4",              "Principles of Pilot Navigation",          SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_35_3",              "Radio and Radar",                         SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("rocketry",              "Rocketry",                                SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
+    TheoryLesson("acp_35_4",              "Satellites",                              SENIOR_MASTER, ("classification", SENIOR_CADET), CLASSIFICATION_PARTS),
 )
 
 

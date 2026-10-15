@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, selectinload
 from core import portal_data
 from core.db import get_db
 from core.security import require_staff
+from core.theory_progress import PORTAL
 from database.models import Cadet, CadetFlight, CadetPortalData, CadetTheoryProgress, ScraperRun
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,6 @@ def _write_dates(cadet: Cadet, stored: dict) -> None:
         cadet.classification_dates = dates
 
 
-PORTAL = "Volunteer Portal"
 
 
 def _write_theory(db: Session, cin: int, raw_exams) -> int:

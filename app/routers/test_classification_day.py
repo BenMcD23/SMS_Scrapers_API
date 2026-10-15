@@ -6,7 +6,14 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from database.models import Cadet, CadetAbsence, CadetAttendance, CadetPortalData, CadetTheoryProgress
+from database.models import (
+    Cadet,
+    CadetAbsence,
+    CadetAttendance,
+    CadetPortalData,
+    CadetTheoryLesson,
+    CadetTheoryProgress,
+)
 
 WED = datetime(2026, 10, 14)
 NAV, POF, JEP = "acp_32_2", "acp_33_2", "jet_engine_propulsion"
@@ -162,3 +169,24 @@ def test_the_wednesday_skipper_is_not_flagged_on_a_friday(api, squadron):
 
 def test_cadets_with_no_register_are_flagged_as_no_history(api, squadron):
     assert [f["code"] for f in _by_cin(_plan(api))[1]["attendance"]["flags"]] == ["no_history"]
+
+
+# ── lessons ───────────────────────────────────────────────────────────────────
+
+def test_a_cadet_part_way_through_a_subject_is_on_its_next_lesson(api, db, squadron):
+    # Lessons 1 and 3 of Airmanship had (one missed): they go back for lesson 2,
+    # ahead of Basic Navigation, which comes first in the syllabus.
+    db.add(Cadet(cin=6, first_name="Half", last_name="Way", classification="First Class Cadet"))
+    for part in (1, 3):
+        db.add(CadetTheoryLesson(cadet_id=6, lesson_key="acp_34_2", part=part, attended_at=WED, recorded_by="x"))
+    db.commit()
+    half = _by_cin(_plan(api))[6]
+    assert (half["kind"], half["lesson_key"], half["lesson_part"], half["lesson_parts"]) == (
+        "lesson", "acp_34_2", 2, 3)
+
+
+def test_a_new_subject_starts_on_lesson_one_and_an_exam_has_no_lesson(api, squadron):
+    cadets = _by_cin(_plan(api))
+    assert (cadets[2]["lesson_key"], cadets[2]["lesson_part"], cadets[2]["lesson_parts"]) == (POF, 1, 3)
+    assert cadets[1]["kind"] == "exam" and cadets[1]["lesson_part"] is None
+    assert cadets[4]["lesson_part"] is None and cadets[4]["lesson_parts"] is None

@@ -1,4 +1,4 @@
-"""Cadet records: search, roster, detail, audits, theory progress and edits."""
+"""Cadet records: search, roster, detail, audits and edits."""
 
 from datetime import datetime, timedelta
 
@@ -13,7 +13,6 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     CadetQualification,
-    CadetTheoryProgress,
     User,
 )
 
@@ -38,7 +37,6 @@ def roster(db):
     ("/cadets", {"staff", "snco"}),
     ("/cadets/audit/badge-types", {"staff"}),
     ("/cadets/audit/medical", {"staff"}),
-    ("/cadets/theory/lessons", {"staff"}),
     ("/cadets/1", {"staff"}),
     ("/cadets/1/attendance", {"staff"}),
 ])
@@ -51,7 +49,6 @@ def test_read_access_by_role(api, roster, path, allowed):
 
 @pytest.mark.parametrize("path", [
     "/cadets/audit/check", "/cadets/audit/event-check", "/cadets/audit/export",
-    "/cadets/theory/mark", "/cadets/theory/check",
 ])
 @pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
 def test_write_and_audit_posts_are_staff_only(api, path, persona):
@@ -280,65 +277,6 @@ def test_audit_export_with_awkward_filename(api):
     assert header.startswith('attachment; filename="Audit quoted')
     # The real name survives for browsers via RFC 5987.
     assert "filename*=UTF-8''Audit%20quoted%20%E2%80%93%20%C3%BC" in header
-
-
-# ── theory ────────────────────────────────────────────────────────────────────
-
-def test_theory_lessons_catalogue(api):
-    lessons = api.get("/cadets/theory/lessons", headers=STAFF).json()
-    assert lessons[0] == {"key": "blue_radio", "name": "Blue Radio", "category": "Badges"}
-
-
-@pytest.mark.parametrize("body", [
-    {},
-    {"cadet_cins": [1]},
-    {"lesson_keys": ["blue_radio"]},
-    {"cadet_cins": [1], "lesson_keys": ["nonsense"]},
-])
-def test_theory_mark_needs_a_cadet_and_a_known_lesson(api, roster, body):
-    assert api.post("/cadets/theory/mark", json=body, headers=STAFF).status_code == 400
-
-
-def test_theory_mark_unknown_cadets_is_400(api, roster):
-    res = api.post("/cadets/theory/mark", json={"cadet_cins": [99], "lesson_keys": ["blue_radio"]}, headers=STAFF)
-    assert res.status_code == 400 and "No matching cadets" in res.json()["detail"]
-
-
-def test_theory_mark_is_idempotent_and_clear_removes(api, db, roster):
-    body = {"cadet_cins": [1, 2, 99], "lesson_keys": ["blue_radio", "acp_32_2", "junk"]}
-    res = api.post("/cadets/theory/mark", json=body, headers=STAFF).json()
-    assert res == {"status": "success", "action": "marked", "changed": 4}
-    assert api.post("/cadets/theory/mark", json=body, headers=STAFF).json()["changed"] == 0
-    row = db.query(CadetTheoryProgress).first()
-    assert row.recorded_by == "staff@317atc.co.uk"
-
-    cleared = api.post("/cadets/theory/mark", json={**body, "cadet_cins": [1], "completed": False},
-                       headers=STAFF).json()
-    assert cleared == {"status": "success", "action": "cleared", "changed": 2}
-    assert db.query(CadetTheoryProgress).count() == 2
-
-
-def test_theory_check_puts_cadets_needing_an_assessment_first(api, db, roster):
-    # Amy is a Leading Cadet already (qualification held); Bob has done the
-    # theory but not the classification — Bob needs booking, so Bob comes first.
-    api.post("/cadets/theory/mark", json={"cadet_cins": [1, 2], "lesson_keys": ["acp_32_2"]}, headers=STAFF)
-    rows = api.post("/cadets/theory/check", json={"lesson_keys": ["acp_32_2", "blue_radio"]}, headers=STAFF).json()
-    assert [r["cin"] for r in rows] == [2, 1]
-    bob = {c["lesson_key"]: c for c in rows[0]["lessons_check"]}
-    assert bob["acp_32_2"]["has"] is True and bob["acp_32_2"]["has_qualification"] is False
-    assert bob["blue_radio"] == {**bob["blue_radio"], "has": False, "completed_at": None}
-    amy = {c["lesson_key"]: c for c in rows[1]["lessons_check"]}
-    assert amy["acp_32_2"]["has_qualification"] is True
-
-
-def test_theory_check_filters_and_empty_cases(api, roster):
-    api.post("/cadets/theory/mark", json={"cadet_cins": [1, 2], "lesson_keys": ["blue_radio"]}, headers=STAFF)
-    assert api.post("/cadets/theory/check", json={"lesson_keys": []}, headers=STAFF).json() == []
-    assert api.post("/cadets/theory/check", json={"lesson_keys": ["junk"]}, headers=STAFF).json() == []
-    assert api.post("/cadets/theory/check", json={"lesson_keys": ["acp_35_4"]}, headers=STAFF).json() == []
-    only = api.post("/cadets/theory/check", json={"lesson_keys": ["blue_radio"], "cadet_cins": [2]},
-                    headers=STAFF).json()
-    assert [r["cin"] for r in only] == [2]
 
 
 def test_the_audit_shows_blue_flying_proved_by_the_flying_record(api, db):
