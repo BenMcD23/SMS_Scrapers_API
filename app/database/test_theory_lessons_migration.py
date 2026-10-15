@@ -82,3 +82,31 @@ def test_the_migrations_copy_of_the_three_lesson_subjects_matches_the_catalogue(
     from core.theory_lessons import THEORY_LESSONS
 
     assert set(_migration().THREE_LESSON_SUBJECTS) == {s.key for s in THEORY_LESSONS if s.parts == 3}
+
+
+DROP_CODES = Path(__file__).parent / "alembic/versions/u1q2r3c4o5d6_drop_theory_lesson_codes.py"
+
+
+def _run(path, engine):
+    spec = importlib.util.spec_from_file_location("drop_codes_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with engine.begin() as conn:
+        with Operations.context(MigrationContext.configure(conn)):
+            module.upgrade()
+
+
+def test_the_codes_table_is_dropped_now_the_codes_live_in_source():
+    engine = _old_schema()
+    _upgrade(engine)
+    _run(DROP_CODES, engine)
+    with engine.connect() as conn:
+        tables = sa.inspect(conn).get_table_names()
+    assert "Theory_Lesson_Codes" not in tables
+    assert "Cadet_Theory_Lessons" in tables
+
+
+def test_dropping_it_again_or_where_it_never_existed_is_harmless():
+    engine = _old_schema()
+    _run(DROP_CODES, engine)
+    _run(DROP_CODES, engine)

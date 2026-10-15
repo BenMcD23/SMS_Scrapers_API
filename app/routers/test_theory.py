@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pytest
 
+from core.lesson_codes import LESSON_CODES
 from core.theory_progress import QR_CHECK_IN
 from database.models import (
     Cadet,
@@ -12,7 +13,6 @@ from database.models import (
     CadetQualification,
     CadetTheoryLesson,
     CadetTheoryProgress,
-    TheoryLessonCode,
 )
 
 STAFF = {"Authorization": "Bearer staff"}
@@ -45,8 +45,7 @@ def taught(db, cin, key):
 
 
 def code_for(api, key, part):
-    codes = api.get("/cadets/theory/qr-codes", headers=STAFF).json()
-    return next(c["code"] for c in codes if c["key"] == key and c["part"] == part)
+    return LESSON_CODES[(key, part)]
 
 
 # ── access ────────────────────────────────────────────────────────────────────
@@ -177,43 +176,21 @@ def test_progress_with_no_cadets_is_empty(api):
 
 # ── QR codes ──────────────────────────────────────────────────────────────────
 
-def test_every_lesson_gets_a_code_that_never_changes(api, db):
-    first = api.get("/cadets/theory/qr-codes", headers=STAFF).json()
-    nav = [c for c in first if c["key"] == NAV]
-    assert [c["part"] for c in nav] == [1, 2, 3]
-    assert len({c["code"] for c in first}) == len(first)  # every lesson its own
-    assert all(len(c["code"]) >= 8 for c in first)
-    assert api.get("/cadets/theory/qr-codes", headers=STAFF).json() == first
-    assert db.query(TheoryLessonCode).count() == len(first)
-
-
-def test_a_new_subject_gets_a_code_without_changing_the_old_ones(api, db):
-    db.add(TheoryLessonCode(code="keepme12", lesson_key=NAV, part=1, created_at=datetime(2026, 1, 1)))
-    db.commit()
+def test_every_lesson_gets_its_fixed_code(api):
     codes = api.get("/cadets/theory/qr-codes", headers=STAFF).json()
-    assert code_for(api, NAV, 1) == "keepme12"
-    assert len(codes) == db.query(TheoryLessonCode).count()
+    assert [c["part"] for c in codes if c["key"] == NAV] == [1, 2, 3]
+    assert {(c["key"], c["part"]): c["code"] for c in codes} == LESSON_CODES
 
 
-def test_two_staff_opening_the_codes_at_once_both_get_the_same_codes(db, monkeypatch):
-    # The other request commits its codes between our read and our write: ours
-    # hit the unique constraint, and we answer with theirs instead of a 500.
-    from core import theory_progress
+def test_the_codes_need_no_database(api, db):
+    # Nothing is written, so a failover or restore can't lose or change them.
+    from database.models import Base
 
-    real_commit, raced = db.commit, []
-
-    def commit_after_the_other_request():
-        if not raced:
-            raced.append(True)
-            db.rollback()
-            db.add(TheoryLessonCode(code="theirs01", lesson_key=NAV, part=1, created_at=datetime.now()))
-            real_commit()
-            db.add(TheoryLessonCode(code="ours0001", lesson_key=NAV, part=1, created_at=datetime.now()))
-        real_commit()
-
-    monkeypatch.setattr(db, "commit", commit_after_the_other_request)
-    codes = theory_progress.lesson_codes(db)
-    assert codes[(NAV, 1)] == "theirs01"
+    # Usage_Daily is the request log every endpoint writes to; nothing else may change.
+    tables = [t for t in Base.metadata.sorted_tables if t.name != "Usage_Daily"]
+    before = {t.name: db.execute(t.select()).fetchall() for t in tables}
+    api.get("/cadets/theory/qr-codes", headers=STAFF)
+    assert {t.name: db.execute(t.select()).fetchall() for t in tables} == before
 
 
 # ── cadet check-in ────────────────────────────────────────────────────────────
@@ -261,14 +238,14 @@ def test_an_unknown_code_is_a_clear_404(api, roster, db, code):
     assert db.query(CadetTheoryLesson).count() == 0
 
 
-def test_a_code_for_a_subject_no_longer_taught_is_404(api, roster, db):
-    db.add_all([
-        TheoryLessonCode(code="retired1", lesson_key="old_subject", part=1, created_at=datetime(2026, 1, 1)),
-        TheoryLessonCode(code="toohigh1", lesson_key="blue_radio", part=2, created_at=datetime(2026, 1, 1)),
-    ])
-    db.commit()
+def test_a_code_for_a_subject_no_longer_taught_is_404(api, roster, db, monkeypatch):
+    from core import lesson_codes
+
+    monkeypatch.setitem(lesson_codes.LESSON_BY_CODE, "retired1", ("old_subject", 1))
+    monkeypatch.setitem(lesson_codes.LESSON_BY_CODE, "toohigh1", ("blue_radio", 2))
     assert api.post("/cadets/me/lessons/retired1", headers=CADET).status_code == 404
     assert api.post("/cadets/me/lessons/toohigh1", headers=CADET).status_code == 404
+    assert db.query(CadetTheoryLesson).count() == 0
 
 
 def test_check_in_needs_a_token(api, roster):
