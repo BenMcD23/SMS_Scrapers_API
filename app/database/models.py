@@ -188,22 +188,6 @@ class CadetTheoryLesson(Base):
     )
 
 
-class TheoryLessonCode(Base):
-    """The code in a lesson's check-in QR. It is random so a cadet can't type in
-    the URL for a lesson they weren't at, and it never changes once made so the
-    QR can stay on the lesson's slides for good."""
-    __tablename__ = "Theory_Lesson_Codes"
-
-    code       = Column(Text,     primary_key=True)
-    lesson_key = Column(Text,     nullable=False)
-    part       = Column(Integer,  nullable=False)
-    created_at = Column(DateTime, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("lesson_key", "part", name="uq_theory_code_lesson_part"),
-    )
-
-
 class CadetAbsence(Base):
     """A booked absence scraped from Bader's unit absences page. The scraper
     full-replaces this table each run, so it only ever holds current + future

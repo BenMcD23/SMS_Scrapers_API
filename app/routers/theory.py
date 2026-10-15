@@ -16,18 +16,18 @@ from sqlalchemy.orm import Session, selectinload
 
 from core import classification_plan as plan
 from core.db import get_current_cadet, get_db
+from core.lesson_codes import LESSON_BY_CODE, LESSON_CODES
 from core.qualifications import qual_names_with_flights
 from core.security import require_staff
 from core.theory_lessons import THEORY_LESSON_BY_KEY, THEORY_LESSONS, lesson_qual_held
 from core.theory_progress import (
     QR_CHECK_IN,
     clear_lessons,
-    lesson_codes,
     lessons_had,
     record_lessons,
     taught_and_passed,
 )
-from database.models import Cadet, TheoryLessonCode
+from database.models import Cadet
 
 router = APIRouter()
 
@@ -137,12 +137,12 @@ def theory_mark(
 
 
 @router.get("/cadets/theory/qr-codes")
-def theory_qr_codes(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+def theory_qr_codes(idinfo: dict = Depends(require_staff)):
     """Every lesson's check-in code, for the QR codes staff put on slides. The
-    site turns a code into the portal URL the QR opens."""
-    codes = lesson_codes(db)
+    site turns a code into the portal URL the QR opens. The codes are fixed in
+    core/lesson_codes.py, so they're the same whatever happens to the database."""
     return [
-        {**_lesson(lesson), "part": part, "code": codes[(lesson.key, part)]}
+        {**_lesson(lesson), "part": part, "code": LESSON_CODES[(lesson.key, part)]}
         for lesson in THEORY_LESSONS
         for part in range(1, lesson.parts + 1)
     ]
@@ -158,18 +158,18 @@ def cadet_check_in(
 
     Scanning again is harmless and says so. The cadet comes from the token,
     never the request, so nobody can check someone else in."""
-    row = db.query(TheoryLessonCode).filter(TheoryLessonCode.code == code).first()
+    key, part = LESSON_BY_CODE.get(code, (None, 0))
     # A code for a subject since taken off the catalogue is as unknown as a typo.
-    lesson = THEORY_LESSON_BY_KEY.get(row.lesson_key) if row else None
-    if lesson is None or row.part > lesson.parts:
+    lesson = THEORY_LESSON_BY_KEY.get(key)
+    if lesson is None or part > lesson.parts:
         raise HTTPException(status_code=404, detail="That QR code isn't a lesson we know. Ask a member of staff.")
 
-    added = record_lessons(db, cadet.cin, lesson, {row.part}, QR_CHECK_IN, datetime.now())
+    added = record_lessons(db, cadet.cin, lesson, {part}, QR_CHECK_IN, datetime.now())
     db.commit()
     lessons = sorted(lessons_had(db, [cadet.cin]).get(cadet.cin, {}).get(lesson.key, ()))
     return {
         **_lesson(lesson),
-        "part": row.part,
+        "part": part,
         "already": added == 0,
         "lessons": lessons,
         "complete": len(lessons) >= lesson.parts,

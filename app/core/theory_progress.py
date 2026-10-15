@@ -12,16 +12,14 @@ passed, not that lessons were had; they are never written or removed here.
 
 from __future__ import annotations
 
-import secrets
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core import portal_data
-from core.theory_lessons import THEORY_LESSONS, TheoryLesson
-from database.models import CadetPortalData, CadetTheoryLesson, CadetTheoryProgress, TheoryLessonCode
+from core.theory_lessons import TheoryLesson
+from database.models import CadetPortalData, CadetTheoryLesson, CadetTheoryProgress
 
 # Who wrote a CadetTheoryProgress row: the Volunteer Portal sync (an exam
 # passed) or a cadet's QR scan. Staff marks carry the staff member's email.
@@ -105,23 +103,3 @@ def clear_lessons(db: Session, cin: int, lesson: TheoryLesson, parts) -> int:
             CadetTheoryProgress.recorded_by.is_distinct_from(PORTAL),
         ).delete(synchronize_session=False)
     return removed
-
-
-def lesson_codes(db: Session) -> dict[tuple[str, int], str]:
-    """{(lesson_key, part): code} for every lesson in the catalogue. Codes are
-    made the first time they're asked for and then never change, so a QR put on
-    slides keeps working."""
-    codes = {(c.lesson_key, c.part): c.code for c in db.query(TheoryLessonCode)}
-    missing = [(s.key, p) for s in THEORY_LESSONS for p in range(1, s.parts + 1) if (s.key, p) not in codes]
-    if not missing:
-        return codes
-    now = datetime.now()
-    for key, part in missing:
-        db.add(TheoryLessonCode(code=secrets.token_urlsafe(6), lesson_key=key, part=part, created_at=now))
-    try:
-        db.commit()
-    except IntegrityError:
-        # Two staff opened the page at once and the other request made them
-        # first. Theirs are the codes now; use those rather than fail.
-        db.rollback()
-    return {(c.lesson_key, c.part): c.code for c in db.query(TheoryLessonCode)}
