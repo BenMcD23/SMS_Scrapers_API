@@ -1,7 +1,7 @@
 """Reference data shared by the SMS site and the cadet portal.
 
 Both frontends used to ship their own copy of these lists, and they had
-already drifted ("Skirt" vs "Skirts", different "gained where" rules). This
+already drifted (item names, different "gained where" rules). This
 module is the single source of truth; the frontends fetch it from
 ``GET /reference`` (see routers/reference.py) instead of hardcoding it.
 
@@ -25,7 +25,7 @@ UNIFORM_ITEM_TYPES: tuple[str, ...] = (
     "Jumper",
     "Trousers",
     "Slacks",
-    "Skirts",
+    "Skirt",
     "Beret",
     "Tie",
     "Brassard",
@@ -88,7 +88,7 @@ UNIFORM_SIZES: dict[str, tuple[str, ...]] = {
     "Jumper": ("74", "82", "88", "94", "100", "106", "112", "118", "124", "130", "136"),
     "Trousers": _TROUSERS,
     "Slacks": _SLACKS,
-    "Skirts": _SKIRTS,
+    "Skirt": _SKIRTS,
     "Tie": TIE_VARIANTS,
 }
 
@@ -101,7 +101,7 @@ SIZING_FIELDS: dict[str, tuple[str, ...]] = {
     "Jumper": ("chest",),
     "Trousers": ("waist", "leg", "seat"),
     "Slacks": ("waist", "leg", "hips"),
-    "Skirts": ("waist", "leg", "hips"),
+    "Skirt": ("waist", "leg", "hips"),
 }
 
 # C Flight initial kitting: both gendered variants are added and the QM
@@ -109,7 +109,7 @@ SIZING_FIELDS: dict[str, tuple[str, ...]] = {
 KIT_FLIGHT_ITEMS: tuple[str, ...] = (
     "Beret", "Brassard", "Jumper", "Tie", "Belt",
     "Wedgewood Male", "Wedgewood Female", "Working Blue Male", "Working Blue Female",
-    "Trousers", "Slacks", "Skirts",
+    "Trousers", "Slacks", "Skirt",
 )
 
 # ── Badges ────────────────────────────────────────────────────────────────────

@@ -327,7 +327,7 @@ def seed_stores_history(client, headers: dict, db, now: datetime | None = None) 
     # Shirts and berets wear out or are outgrown far more than belts.
     weights = {"Beret": 5, "Jumper": 4, "Wedgewood Male": 4, "Wedgewood Female": 3, "Trousers": 4,
                "Slacks": 3, "Working Blue Male": 2, "Working Blue Female": 1, "Tie": 3, "Belt": 1,
-               "Brassard": 1, "Skirts": 1}
+               "Brassard": 1, "Skirt": 1}
     types = [t for t in ref["itemTypes"] if t in weights]
     for n in range(70):
         picked = rng.sample(types, k=rng.randint(1, 3), counts=[weights[t] for t in types])
