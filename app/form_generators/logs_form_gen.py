@@ -25,7 +25,7 @@ DESCRIPTION_TEMPLATES: dict[str, str] = {
     "Jumper":              "Jumper Utility Blue Grey V-Neck (Unisex Item) Size {size}",
     "Trousers":            "Trousers Man's RAF No 2 Dress {size}",
     "Slacks":              "Trousers Woman's RAF {size}",
-    "Skirts":              "Skirt RAF No 2 Dress {size}",
+    "Skirt":              "Skirt RAF No 2 Dress {size}",
     "Tie":                 "Necktie Black (Unisex Item) {size}",  # size = Short|Standard
     "Belt":                "Belt Waist RAF (Unisex Item) Size 64-114cm",
 }
