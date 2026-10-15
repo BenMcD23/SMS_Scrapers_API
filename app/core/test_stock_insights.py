@@ -65,9 +65,9 @@ def test_a_cadet_still_waiting_from_before_the_window_still_needs_one():
 
 def test_order_suggestion_covers_the_forecast_plus_whoever_is_waiting_less_the_shelf():
     # 12 a year = 1 a month; 3 months' cover = 3, plus 2 waiting = 5, less 1 on the shelf.
-    demand = [ask(given=True)] * 10 + [ask(waiting=True)] * 2
-    result = insights(demand, [StockRow("Beret", "56", 1)])
-    row = line(result, "Beret", "56")
+    demand = [ask("Jumper", "94", given=True)] * 10 + [ask("Jumper", "94", waiting=True)] * 2
+    result = insights(demand, [StockRow("Jumper", "94", 1)])
+    row = line(result, "Jumper", "94")
     assert row["monthlyRate"] == 1.0 and row["toOrder"] == 4 and row["status"] == "short"
     assert result["summary"]["unitsToOrder"] == 4 and result["summary"]["linesToOrder"] == 1
 
@@ -146,7 +146,7 @@ def test_one_size_items_are_a_single_line_whatever_size_was_typed():
 
 
 def test_order_list_puts_cadets_already_waiting_first():
-    demand = [ask(waiting=True)] + [ask("Jumper", "94", given=True)] * 36
+    demand = [ask("Jumper", "100", waiting=True)] + [ask("Jumper", "94", given=True)] * 36
     result = insights(demand, [StockRow("Jumper", "94", 1)])
     assert [r["status"] for r in result["toOrder"]] == ["short", "low"]
 
@@ -162,3 +162,16 @@ def test_demand_size_rule():
     assert demand_size("Beret", "56", True) is None
     assert demand_size("Beret", "", False) is None
     assert demand_size("Béret spécial", "M", False) == "M"
+
+
+def test_berets_belts_brassards_and_ties_are_left_off_the_order_list():
+    # Short of all four, with cadets waiting, and still not on the list.
+    demand = [ask("Beret", "56", waiting=True), ask("Belt", "", waiting=True),
+              ask("Brassard", "", waiting=True), ask("Tie", "", waiting=True),
+              ask("Jumper", "94", waiting=True)]
+    result = insights(demand, [])
+    assert [r["itemType"] for r in result["toOrder"]] == ["Jumper"]
+    assert result["summary"]["unitsToOrder"] == 1 and result["summary"]["linesToOrder"] == 1
+    assert result["notOnOrderList"] == ["Beret", "Belt", "Brassard", "Tie"]
+    # ...but their demand and status still show on the sizes view.
+    assert line(result, "Beret", "56")["status"] == "short"

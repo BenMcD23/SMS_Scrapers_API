@@ -882,6 +882,8 @@ def test_insights_sets_demand_against_the_shelf(api, db):
     beret = _line(result, "Beret", "56")
     assert (beret["requested"], beret["waiting"], beret["inStock"]) == (3, 3, 2)
     assert beret["status"] == "short" and beret["toOrder"] == 2
+    # Berets are kept topped up by eye, so they never reach the order list.
+    assert result["toOrder"] == []
     jumper = next(i for i in result["items"] if i["itemType"] == "Jumper")
     assert jumper["awaitingSizing"] == 1 and jumper["inStock"] == 4
     assert [(r["itemType"], r["size"]) for r in result["unused"]] == [("Jumper", "94")]

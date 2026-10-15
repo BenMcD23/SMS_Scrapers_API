@@ -82,6 +82,10 @@ def _status(requested: int, waiting: int, in_stock: int, to_order: int) -> str:
     return "ok"
 
 
+# Left off the order list: the QM keeps these topped up without needing a
+# forecast. They still show on the sizes and unused lists.
+NOT_ON_ORDER_LIST: tuple[str, ...] = ("Beret", "Belt", "Brassard", "Tie")
+
 STATUS_RANK = {"short": 0, "out": 1, "low": 2, "rare": 3, "ok": 4, "unused": 5}
 
 
@@ -172,7 +176,7 @@ def build_insights(
         totals["topSize"] = max(asked, key=lambda r: r["requested"])["size"] if asked else None
 
     to_order = sorted(
-        (r for r in lines if r["toOrder"] > 0),
+        (r for r in lines if r["toOrder"] > 0 and r["itemType"] not in NOT_ON_ORDER_LIST),
         key=lambda r: (STATUS_RANK[r["status"]], -r["toOrder"], r["itemType"],
                        _size_order(r["itemType"], r["size"])),
     )
@@ -185,6 +189,7 @@ def build_insights(
         "since": since.isoformat(),
         "months": months,
         "coverMonths": cover_months,
+        "notOnOrderList": list(NOT_ON_ORDER_LIST),
         "summary": {
             "requested": sum(t["requested"] for t in items.values()),
             "given": sum(t["given"] for t in items.values()),
