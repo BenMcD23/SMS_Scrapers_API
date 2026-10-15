@@ -314,6 +314,43 @@ def seed_stores(client, headers: dict) -> None:
         post(f"/stores/issuances/{cin}", {"givenBy": "Dev Owner", "items": given})
 
 
+def seed_stores_history(client, headers: dict, db, now: datetime | None = None) -> None:
+    """A year and a bit of handed-out uniform, so the stores insights page has
+    demand to rank. Orders go through the real endpoint; only their dates and
+    "given" stamps are then written directly, because the API always stamps now.
+    Sizes cluster around the middle of each range, as real cadets' do."""
+    from database.models import StoresOrder
+
+    now = now or datetime.now()
+    rng = random.Random(317)
+    ref = client.get("/reference", headers=headers).json()["uniform"]
+    # Shirts and berets wear out or are outgrown far more than belts.
+    weights = {"Beret": 5, "Jumper": 4, "Wedgewood Male": 4, "Wedgewood Female": 3, "Trousers": 4,
+               "Slacks": 3, "Working Blue Male": 2, "Working Blue Female": 1, "Tie": 3, "Belt": 1,
+               "Brassard": 1, "Skirts": 1}
+    types = [t for t in ref["itemTypes"] if t in weights]
+    for n in range(70):
+        picked = rng.sample(types, k=rng.randint(1, 3), counts=[weights[t] for t in types])
+        items = []
+        for item in dict.fromkeys(picked):
+            sizes = ref["sizes"].get(item) or [""]
+            centre = len(sizes) / 2
+            idx = min(len(sizes) - 1, max(0, int(rng.triangular(0, len(sizes), centre))))
+            items.append({"itemType": item, "size": "" if item in ref["noSizeItems"] else sizes[idx]})
+        res = client.post("/stores/orders", json={"cadetCin": FIRST_CIN + n % 50, "items": items},
+                          headers=headers)
+        assert res.status_code == 201, res.text
+        order = db.get(StoresOrder, int(res.json()["id"]))
+        order.created_at = now - timedelta(days=rng.randint(20, 450))
+        order.completed = True
+        for oi in order.order_items:
+            oi.given_at = order.created_at + timedelta(days=rng.randint(0, 21))
+            oi.given_by = "Dev Owner"
+        # Commit per order: the next API call writes through its own
+        # connection, and SQLite won't let it while this one holds the lock.
+        db.commit()
+
+
 INSPECTION_NIGHTS = 8
 # Each flight gets a pattern for the inspection audit to find: B's shoes are a
 # persistent fault that gets worse, A's berets get better, C's hair is spread
@@ -401,6 +438,8 @@ def main() -> None:
     if fresh:
         client, headers = TestClient(app), {"Authorization": "Bearer dev-fake-token"}
         seed_stores(client, headers)
+        with SessionLocal() as db:
+            seed_stores_history(client, headers, db)
         seed_inspections(client, headers)
         print(f"seeded {db_path}")
     else:
