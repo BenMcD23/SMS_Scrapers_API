@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import stock_events, stock_insights
+from core import given_events, stock_events, stock_insights
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
@@ -127,6 +127,7 @@ def order_to_dict(order: StoresOrder) -> dict:
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
                 "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
+                "givenEvents":    given_events.public_events(getattr(oi, "given_events", None)),
                 "lastIssued":     _last_issued(issued.get(ISSUANCE_ITEM_TYPE_MAP.get(oi.item_type, oi.item_type))),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
@@ -894,6 +895,71 @@ def stores_order_item_stock(
     return {"order": order_to_dict(order), "stockItem": _item_to_dict(stock_item)}
 
 
+def _restore_issuance(db: Session, order: StoresOrder, event: dict) -> None:
+    """Put the cadet's "last issued" record back to what it was before `event` gave the item.
+
+    Only when the record still shows what that give wrote: if a later give (of
+    another item in the same category) has moved it on, it is left alone —
+    undoing the older give must not overwrite the newer one.
+    """
+    category = event.get("category")
+    if not category:
+        return
+    query = db.query(StoresItemIssuance).filter(StoresItemIssuance.item_category == category)
+    query = (query.filter(StoresItemIssuance.cadet_id == order.cadet_id) if order.cadet_id is not None
+             else query.filter(StoresItemIssuance.user_id == order.user_id))
+    row = query.first()
+    if not row or row.last_given.isoformat() != event.get("lastGiven") or row.size_given != event.get("sizeGiven"):
+        return
+    previous = event.get("previous")
+    if previous is None:
+        db.delete(row)
+    else:
+        row.last_given = datetime.fromisoformat(previous["lastGiven"])
+        row.size_given = previous.get("sizeGiven")
+
+
+@router.post("/stores/orders/{order_id}/items/{item_id}/undo-given", status_code=200)
+def stores_undo_given(
+    order_id: int,
+    item_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back a mark-as-given. The item goes back to waiting, the cadet's
+    "last issued" record is restored, and both the give and the undo stay in
+    the item's history. An item given before the history existed is cleared the
+    same way, but the issuance record is left as it is (there is nothing to
+    restore it from)."""
+    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(StoresOrderItem).filter(
+        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if order.completed:
+        raise HTTPException(status_code=409, detail="Reopen the order before undoing an item")
+    if not item.given_at:
+        raise HTTPException(status_code=409, detail="This item hasn't been marked as given")
+
+    events = given_events.events_list(item.given_events)
+    given = given_events.last_given(events)
+    if given:
+        _restore_issuance(db, order, given)
+    by = (body or {}).get("by") or idinfo.get("email")
+    events.append(given_events.new_event(given_events.UNDONE, by))
+    item.given_events = given_events.dump(events)
+    item.given_at = None
+    item.given_by = None
+    db.commit()
+    logger.info("order %s item %s: given undone by %s", order_id, item_id, by)
+    db.refresh(order)
+    return order_to_dict(order)
+
+
 # ── Issuances ─────────────────────────────────────────────────────────────────
 
 def _upsert_issuances(db: Session, items: list[dict], given_by: str,
@@ -923,6 +989,11 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
             query = query.filter(StoresItemIssuance.user_id == user_id)
 
         existing = query.first()
+        # What the cadet's record said before this give, so an undo can restore it.
+        previous = (
+            {"lastGiven": existing.last_given.isoformat(), "sizeGiven": existing.size_given}
+            if existing else None
+        )
         if existing:
             existing.last_given = given_at
             existing.size_given = size
@@ -945,6 +1016,12 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
             if order_item:
                 order_item.given_at = given_at
                 order_item.given_by = given_by
+                events = given_events.events_list(order_item.given_events)
+                events.append(given_events.new_event(
+                    given_events.GIVEN, given_by, timestamp=given_at.isoformat(),
+                    category=category, lastGiven=given_at.isoformat(), sizeGiven=size, previous=previous,
+                ))
+                order_item.given_events = given_events.dump(events)
 
     db.commit()
     logger.info("issuances recorded: %s for %s by %s",

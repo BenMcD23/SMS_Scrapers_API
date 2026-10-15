@@ -25,6 +25,8 @@ STAFF_ONLY = [
     ("patch", "/stores/badges/orders/1"),
     ("delete", "/stores/badges/orders/1"),
     ("post", "/stores/badges/orders/1/items/1/mark-ready"),
+    ("post", "/stores/badges/orders/1/items/1/mark-given"),
+    ("post", "/stores/badges/orders/1/items/1/undo-given"),
     ("post", "/stores/badges/orders/1/items/1/stock"),
     ("get", "/stores/badges/order-lists"),
     ("post", "/stores/badges/order-lists/entries"),
@@ -475,3 +477,69 @@ def test_only_blue_flying_orders_carry_stages(api, db):
     _cadet(db)
     order = _order(api, items=[{"badgeName": "Leadership – Blue"}, {"badgeName": "Flying – Bronze"}])
     assert [i["qualStages"] for i in order["items"]] == [None, None]
+
+
+# ── marking as given, and undoing it ──────────────────────────────────────────
+
+def _given_call(api, order, item, verb, **kw):
+    return api.post(f"/stores/badges/orders/{order['id']}/items/{item['id']}/{verb}", headers=STAFF, **kw)
+
+
+def test_mark_given_stamps_the_badge_and_starts_its_history(api, db):
+    _cadet(db)
+    order = _order(api)
+    res = _given_call(api, order, order["items"][0], "mark-given", json={"by": "QM Smith"})
+    assert res.status_code == 200
+    item = res.json()["items"][0]
+    assert item["givenBy"] == "QM Smith" and item["givenAt"]
+    assert [(e["action"], e["by"]) for e in item["givenEvents"]] == [("given", "QM Smith")]
+
+
+def test_undo_then_give_again_keeps_the_whole_history(api, db):
+    _cadet(db)
+    order = _order(api)
+    badge = order["items"][0]
+    _given_call(api, order, badge, "mark-given", json={"by": "A"})
+    undone = _given_call(api, order, badge, "undo-given", json={"by": "B"}).json()["items"][0]
+    assert undone["givenAt"] is None and undone["givenBy"] is None
+
+    again = _given_call(api, order, badge, "mark-given", json={"by": "C"}).json()["items"][0]
+    assert again["givenBy"] == "C"
+    assert [(e["action"], e["by"]) for e in again["givenEvents"]] == [("given", "A"), ("undone", "B"), ("given", "C")]
+    assert set(again["givenEvents"][0]) == {"id", "action", "timestamp", "by"}
+
+
+def test_given_errors(api, db):
+    _cadet(db)
+    order = _order(api)
+    badge = order["items"][0]
+    # Not given yet: nothing to undo.
+    assert _given_call(api, order, badge, "undo-given").status_code == 409
+    assert _given_call(api, order, badge, "mark-given").status_code == 200
+    # Twice would overwrite who handed it over.
+    assert _given_call(api, order, badge, "mark-given").status_code == 409
+
+    assert api.post("/stores/badges/orders/999/items/1/mark-given", headers=STAFF).status_code == 404
+    assert api.post(f"/stores/badges/orders/{order['id']}/items/999/undo-given", headers=STAFF).status_code == 404
+
+    api.patch(f"/stores/badges/orders/{order['id']}", json={"completed": True}, headers=STAFF)
+    res = _given_call(api, order, badge, "undo-given")
+    assert res.status_code == 409 and "Reopen" in res.json()["detail"]
+
+
+def test_corrupt_given_events_on_a_badge_are_treated_as_empty(api, db):
+    _cadet(db)
+    order = _order(api)
+    badge = order["items"][0]
+    row = db.get(BadgeOrderItem, int(badge["id"]))
+    row.given_events = "garbage"
+    db.commit()
+    assert _given_call(api, order, badge, "mark-given").status_code == 200
+    assert _given_call(api, order, badge, "undo-given").status_code == 200
+
+
+def test_badge_give_event_carries_the_same_instant_as_the_stamp(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = _given_call(api, order, order["items"][0], "mark-given").json()["items"][0]
+    assert item["givenEvents"][0]["timestamp"] == item["givenAt"]

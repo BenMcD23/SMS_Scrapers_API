@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import stock_events
+from core import given_events, stock_events
 from core.db import get_db
 from core.emailer import ready_to_collect_email_html, send_email
 from core.qualifications import flying_blue_stages, order_badge_held, qual_names_with_flights
@@ -100,6 +100,7 @@ def badge_order_to_dict(order: BadgeOrder) -> dict:
                 "givenBy":        oi.given_by,
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
                 "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
+                "givenEvents":    given_events.public_events(getattr(oi, "given_events", None)),
                 "gainedWhere":       oi.gained_where,
                 "gainedWhereDetail": oi.gained_where_detail,
                 "gainedDateFrom":    oi.gained_date_from.isoformat() if oi.gained_date_from else None,
@@ -663,3 +664,65 @@ def badge_order_lists_mark_entry_received(
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)
+
+
+def _badge_item(db: Session, order_id: int, item_id: int):
+    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    item = db.query(BadgeOrderItem).filter(
+        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return order, item
+
+
+@router.post("/stores/badges/orders/{order_id}/items/{item_id}/mark-given", status_code=200)
+def badge_orders_mark_item_given(
+    order_id: int,
+    item_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Hand a badge over. Recorded in the item's history so a later undo keeps it."""
+    order, item = _badge_item(db, order_id, item_id)
+    if item.given_at:
+        raise HTTPException(status_code=409, detail="This badge has already been marked as given")
+    by = (body or {}).get("by") or idinfo.get("email")
+    now = datetime.utcnow()
+    item.given_at = now
+    item.given_by = by
+    events = given_events.events_list(item.given_events)
+    events.append(given_events.new_event(given_events.GIVEN, by, timestamp=now.isoformat()))
+    item.given_events = given_events.dump(events)
+    db.commit()
+    db.refresh(order)
+    return badge_order_to_dict(order)
+
+
+@router.post("/stores/badges/orders/{order_id}/items/{item_id}/undo-given", status_code=200)
+def badge_orders_undo_item_given(
+    order_id: int,
+    item_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back a mark-as-given. The badge goes back to waiting; the give and
+    the undo both stay in its history."""
+    order, item = _badge_item(db, order_id, item_id)
+    if order.completed:
+        raise HTTPException(status_code=409, detail="Reopen the order before undoing a badge")
+    if not item.given_at:
+        raise HTTPException(status_code=409, detail="This badge hasn't been marked as given")
+    by = (body or {}).get("by") or idinfo.get("email")
+    events = given_events.events_list(item.given_events)
+    events.append(given_events.new_event(given_events.UNDONE, by))
+    item.given_events = given_events.dump(events)
+    item.given_at = None
+    item.given_by = None
+    db.commit()
+    db.refresh(order)
+    return badge_order_to_dict(order)

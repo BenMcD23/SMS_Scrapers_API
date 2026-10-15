@@ -44,6 +44,7 @@ STAFF_ONLY = [
     ("post", "/stores/orders/kit-flight", None),
     ("delete", "/stores/orders/1", None),
     ("post", "/stores/orders/1/items/1/mark-ready", None),
+    ("post", "/stores/orders/1/items/1/undo-given", None),
     ("post", "/stores/orders/1/items/1/stock", {"action": "remove"}),
     ("get", "/stores/issuances/1", None),
     ("post", "/stores/issuances/1", {}),
@@ -937,3 +938,176 @@ def test_insights_ignores_blank_item_rows(api, db):
     db.add(StoresOrderItem(order_id=int(order["id"]), item_type="  ", size=""))
     db.commit()
     assert [i["itemType"] for i in _insights(api)["items"]] == ["Beret"]
+
+
+# ── undoing a mark-as-given ───────────────────────────────────────────────────
+
+def _issuances(db, cin=1001):
+    db.expire_all()
+    return {i.item_category: (i.last_given, i.size_given)
+            for i in db.query(StoresItemIssuance).filter(StoresItemIssuance.cadet_id == cin)}
+
+
+def _give(api, cin, item, size="55", when=None, who="QM"):
+    row = {"itemType": item["itemType"], "sizeGiven": size, "orderItemId": item["id"]}
+    if when:
+        row["lastGiven"] = when
+    res = api.post(f"/stores/issuances/{cin}", json={"givenBy": who, "items": [row]}, headers=STAFF)
+    assert res.status_code == 200, res.text
+
+
+def _undo(api, order, item, **kw):
+    return api.post(f"/stores/orders/{order['id']}/items/{item['id']}/undo-given", headers=STAFF, **kw)
+
+
+def _item_of(api, order_id, item_id):
+    order = next(o for o in api.get("/stores/orders", headers=STAFF).json() if o["id"] == order_id)
+    return next(i for i in order["items"] if i["id"] == item_id)
+
+
+def test_undo_returns_the_item_to_waiting_and_keeps_both_events_in_its_history(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item, who="QM Smith")
+    assert _item_of(api, order["id"], item["id"])["givenBy"] == "QM Smith"
+
+    res = _undo(api, order, item, json={"by": "QM Jones"})
+    assert res.status_code == 200
+    undone = next(i for i in res.json()["items"] if i["id"] == item["id"])
+    assert undone["givenAt"] is None and undone["givenBy"] is None
+    assert [(e["action"], e["by"]) for e in undone["givenEvents"]] == [("given", "QM Smith"), ("undone", "QM Jones")]
+    # Internal restore data never reaches the UI.
+    assert set(undone["givenEvents"][0]) == {"id", "action", "timestamp", "by"}
+
+
+def test_undo_restores_the_issuance_the_give_replaced(api, db):
+    _cadet(db)
+    db.add(StoresItemIssuance(cadet_id=1001, item_category="Beret", last_given=datetime(2025, 3, 1), size_given="54"))
+    db.commit()
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item, size="55", when="2026-10-01T18:00:00")
+    assert _issuances(db)["Beret"] == (datetime(2026, 10, 1, 18), "55")
+
+    assert _undo(api, order, item).status_code == 200
+    # Back to the size they were last actually given, not left on the undone one.
+    assert _issuances(db)["Beret"] == (datetime(2025, 3, 1), "54")
+
+
+def test_undo_of_a_first_ever_give_removes_the_issuance_it_created(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item)
+    assert "Beret" in _issuances(db)
+    assert _undo(api, order, item).status_code == 200
+    assert "Beret" not in _issuances(db)
+
+
+# Undoing the older give must not overwrite what a newer give wrote.
+def test_undo_leaves_the_issuance_alone_when_a_later_give_has_moved_it_on(api, db):
+    _cadet(db)
+    order = _order(api, items=[{"itemType": "Beret", "size": "55"}, {"itemType": "Beret", "size": "56"}])
+    first, second = order["items"]
+    _give(api, 1001, first, size="55", when="2026-10-01T18:00:00")
+    _give(api, 1001, second, size="56", when="2026-10-08T18:00:00")
+
+    assert _undo(api, order, first).status_code == 200
+    assert _issuances(db)["Beret"] == (datetime(2026, 10, 8, 18), "56")
+    # And the later one can still be undone back to the first give's record.
+    assert _undo(api, order, second).status_code == 200
+    assert _issuances(db)["Beret"] == (datetime(2026, 10, 1, 18), "55")
+
+
+def test_an_item_given_before_history_existed_can_still_be_undone(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    row = db.get(StoresOrderItem, int(item["id"]))
+    row.given_at, row.given_by = datetime(2025, 1, 1), "Old QM"
+    db.add(StoresItemIssuance(cadet_id=1001, item_category="Beret", last_given=datetime(2025, 1, 1), size_given="55"))
+    db.commit()
+
+    res = _undo(api, order, item)
+    assert res.status_code == 200
+    undone = res.json()["items"][0]
+    assert undone["givenAt"] is None
+    assert [e["action"] for e in undone["givenEvents"]] == ["undone"]
+    # Nothing to restore it from, so the record is left as it was.
+    assert _issuances(db)["Beret"] == (datetime(2025, 1, 1), "55")
+
+
+def test_an_item_can_be_given_again_after_an_undo_and_history_keeps_all_of_it(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item, who="A")
+    _undo(api, order, item)
+    _give(api, 1001, item, who="B")
+    final = _item_of(api, order["id"], item["id"])
+    assert final["givenBy"] == "B"
+    assert [e["action"] for e in final["givenEvents"]] == ["given", "undone", "given"]
+
+
+def test_undo_of_an_adult_staff_order_restores_their_issuance(api, db):
+    user = User(google_id="g-staff", email="staff@317atc.co.uk", first_name="Sam", last_name="Staff")
+    db.add(user)
+    db.commit()
+    # Adults order through the portal, so build the order directly.
+    row = StoresOrder(user_id=user.id, created_at=datetime.now())
+    db.add(row)
+    db.flush()
+    db.add(StoresOrderItem(order_id=row.id, item_type="Beret", size="57"))
+    db.commit()
+    order = next(o for o in api.get("/stores/orders", headers=STAFF).json() if o["userId"] == user.id)
+    item = order["items"][0]
+    res = api.post(f"/stores/issuances/user/{user.id}", headers=STAFF, json={"givenBy": "QM", "items": [
+        {"itemCategory": "Beret", "sizeGiven": "57", "orderItemId": item["id"]}]})
+    assert res.status_code == 200
+    assert db.query(StoresItemIssuance).filter(StoresItemIssuance.user_id == user.id).count() == 1
+
+    assert _undo(api, order, item).status_code == 200
+    db.expire_all()
+    assert db.query(StoresItemIssuance).filter(StoresItemIssuance.user_id == user.id).count() == 0
+
+
+def test_undo_errors(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    # Not given yet: wrong state.
+    assert _undo(api, order, item).status_code == 409
+    assert api.post("/stores/orders/999/items/1/undo-given", headers=STAFF).status_code == 404
+    assert api.post(f"/stores/orders/{order['id']}/items/999/undo-given", headers=STAFF).status_code == 404
+    # An item from some other order isn't reachable through this one.
+    other = _order(api)
+    assert api.post(f"/stores/orders/{order['id']}/items/{other['items'][0]['id']}/undo-given",
+                    headers=STAFF).status_code == 404
+
+    _give(api, 1001, item)
+    api.patch(f"/stores/orders/{order['id']}", json={"completed": True}, headers=STAFF)
+    res = _undo(api, order, item)
+    assert res.status_code == 409 and "Reopen" in res.json()["detail"]
+    assert _item_of(api, order["id"], item["id"])["givenAt"] is not None
+
+
+def test_corrupt_given_events_are_treated_as_empty(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    row = db.get(StoresOrderItem, int(item["id"]))
+    row.given_at, row.given_events = datetime(2025, 1, 1), "garbage"
+    db.commit()
+    assert _undo(api, order, item).status_code == 200
+
+
+# The history line must read the same time as the "Given …" stamp it explains.
+def test_the_give_event_carries_the_same_instant_as_the_stamp(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item, when="2026-10-01T18:00:00")
+    given = _item_of(api, order["id"], item["id"])
+    assert given["givenAt"] == "2026-10-01T18:00:00"
+    assert given["givenEvents"][0]["timestamp"] == given["givenAt"]
