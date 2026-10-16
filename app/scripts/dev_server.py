@@ -133,6 +133,8 @@ def seed(db, now: datetime | None = None) -> bool:
     cadets[0].rank, cadets[0].email = "Sgt", security._dev_fake_email("snco")
     cadets[1].rank, cadets[1].email = "Cpl", security._dev_fake_email("nco")
     cadets[7].banned = True
+    # One the scraper stopped finding on SMS, so the overview's banner shows.
+    cadets[22].missing_since = now - timedelta(days=9)
     db.add_all(cadets)
 
     # Cadets who stopped coming: no parade in the last LAPSED_WEEKS weeks, so

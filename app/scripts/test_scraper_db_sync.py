@@ -23,9 +23,8 @@ from database.models import (
     CadetMedical,
     CadetQualification,
     FlyingEvent,
-    FlyingPaperwork,
+    RemovedCadet,
     StoresOrder,
-    StoresOrderItem,
 )
 
 
@@ -153,32 +152,84 @@ def test_attendance_is_replaced_only_when_something_was_read(db, bader, monkeypa
     assert sorted(a.date.day for a in db.query(CadetAttendance).all()) == [1, 8]
 
 
-def test_departed_cadets_are_removed_with_their_records(db, bader, monkeypatch):
+def _summary(run):
+    return next(m["value"] for m in run.parsed() if "DB update complete" in str(m.get("value")))
+
+
+def test_a_cadet_not_on_sms_is_flagged_never_deleted(db, bader, monkeypatch):
     db.add_all([Cadet(cin=1001, first_name="Amy", last_name="Able"),
                 Cadet(cin=2002, first_name="Gone", last_name="Away")])
     db.add(CadetQualification(cadet_id=2002, qual_type="Radio", status="true"))
     db.add(StoresOrder(id=5, cadet_id=2002, created_at=datetime.now()))
-    db.add(StoresOrderItem(order_id=5, item_type="Beret"))
     db.commit()
-    _quali(monkeypatch, [_amy(), {"cin": None, "first_name": "No", "last_name": "Cin"},
-                         {"cin": "abc", "first_name": "Bad", "last_name": "Cin"}])
+    _quali(monkeypatch, [_amy()])
     run = Run()
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     db.expire_all()
-    assert [c.cin for c in db.query(Cadet).all()] == [1001]
-    assert db.query(CadetQualification).count() == 0 and db.query(StoresOrderItem).count() == 0
-    summary = next(m["value"] for m in run.parsed() if "DB update complete" in str(m.get("value")))
-    assert "2 skipped" in summary and "1 removed" in summary
+    gone = db.get(Cadet, 2002)
+    assert gone.missing_since is not None and db.get(Cadet, 1001).missing_since is None
+    assert db.query(CadetQualification).count() == 1 and db.query(StoresOrder).count() == 1
+    assert "1 no longer on SMS" in _summary(run)
 
 
-def test_an_empty_scrape_removes_nobody(db, bader, monkeypatch):
+def test_a_later_run_keeps_the_first_missing_date(db, bader, monkeypatch):
+    # The banner says how long they've been gone, so later misses mustn't reset it.
+    first = datetime(2026, 10, 1)
+    db.add_all([Cadet(cin=1001, first_name="Amy", last_name="Able"),
+                Cadet(cin=2002, first_name="Gone", last_name="Away", missing_since=first)])
+    db.commit()
+    _quali(monkeypatch, [_amy()])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.get(Cadet, 2002).missing_since == first
+
+
+def test_a_cadet_seen_again_is_unflagged(db, bader, monkeypatch):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able", missing_since=datetime(2026, 10, 1)))
+    db.commit()
+    _quali(monkeypatch, [_amy()])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.get(Cadet, 1001).missing_since is None
+    assert "0 no longer on SMS" in _summary(run)
+
+
+@pytest.mark.parametrize("bad_cin", [None, "", "abc"])
+def test_a_cadet_whose_cin_wasnt_read_is_not_flagged_as_gone(db, bader, monkeypatch, bad_cin):
+    # Prod 2026-10-16: Finley Kay's profile hadn't loaded when the CIN was read,
+    # so he was skipped, then deleted (with his orders) as having left.
+    db.add_all([Cadet(cin=1001, first_name="Amy", last_name="Able"),
+                Cadet(cin=3003, first_name="Finley", last_name="Kay")])
+    db.commit()
+    _quali(monkeypatch, [_amy(), {"cin": bad_cin, "first_name": "Finley", "last_name": "Kay"}])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.get(Cadet, 3003).missing_since is None
+    assert any("[SKIPPED] Finley Kay" in w for w in run.warnings())
+    assert any("Not checking for cadets who've left SMS" in w for w in run.warnings())
+    assert "1 skipped" in _summary(run) and "0 no longer on SMS" in _summary(run)
+
+
+def test_a_removed_cadet_still_on_bader_is_not_added_back(db, bader, monkeypatch):
+    db.add(RemovedCadet(cin=1001, first_name="Amy", last_name="Able", removed_at=datetime.now()))
+    db.commit()
+    _quali(monkeypatch, [_amy()])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert db.get(Cadet, 1001) is None and run.errors() == []
+
+
+def test_an_empty_scrape_flags_nobody(db, bader, monkeypatch):
     db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
     db.commit()
     _quali(monkeypatch, [])
     run = Run()
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
-    assert db.query(Cadet).count() == 1
-    assert calls.remove_departed_cadets(db, set()) == 0
+    assert db.get(Cadet, 1001).missing_since is None
+    assert calls.mark_missing_cadets(db, set()) == 0
 
 
 def test_workspace_lookup_failure_is_a_warning_not_a_failure(db, bader, monkeypatch):
@@ -404,18 +455,6 @@ def test_the_317_sync_reuses_the_pages_the_category_pass_fetched(db, bader, monk
     run = Run()
     calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
     assert seen["prefetched"] == {"link": "<html/>"}
-
-
-def test_departing_cadets_take_their_flying_paperwork_with_them(db):
-    db.add_all([Cadet(cin=1, first_name="Amy", last_name="Able"),
-                Cadet(cin=2, first_name="Bob", last_name="Baker")])
-    db.add(FlyingEvent(id=1, bader_event_id="10", title="AEF", category="RAFAC Gliding",
-                       created_at=datetime.now(), last_seen_at=datetime.now()))
-    db.add_all([FlyingPaperwork(flying_event_id=1, cadet_id=1, tg21=True),
-                FlyingPaperwork(flying_event_id=1, cadet_id=2)])
-    db.commit()
-    assert calls.remove_departed_cadets(db, {2}) == 1
-    assert [r.cadet_id for r in db.query(FlyingPaperwork).all()] == [2]
 
 
 # ── medical ───────────────────────────────────────────────────────────────────

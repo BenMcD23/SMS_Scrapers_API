@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import given_events, stock_events, stock_insights
@@ -594,6 +594,9 @@ def stores_get_orders(
             joinedload(StoresOrder.user).selectinload(User.item_issuances),
             selectinload(StoresOrder.order_items),
         )
+        # An order with neither belonged to a removed cadet; it's only kept for
+        # the insights.
+        .filter(or_(StoresOrder.cadet_id.isnot(None), StoresOrder.user_id.isnot(None)))
         .order_by(StoresOrder.created_at.desc())
         .all()
     )

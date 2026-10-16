@@ -4,15 +4,25 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from conftest import PERSONAS
+from database.database import Base
 from database.models import (
     AllEvent,
     AssessmentSheet,
+    BadgeOrder,
+    BadgeOrderItem,
     Cadet,
     CadetAttendance,
     CadetDietary,
     CadetEvent,
     CadetMedical,
     CadetQualification,
+    NcoComment,
+    NcoCommentReply,
+    RemovedCadet,
+    StoresItemIssuance,
+    StoresOrder,
+    StoresOrderItem,
     User,
 )
 
@@ -292,3 +302,89 @@ def test_the_audit_shows_blue_flying_proved_by_the_flying_record(api, db):
     [flying] = rows[0]["qualifications_check"]
     # Bader hasn't recorded the badge yet, so there's no award date to show.
     assert flying == {**flying, "has": True, "level": "blue", "date_achieved": None}
+
+
+# ── removing a cadet who has left SMS ─────────────────────────────────────────
+
+def _gone(db, **over):
+    """Cadet 9, flagged as off SMS, with one of almost everything that hangs off a cadet."""
+    db.add(Cadet(cin=9, first_name="Finley", last_name="Kay", missing_since=datetime(2026, 10, 1), **over))
+    db.add(User(id=1, google_id="g1", email="u@x"))
+    db.add(CadetQualification(cadet_id=9, qual_type="Radio", status="true"))
+    db.add(CadetMedical(cadet_id=9, allergy_name="Nuts"))
+    db.add(CadetAttendance(cadet_id=9, date=datetime(2026, 9, 1), register_type="Parade", status="P"))
+    db.add(AssessmentSheet(cadet_id=9, assessor_id=1, assessment_type="radio", fields={},
+                           created_at=datetime.now()))
+    db.add(NcoComment(author_id=1, subject="s", body="b", comment_date=datetime.now(), cadet_id=9,
+                      cadet_name="Finley Kay", created_at=datetime.now()))
+    db.flush()
+    db.add(NcoCommentReply(comment_id=db.query(NcoComment.id).scalar(), author_id=1, body="r",
+                           created_at=datetime.now()))
+    db.add(StoresOrder(id=5, cadet_id=9, created_at=datetime.now()))
+    db.add(StoresOrderItem(order_id=5, item_type="Beret", size="56"))
+    db.add(StoresItemIssuance(cadet_id=9, item_category="Beret", last_given=datetime.now()))
+    db.add(BadgeOrder(id=6, cadet_id=9, created_at=datetime.now()))
+    db.add(BadgeOrderItem(order_id=6, badge_name="Radio"))
+    db.commit()
+
+
+def test_the_list_flags_cadets_not_seen_on_sms(api, db, roster):
+    _gone(db)
+    rows = {r["cin"]: r for r in api.get("/cadets", headers=STAFF).json()}
+    assert rows[9]["missing_since"].startswith("2026-10-01") and rows[1]["missing_since"] is None
+
+
+def test_removing_a_cadet_needs_staff(api, db):
+    _gone(db)
+    assert api.delete("/cadets/9").status_code == 401
+    for persona in ("snco", "nco", "cadet"):
+        assert api.delete("/cadets/9", headers=api.as_(persona)).status_code == 403, persona
+    assert db.get(Cadet, 9) is not None
+
+
+def test_removing_an_unknown_cadet_is_404(api):
+    assert api.delete("/cadets/404", headers=STAFF).status_code == 404
+
+
+def test_a_cadet_still_on_sms_cant_be_removed(api, db, roster):
+    res = api.delete("/cadets/1", headers=STAFF)
+    assert res.status_code == 409 and "still on SMS" in res.json()["detail"]
+    assert db.get(Cadet, 1) is not None
+
+
+@pytest.mark.parametrize("persona", ["staff", "owner", "oc"])
+def test_removing_a_cadet_takes_their_records_but_keeps_order_sizes(api, db, persona):
+    _gone(db)
+    res = api.delete("/cadets/9", headers=api.as_(persona))
+    assert res.status_code == 200 and res.json()["kept_orders"] == 1
+    db.expire_all()
+    assert db.get(Cadet, 9) is None
+    for model in (CadetQualification, CadetMedical, CadetAttendance, AssessmentSheet,
+                  StoresItemIssuance, BadgeOrder, BadgeOrderItem):
+        assert db.query(model).count() == 0, model.__name__
+    # Kept for the stock insights, but off the orders list and not "waiting".
+    order = db.get(StoresOrder, 5)
+    assert (order.cadet_id, order.completed) == (None, True)
+    assert db.query(StoresOrderItem).one().size == "56"
+    assert api.get("/stores/orders", headers=STAFF).json() == []
+    [beret] = [t for t in api.get("/stores/insights", headers=STAFF).json()["items"] if t["itemType"] == "Beret"]
+    assert beret["topSize"] == "56" and beret["sizes"][0]["waiting"] == 0
+    assert db.query(NcoComment).count() == 0 and db.query(NcoCommentReply).count() == 0
+    removed = db.get(RemovedCadet, 9)
+    assert (removed.first_name, removed.removed_by) == ("Finley", PERSONAS[persona]["email"])
+
+
+def test_every_table_keyed_to_a_cadet_is_cleared_on_removal(api, db):
+    # Guards against a new table with a cadet FK blocking the delete on Postgres.
+    _gone(db)
+    api.delete("/cadets/9", headers=STAFF)
+    for table in Base.metadata.sorted_tables:
+        for fk in table.foreign_keys:
+            if fk.column.table.name == "Cadets":
+                assert db.execute(table.select().where(fk.parent == 9)).first() is None, table.name
+
+
+def test_removing_a_cadet_twice_is_404(api, db):
+    _gone(db)
+    assert api.delete("/cadets/9", headers=STAFF).status_code == 200
+    assert api.delete("/cadets/9", headers=STAFF).status_code == 404

@@ -2,12 +2,12 @@
 are routers/theory.py."""
 
 import io
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, or_
+from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session, selectinload
 
 from core import cache
@@ -23,13 +23,21 @@ from core.qualifications import (
 )
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 from core.xlsx_export import table_to_xlsx
+from database.database import Base
 from database.models import (
     AssessmentSheet,
+    BadgeOrder,
+    BadgeOrderItem,
+    BadgeOrderListEntry,
     Cadet,
     CadetAttendance,
     CadetDietary,
     CadetEvent,
     CadetMedical,
+    NcoComment,
+    NcoCommentReply,
+    RemovedCadet,
+    StoresOrder,
 )
 from texts.phone import clean_mobile
 
@@ -98,7 +106,9 @@ def list_cadets(
     if cached is not None:
         return cached
     cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
-    result = [_cadet_summary(c) for c in cadets]
+    # missing_since drives the overview's "not seen on SMS" banner.
+    result = [{**_cadet_summary(c), "missing_since": c.missing_since.isoformat() if c.missing_since else None}
+              for c in cadets]
     cache.set(CADETS_CACHE_KEY, result, CADETS_CACHE_TTL)
     return result
 
@@ -317,6 +327,60 @@ def audit_export(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": content_disposition("attachment", f"{body.filename}.xlsx", "Audit.xlsx")},
     )
+
+
+# ─── Removing a cadet who has left SMS ────────────────────────────────────────
+
+def _delete_cadet_records(db: Session, cin: int) -> int:
+    """Delete everything that hangs off a cadet, except what outlives them.
+
+    Stores orders are kept, detached and closed, because the stock insights
+    count their sizes. Every other table with a key to Cadets is found from the schema, so a new one can't block the
+    delete. Returns how many orders were kept.
+    """
+    kept_orders = db.execute(
+        update(StoresOrder).where(StoresOrder.cadet_id == cin)
+        .values(cadet_id=None, completed=True)
+    ).rowcount
+    comments = db.query(NcoComment.id).filter(NcoComment.cadet_id == cin).scalar_subquery()
+    db.query(NcoCommentReply).filter(NcoCommentReply.comment_id.in_(comments)).delete(synchronize_session=False)
+
+    badge_items = (db.query(BadgeOrderItem.id).join(BadgeOrder)
+                   .filter(BadgeOrder.cadet_id == cin).scalar_subquery())
+    db.execute(update(BadgeOrderListEntry).where(BadgeOrderListEntry.order_item_id.in_(badge_items))
+               .values(order_item_id=None))
+    db.query(BadgeOrderItem).filter(BadgeOrderItem.id.in_(badge_items)).delete(synchronize_session=False)
+
+    cadets = Cadet.__table__
+    for table in reversed(Base.metadata.sorted_tables):
+        for fk in table.foreign_keys:
+            if fk.column.table is cadets and table.name != "Stores_Orders":
+                db.execute(table.delete().where(fk.parent == cin))
+    return kept_orders
+
+
+@router.delete("/cadets/{cin}")
+def remove_cadet(
+    cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Remove a cadet the scraper no longer finds on SMS, and everything of
+    theirs bar their stores orders. Their CIN is remembered so the scraper
+    doesn't add them back while Bader still lists them."""
+    cadet = db.get(Cadet, cin)
+    if not cadet:
+        raise HTTPException(status_code=404, detail="Cadet not found")
+    if cadet.missing_since is None:
+        raise HTTPException(status_code=409, detail="This cadet is still on SMS, so can't be removed.")
+
+    kept_orders = _delete_cadet_records(db, cin)
+    db.merge(RemovedCadet(cin=cin, first_name=cadet.first_name, last_name=cadet.last_name,
+                          removed_at=datetime.now(), removed_by=idinfo.get("email")))
+    db.query(Cadet).filter(Cadet.cin == cin).delete(synchronize_session=False)
+    db.commit()
+    invalidate_cadet_caches()
+    return {"status": "success", "kept_orders": kept_orders}
 
 
 # ─── Individual cadet routes ──────────────────────────────────────────────────

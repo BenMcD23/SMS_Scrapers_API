@@ -232,6 +232,27 @@ def _parse_qual_rows(rows, attachment_check_quals):
     return quals
 
 
+CIN_LABEL = "#ctl00_ctl00_cphBaseBody_cphBody_overview_fvProfile_lblPersonnelNumber"
+
+
+def _open_cadet_profile(page: Page, i, profile_links, numberOfCadets):
+    """open_profile, then wait until the profile's CIN is actually on the page.
+
+    The click fallback can come back before the navigation it started has even
+    begun, so the list page reads as loaded and the CIN lookup ran against it.
+    That cadet was then skipped for having no CIN, and so deleted as departed.
+    Reopens once if the CIN never shows. Returns open_profile's fast-path flag.
+    """
+    for attempt in range(2):
+        fast = open_profile(page, i, profile_links, CADETS, numberOfCadets)
+        try:
+            page.wait_for_selector(CIN_LABEL, timeout=15000)
+            return fast
+        except PlaywrightTimeoutError:
+            logger.warning(f"Profile {i} showed no CIN (attempt {attempt + 1})")
+    return fast
+
+
 def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, scraper_messages, scraper_lock, stop_event=None, attachment_check_quals=None, profile_links=None):
     attachment_check_quals = attachment_check_quals or set()  # casefolded exact qual names to check for proof attachments
     profile_links = profile_links or {}
@@ -248,12 +269,12 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "info", "value": f"Scraping cadet {i + 1} of {numberOfCadets}: {cadetNames[i]}"}))
 
-        if open_profile(page, i, profile_links, CADETS, numberOfCadets):
+        if _open_cadet_profile(page, i, profile_links, numberOfCadets):
             fast_opens += 1
 
         # CIN
         try:
-            cin_label = page.query_selector("#ctl00_ctl00_cphBaseBody_cphBody_overview_fvProfile_lblPersonnelNumber")
+            cin_label = page.query_selector(CIN_LABEL)
             cin = cin_label.evaluate(
                 "el => { let sib = el.nextElementSibling; while(sib) { if(sib.tagName==='H6') return sib.innerText.trim(); sib=sib.nextElementSibling; } return ''; }"
             )

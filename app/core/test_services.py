@@ -271,17 +271,16 @@ def test_calendar_unconfigured_or_no_event_id(calendar, monkeypatch):
 
 # ── scheduled jobs ────────────────────────────────────────────────────────────
 
-def test_cleanup_old_completed_orders(db, session_factory):
-    old = datetime.now() - timedelta(days=200)
-    db.add_all([
-        StoresOrder(id=1, completed=True, created_at=old),
-        StoresOrder(id=2, completed=False, created_at=old),
-        StoresOrder(id=3, completed=True, created_at=datetime.now()),
-    ])
+def test_completed_orders_are_kept_indefinitely(db, session_factory):
+    # Orders used to be purged after six months; they are now permanent records,
+    # so no scheduled job may touch them.
+    old = datetime.now() - timedelta(days=2000)
+    db.add(StoresOrder(id=1, completed=True, created_at=old))
     db.commit()
-    jobs.cleanup_old_completed_orders()
+    assert not hasattr(jobs, "cleanup_old_completed_orders")
+    jobs.cleanup_old_completed_assessments()
     db.expire_all()
-    assert sorted(o.id for o in db.query(StoresOrder).all()) == [2, 3]
+    assert [o.id for o in db.query(StoresOrder).all()] == [1]
 
 
 def test_cleanup_old_completed_assessments(db, session_factory):
@@ -317,7 +316,6 @@ def test_cleanup_jobs_swallow_errors(monkeypatch):
             pass
 
     monkeypatch.setattr(jobs, "SessionLocal", Broken)
-    jobs.cleanup_old_completed_orders()
     jobs.cleanup_old_completed_assessments()
 
 
