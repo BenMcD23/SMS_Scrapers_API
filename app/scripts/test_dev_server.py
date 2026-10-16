@@ -21,6 +21,7 @@ from scripts.dev_server import (
     schema_is_stale,
     seed,
     seed_inspections,
+    seed_recruits,
     seed_stores,
     seed_stores_history,
 )
@@ -239,3 +240,18 @@ def test_a_database_missing_a_model_column_is_flagged_stale():
     with engine.begin() as conn:
         conn.exec_driver_sql('ALTER TABLE "Cadets" DROP COLUMN parent_emails')
     assert schema_is_stale(engine, Base)
+
+
+def test_recruits_cover_every_stage_of_the_joining_form(api, db):
+    staff = api.as_("staff")
+    seed_recruits(api, staff, db)
+
+    rows = {r["cadetFirstName"]: r for r in api.get("/recruits", headers=staff).json()}
+    assert rows["Erin"]["status"] == "submitted"
+    assert rows["Kian"]["status"] == "in_progress" and 0 < rows["Kian"]["progress"]["done"] < 8
+    assert rows["Maisie"]["status"] == "not_started"
+    assert rows["Oscar"]["expired"] is True
+    # The submitted one has a health declaration, so both PDFs open.
+    for form in ("3822A", "3822H"):
+        res = api.get(f"/recruits/{rows['Erin']['id']}/pdf?form={form}", headers=staff)
+        assert res.status_code == 200

@@ -5,6 +5,7 @@ core/jobs.py.
 """
 
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
@@ -44,6 +45,7 @@ from routers import (
     oc,
     portal,
     programme,
+    recruits,
     reference,
     scrapers,
     session_plans,
@@ -110,6 +112,12 @@ async def count_usage(request: Request, call_next):
 
 
 _QUIET_PATHS = {"/ping", "/healthz", "/readyz"}
+# A recruit's joining-form link is its own credential: never write it to the log.
+_SECRET_IN_PATH = re.compile(r"^(/recruit-form/)[^/]+")
+
+
+def _loggable(path: str) -> str:
+    return _SECRET_IN_PATH.sub(r"\1…", path)
 
 
 # Outermost middleware: one line per request with status and timing, and the
@@ -120,13 +128,13 @@ async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
-        logger.exception("%s %s crashed after %.0fms", request.method, request.url.path,
+        logger.exception("%s %s crashed after %.0fms", request.method, _loggable(request.url.path),
                          (time.perf_counter() - start) * 1000)
         raise
     if request.url.path not in _QUIET_PATHS:
         ms = (time.perf_counter() - start) * 1000
         level = logging.WARNING if response.status_code >= 400 else logging.INFO
-        logger.log(level, "%s %s -> %d in %.0fms", request.method, request.url.path,
+        logger.log(level, "%s %s -> %d in %.0fms", request.method, _loggable(request.url.path),
                    response.status_code, ms)
     return response
 
@@ -196,6 +204,7 @@ app.include_router(nco_comments.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
 app.include_router(classification_day.router)
+app.include_router(recruits.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
 app.include_router(usage_router.router)

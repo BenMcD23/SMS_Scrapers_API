@@ -39,6 +39,8 @@ DEV_ENV = {
     "OC_EMAIL": "ci.mcdonald@317atc.co.uk",
     "ADJUTANT_EMAIL": "adjutant@example.com",
     "DB_BACKUP_ENABLED": "false",
+    # Recruits' joining-form links point at the website's local dev server.
+    "RECRUIT_FORM_URL": "http://localhost:5173/enrol",
     # A throwaway key: the seed stores nothing secret, it just has to import.
     "ENCRYPTION_KEY": "5-6ZgtVJdBRAJfCPIhLdyUFqGgb0ChZfBGB4fL0jTOo=",
 }
@@ -409,6 +411,78 @@ def seed_inspections(client, headers: dict, now: datetime | None = None) -> None
         assert res.status_code < 300, f"/inspections: {res.status_code} {res.text}"
 
 
+_RECRUIT_ADDRESS = {"property": "14", "street": "Oldham Road", "town": "Failsworth",
+                    "county": "Greater Manchester", "postcode": "M35 0AA", "mobile": "07700900900"}
+# A finished joining form, with a health declaration so both PDFs have something on them.
+RECRUIT_COMPLETE = {
+    "cadet": {"fullName": "Erin Walsh", "dob": "2013-04-12", "religion": "Christian", "gender": "female",
+              "pronoun": "she", "ethnicity": "white_irish", "externalAgency": False},
+    "contact": {**_RECRUIT_ADDRESS, "email": "erin.walsh@example.com"},
+    "history": {"atc": False, "acf": False, "bbgg": True, "ccf": False, "scc": False, "scouts": True, "vcc": False},
+    "nok": {**_RECRUIT_ADDRESS, "hasParentalResponsibility": True, "title": "Mrs", "fullName": "Siobhán Walsh",
+            "relationship": "Mother", "email": "siobhan.walsh@example.com"},
+    "consent": {"photo": True, "flyingLight": True, "flyingSolo": True, "flyingPassenger": True,
+                "flyingOther": False, "marksmanship": True, "strenuous": True, "lowerRisk": True,
+                "medicalInform": True, "accommodation": True, "accommodationTypes": ["female", "single"],
+                "transport": True, "medicalTreatment": True, "shareContact": True},
+    "medical": {"has": True, "conditions": ["asthma"], "ehcPlan": False,
+                "details": [{"condition": "asthma", "name": "Asthma", "severity": "mild", "soughtAdvice": True,
+                             "routine": "None", "strenuous": "Can get short of breath on long runs",
+                             "control": "Yes, with her blue inhaler", "medication": "Salbutamol",
+                             "dosage": "2 puffs when needed", "storage": "Carried by Erin"}],
+                "allergies": {"nut": {"autoInjector": True, "severity": "severe"}}, "diet": ["vegetarian"]},
+    "about": {"school": "Failsworth School", "heardFrom": "Her friend is a cadet",
+              "reason": "Wants to fly and do Duke of Edinburgh"},
+    "signer": {"forename": "Siobhán", "surname": "Walsh"},
+}
+
+
+def _signature_png() -> str:
+    """A pen-like squiggle as a signature pad would send it."""
+    import base64
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (600, 160), (0, 0, 0, 0))
+    ImageDraw.Draw(img).line([(30, 120), (110, 40), (170, 115), (260, 50), (350, 120), (430, 60), (560, 90)],
+                             fill=(10, 20, 70, 255), width=5)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def seed_recruits(client, headers: dict, db) -> None:
+    """Recruits at each stage of the joining form, through the real endpoints:
+    one submitted (so the PDFs open), one part-way, one never opened, and one
+    whose link has run out (backdated directly — nothing in the API does that)."""
+    from database.models import RecruitApplication
+
+    def add(first, last, parent, email):
+        res = client.post("/recruits", headers=headers, json={
+            "cadetFirstName": first, "cadetLastName": last, "parentName": parent, "parentEmail": email})
+        assert res.status_code == 201, f"/recruits: {res.status_code} {res.text}"
+        return res.json()["id"], res.json()["link"].rsplit("/", 1)[1]
+
+    _, token = add("Erin", "Walsh", "Siobhán Walsh", "siobhan.walsh@example.com")
+    res = client.post(f"/recruit-form/{token}/submit", json={"data": RECRUIT_COMPLETE,
+                                                             "parentSignature": _signature_png()})
+    assert res.status_code == 200, f"submit: {res.status_code} {res.text}"
+
+    _, token = add("Kian", "Ahmed", "Farah Ahmed", "farah.ahmed@example.com")
+    partial = {k: RECRUIT_COMPLETE[k] for k in ("contact", "history")}
+    partial["cadet"] = {**RECRUIT_COMPLETE["cadet"], "fullName": "Kian Ahmed", "gender": "male",
+                        "pronoun": "he", "ethnicity": "pakistani"}
+    client.get(f"/recruit-form/{token}")
+    client.put(f"/recruit-form/{token}", json={"data": partial})
+
+    add("Maisie", "Clarke", "Dan Clarke", "dan.clarke@example.com")
+
+    expired_id, _ = add("Oscar", "Lee", "Mei Lee", "mei.lee@example.com")
+    db.get(RecruitApplication, expired_id).expires_at = datetime.now() - timedelta(days=2)
+    db.commit()
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if an existing table lacks a column the models now have."""
     from sqlalchemy import inspect
@@ -460,6 +534,8 @@ def main() -> None:
         with SessionLocal() as db:
             seed_stores_history(client, headers, db)
         seed_inspections(client, headers)
+        with SessionLocal() as db:
+            seed_recruits(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
