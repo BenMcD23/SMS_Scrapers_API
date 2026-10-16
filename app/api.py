@@ -33,6 +33,7 @@ from routers import (
     events,
     flying,
     form_generators,
+    gallery,
     inspection_audit,
     inspections,
     leaving,
@@ -179,6 +180,7 @@ app.include_router(events.router)
 app.include_router(flying.router)
 app.include_router(programme.router)
 app.include_router(newsletters.router)
+app.include_router(gallery.router)
 app.include_router(assessments.router)
 app.include_router(stats.router)
 app.include_router(stores.router)
