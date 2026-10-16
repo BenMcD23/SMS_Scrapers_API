@@ -152,3 +152,36 @@ def test_a_signature_is_cropped_to_its_ink_so_it_fills_the_box():
     blank = io.BytesIO()
     Image.new("RGBA", (50, 20), (0, 0, 0, 0)).save(blank, "PNG")
     assert recruit_pdf._ink_only(blank.getvalue()).size == (50, 20)
+
+
+def test_every_ethnicity_ticks_its_own_box():
+    # Ethnicity_11 and _12 each name two different boxes (African/Arab,
+    # Caribbean/Other); if two options resolved to the same box, ticking one
+    # would tick the other.
+    widgets = _widgets(str(TEMPLATE_A))
+    boxes = {(widgets[name][i][0], widgets[name][i][1]) for name, i in recruit_pdf.ETHNICITY_FIELDS.values()}
+    assert len(boxes) == len(recruit_pdf.ETHNICITY_FIELDS) == 19
+
+
+def test_each_allergys_boxes_sit_on_one_row_with_severities_in_order():
+    # Row membership was checked against the printed labels when the mapping
+    # was written; this fails if a new template version reshuffles the rows.
+    widgets = _widgets(str(TEMPLATE_H))
+    for key, prefix in recruit_pdf.ALLERGY_FIELDS.items():
+        tick = recruit_pdf.ALLERGY_TICK.get(key, prefix)
+        auto = recruit_pdf.ALLERGY_AUTO.get(key, f"{prefix} - Auto")
+        severities = [f"{prefix} - {s}" for s in ("Mild", "Moderate", "Severe")]
+        rects = [widgets[n][0][1] for n in (tick, auto, *severities)]
+        centres = [(r[1] + r[3]) / 2 for r in rects]
+        assert max(centres) - min(centres) <= 3, key
+        xs = [r[0] for r in rects[2:]]
+        assert xs == sorted(xs), key
+
+
+def test_the_yes_and_no_boxes_of_every_question_share_a_row_yes_on_the_left():
+    widgets = _widgets(str(TEMPLATE_A))
+    for prefix in (*recruit_pdf.ORGANISATION_FIELDS.values(), *recruit_pdf.CONSENT_FIELDS.values(),
+                   "External_Agency", "PR", "Medical_Allergies_Diet"):
+        (_, yes), (_, no) = widgets[f"{prefix}_Yes"][0], widgets[f"{prefix}_No"][0]
+        assert abs((yes[1] + yes[3]) / 2 - (no[1] + no[3]) / 2) <= 3, prefix
+        assert yes[0] < no[0], prefix
