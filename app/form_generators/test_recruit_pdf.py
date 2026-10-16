@@ -185,3 +185,18 @@ def test_the_yes_and_no_boxes_of_every_question_share_a_row_yes_on_the_left():
         (_, yes), (_, no) = widgets[f"{prefix}_Yes"][0], widgets[f"{prefix}_No"][0]
         assert abs((yes[1] + yes[3]) / 2 - (no[1] + no[3]) / 2) <= 3, prefix
         assert yes[0] < no[0], prefix
+
+
+def test_a_condition_added_by_hand_ticks_other(monkeypatch):
+    ticked = []
+    real = recruit_pdf._Filler.tick
+    monkeypatch.setattr(recruit_pdf._Filler, "tick", lambda self, name, idx=0: ticked.append(name) or real(self, name, idx))
+    hand_added = {"name": "Eczema", "severity": "mild", "soughtAdvice": True}
+    form = RecruitFormData.model_validate(complete_form(medical={"has": True, "ehcPlan": False, "details": [hand_added]}))
+    recruit_pdf.build_3822h(form, _png(), None, SIGNED.date())
+    assert ticked.count("Section2Other") == 1
+
+    ticked.clear()
+    form.medical.details = []
+    recruit_pdf.build_3822h(form, _png(), None, SIGNED.date())
+    assert "Section2Other" not in ticked

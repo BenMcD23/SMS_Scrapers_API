@@ -12,8 +12,9 @@ can't disagree.
 """
 
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -82,23 +83,34 @@ ORGANISATIONS = [
     ("vcc", "Volunteer Cadet Corps"),
 ]
 
-# Section 3 consent questions, in form order.
+# The 3822A's yes/no statements (sections 3, 5 and 8), in form order and in
+# its own words, lightly shortened: these are what the parent agrees to.
 CONSENTS = [
-    ("photo", "Images used to promote the RAF Air Cadets"),
-    ("flyingLight", "Flying: British military light aircraft and gliders for air experience and instruction"),
-    ("flyingSolo", "Flying: British military gliders and powered aircraft on their own as a solo pilot"),
-    ("flyingPassenger", "Flying: British military passenger transport aircraft and helicopters"),
-    ("flyingOther", "Flying: other types of British military aircraft including high performance jets"),
-    ("marksmanship", "Initial Weapon Training and Live Firing Marksmanship Training"),
-    ("strenuous", "Strenuous physical activities"),
-    ("lowerRisk", "Lower risk events, without a separate consent form and health declaration each time"),
-    ("medicalInform", "I will tell the unit about any relevant medical condition and complete a Health Declaration"),
-    ("accommodation", "Being accommodated in the types I've chosen while attending authorised events"),
-    ("transport", "Being transported to, from and during events by coach, minibus, or a vehicle driven by "
-                  "adult volunteers, other parents, permanent staff or staff cadets over 18"),
-    ("medicalTreatment", "The Officer in Charge acting for me if my child needs medical treatment "
-                         "and I can't give consent in person"),
-    ("shareContact", "Sharing my contact details through the Cadet Forces MIS and using them to contact me"),
+    ("photo", "I consent to my child's images being used to promote the RAF Air Cadets"),
+    ("flyingLight", "I consent to my child flying in British military light aircraft and gliders "
+                    "for the purposes of air experience and instruction"),
+    ("flyingSolo", "I consent to my child flying British military gliders and powered aircraft "
+                   "on their own as a solo pilot"),
+    ("flyingPassenger", "I consent to my child flying in British military passenger transport aircraft and helicopters"),
+    ("flyingOther", "I consent to my child flying in other types of British military aircraft, "
+                    "including high performance jets"),
+    ("marksmanship", "I consent to my child taking part in Initial Weapon Training and Live Firing "
+                     "Marksmanship Training using Cadet Weapon Systems"),
+    ("strenuous", "I consent to my child taking part in strenuous physical activities"),
+    ("lowerRisk", "I consent to my child taking part in lower risk events, and understand that TG21 consent "
+                  "forms and health declarations are not required for these"),
+    ("medicalInform", "I understand that if my child has a relevant medical condition, I will tell the unit "
+                      "and complete Health Declaration form(s) as required"),
+    ("accommodation", "I consent to my child being accommodated while attending authorised events and "
+                      "activities, in the types I choose"),
+    ("transport", "I consent to my child being transported to, from and during events by contracted coaches "
+                  "or minibuses, or unit or private vehicles driven by adult volunteers, parents of other "
+                  "cadets, permanent staff or staff cadets over 18"),
+    ("medicalTreatment", "I consent to the Officer in Charge, or their appointed representative, acting as the "
+                         "person responsible if my child has to undergo medical treatment, including any "
+                         "emergency operation, when I can't physically give consent"),
+    ("shareContact", "I agree to the RAF Air Cadets sharing my contact details through the Cadet Forces MIS "
+                     "and using them to contact me"),
 ]
 
 STEPS = [
@@ -115,7 +127,12 @@ STEPS = [
 # Age (on the day of signing) from which the cadet signs the health declaration
 # themselves, as printed on the 3822H.
 CADET_SIGNS_FROM_AGE = 16
-MAX_CONDITIONS = 10
+# Every listed condition ticked, plus a few added by hand. The PDF adds a page
+# per two, so this is only a sanity cap on what a link can send.
+MAX_CONDITIONS = 30
+# The 3822A has the parent confirm the child is at least 12.
+MIN_JOINING_AGE = 12
+LONDON = ZoneInfo("Europe/London")
 
 
 def options() -> dict:
@@ -283,6 +300,27 @@ def parse(raw: dict | None) -> RecruitFormData:
 # ── Completeness ──────────────────────────────────────────────────────────────
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# A UK postcode, loosely: outward code, optional space, inward code.
+_POSTCODE = re.compile(r"^[A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2}$", re.IGNORECASE)
+_UK = {"", "uk", "u.k.", "united kingdom", "great britain", "gb", "england", "scotland", "wales",
+       "northern ireland", "britain"}
+# Digits, spaces and the usual punctuation, with enough digits to be a whole number.
+_PHONE_CHARS = re.compile(r"^[0-9+()\-\s]+$")
+
+
+def london_today() -> date:
+    """Today in the UK. Ages "at date of signature" are a UK day, and the
+    server's own clock isn't on UK time."""
+    return datetime.now(LONDON).date()
+
+
+def london_now() -> datetime:
+    """Now in the UK, naive like the rest of the app's timestamps."""
+    return datetime.now(LONDON).replace(tzinfo=None)
+
+
+def _phone_ok(number: str) -> bool:
+    return bool(_PHONE_CHARS.match(number)) and sum(ch.isdigit() for ch in number) >= 10
 
 
 def age_on(dob: date | None, day: date) -> int | None:
@@ -298,6 +336,22 @@ def cadet_signs_health_form(form: RecruitFormData, day: date) -> bool:
     return bool(form.medical.has) and age is not None and age >= CADET_SIGNS_FROM_AGE
 
 
+def _contact_missing(a: Phones, who: str) -> list[str]:
+    """Phones and emails: at least one phone and a primary email (the 3822A says
+    both are required), and anything filled in must look real."""
+    out = []
+    if not a.mobile and not a.homePhone:
+        out.append(f"{who} phone number")
+    for number, label in ((a.mobile, "mobile"), (a.homePhone, "home phone")):
+        if number and not _phone_ok(number):
+            out.append(f"{who} {label} number (it doesn't look complete)")
+    if not _EMAIL.match(a.email):
+        out.append(f"{who} email address")
+    if a.email2 and not _EMAIL.match(a.email2):
+        out.append(f"{who} second email address (it doesn't look right)")
+    return out
+
+
 def _address_missing(a: Phones, who: str) -> list[str]:
     out = []
     if not a.property or not a.street:
@@ -306,11 +360,9 @@ def _address_missing(a: Phones, who: str) -> list[str]:
         out.append(f"{who} town")
     if not a.postcode:
         out.append(f"{who} postcode")
-    if not a.mobile and not a.homePhone:
-        out.append(f"{who} phone number")
-    if not _EMAIL.match(a.email):
-        out.append(f"{who} email address")
-    return out
+    elif a.country.strip().lower() in _UK and not _POSTCODE.match(a.postcode):
+        out.append(f"{who} postcode (it doesn't look like a UK postcode)")
+    return out + _contact_missing(a, who)
 
 
 # What each condition's details must have, in the order the form asks. Medication
@@ -331,16 +383,23 @@ def condition_name(key: str) -> str:
     return dict(CONDITIONS)[key].split(" (")[0]
 
 
-def missing(form: RecruitFormData) -> dict[str, list[str]]:
+def missing(form: RecruitFormData, today: date | None = None) -> dict[str, list[str]]:
     """{step: [what's still needed]} for every step but "sign" (that is the
     signatures themselves, checked at submission). Empty list = step done."""
     c, m, consent = form.cadet, form.medical, form.consent
+    today = today or london_today()
 
     cadet = []
     if not c.fullName:
         cadet.append("Full name")
-    if not c.dob:
+    age = age_on(c.dob, today)
+    if age is None:
         cadet.append("Date of birth")
+    elif c.dob > today:
+        cadet.append("Date of birth (it's in the future)")
+    elif age < MIN_JOINING_AGE:
+        # The parent signs to confirm this on the 3822A.
+        cadet.append(f"Date of birth: cadets must be at least {MIN_JOINING_AGE} to join")
     if not c.gender or (c.gender == "other" and not c.genderOther):
         cadet.append("Gender")
     if not c.pronoun:
@@ -355,10 +414,21 @@ def missing(form: RecruitFormData) -> dict[str, list[str]]:
     parent = []
     if form.nok.hasParentalResponsibility is None:
         parent.append("Parental responsibility")
+    elif not form.nok.hasParentalResponsibility:
+        # Every consent on the form is given by the person with parental
+        # responsibility; nobody else can sign it.
+        parent.append("Only someone with parental responsibility for the child can fill in and sign this form")
     for field, label in (("title", "Title"), ("fullName", "Full name"), ("relationship", "Relationship")):
         if not getattr(form.nok, field):
             parent.append(label)
     parent += _address_missing(form.nok, "Your")
+    # Section 2b is optional, but a contact needs enough to be reached.
+    x = form.extra
+    if any(getattr(x, f) for f in Person.model_fields):
+        for field, label in (("fullName", "name"), ("relationship", "relationship")):
+            if not getattr(x, field):
+                parent.append(f"Additional contact's {label}")
+        parent += _contact_missing(x, "Additional contact's")
 
     consents = [label for key, label in CONSENTS if getattr(consent, key) is None]
     if consent.accommodation and not consent.accommodationTypes:
@@ -368,7 +438,7 @@ def missing(form: RecruitFormData) -> dict[str, list[str]]:
     if m.has is None:
         medical.append("Whether your child has any medical conditions, allergies or dietary needs")
     elif m.has:
-        if not (m.conditions or m.allergies or m.diet):
+        if not (m.conditions or m.details or m.allergies or m.diet):
             medical.append("At least one condition, allergy or dietary requirement")
         if m.ehcPlan is None:
             medical.append("Education, Health and Care Plan")
@@ -402,6 +472,30 @@ def missing(form: RecruitFormData) -> dict[str, list[str]]:
         "medical": medical,
         "about": about,
     }
+
+
+def tidy(form: RecruitFormData) -> RecruitFormData:
+    """Drop answers to questions the parent was taken past: medical details after
+    answering "no", the EHC copy question after "no plan", and so on. The form
+    keeps them while it's being filled in, so flipping an answer back loses
+    nothing; once signed, only what the parent finally said is kept."""
+    f = form.model_copy(deep=True)
+    if f.cadet.gender != "other":
+        f.cadet.genderOther = ""
+    if not f.consent.accommodation:
+        f.consent.accommodationTypes = []
+    if not f.medical.has:
+        f.medical = Medical(has=f.medical.has)
+        return f
+    m = f.medical
+    if not m.ehcPlan:
+        m.ehcCopy = None
+    m.details = [d for d in m.details if d.condition is None or d.condition in m.conditions]
+    if "other" not in m.allergies:
+        m.allergyOther = ""
+    if "other" not in m.diet:
+        m.dietOther = ""
+    return f
 
 
 def progress(form: RecruitFormData, submitted: bool) -> dict:

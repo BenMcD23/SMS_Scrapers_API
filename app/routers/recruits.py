@@ -12,6 +12,9 @@ Two halves:
 The public half answers every bad link — unknown, expired, deleted — with the
 same 404, so a link can't be probed for whether it ever existed. It never sends
 answers back once the form is submitted.
+
+Times are UK local time: "aged 16 at the date of signature" is a UK date, and
+the server's clock isn't on UK time.
 """
 
 import base64
@@ -30,7 +33,7 @@ from core import recruit_form
 from core.config import RECRUIT_FORM_URL
 from core.db import get_db
 from core.http import content_disposition
-from core.recruit_form import RecruitFormData
+from core.recruit_form import RecruitFormData, london_now
 from core.security import require_staff
 from database.models import RecruitApplication
 from form_generators.recruit_pdf import build_pdf
@@ -100,7 +103,7 @@ def _by_token(db: Session, token: str) -> RecruitApplication:
     app = db.query(RecruitApplication).filter(RecruitApplication.token == token).first()
     # Submitted forms stay reachable past expiry so the parent still sees
     # "already sent" rather than a scary dead link.
-    if not app or (not app.submitted_at and app.expires_at <= datetime.now()):
+    if not app or (not app.submitted_at and app.expires_at <= london_now()):
         raise HTTPException(status_code=404, detail=BAD_LINK)
     return app
 
@@ -149,7 +152,7 @@ class NewRecruit(BaseModel):
 
 @router.get("/recruits")
 def list_recruits(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
-    now = datetime.now()
+    now = london_now()
     apps = db.query(RecruitApplication).order_by(RecruitApplication.created_at.desc()).all()
     return [_summary(a, now) for a in apps]
 
@@ -158,7 +161,7 @@ def list_recruits(db: Session = Depends(get_db), idinfo: dict = Depends(require_
 def add_recruit(body: NewRecruit, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
     if not _EMAIL.match(body.parentEmail):
         raise HTTPException(status_code=422, detail="Enter the parent's email address, like name@example.com.")
-    now = datetime.now()
+    now = london_now()
     app = RecruitApplication(
         cadet_first_name=body.cadetFirstName,
         cadet_last_name=body.cadetLastName,
@@ -180,7 +183,7 @@ def get_recruit(recruit_id: int, db: Session = Depends(get_db), idinfo: dict = D
     app = _get(db, recruit_id)
     form = recruit_form.parse(app.data)
     return {
-        **_summary(app, datetime.now()),
+        **_summary(app, london_now()),
         "data": form.model_dump(mode="json"),
         "missing": recruit_form.missing(form),
         "options": recruit_form.options(),
@@ -196,7 +199,24 @@ def extend_link(recruit_id: int, db: Session = Depends(get_db), idinfo: dict = D
     app = _get(db, recruit_id)
     if app.submitted_at:
         raise HTTPException(status_code=409, detail="This form has already been submitted.")
-    now = datetime.now()
+    now = london_now()
+    app.expires_at = now + timedelta(days=LINK_DAYS)
+    db.commit()
+    return _summary(app, now)
+
+
+@router.post("/recruits/{recruit_id}/reopen")
+def reopen_form(recruit_id: int, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """Send a submitted form back to the parent to correct. Their answers are
+    kept, the signatures are not (they sign again, against the corrected
+    answers), and the same link works for another LINK_DAYS."""
+    app = _get(db, recruit_id)
+    if not app.submitted_at:
+        raise HTTPException(status_code=409, detail="This form hasn't been submitted yet, so there's nothing to reopen.")
+    now = london_now()
+    app.submitted_at = None
+    app.parent_signature = None
+    app.cadet_signature = None
     app.expires_at = now + timedelta(days=LINK_DAYS)
     db.commit()
     return _summary(app, now)
@@ -223,7 +243,8 @@ def recruit_pdf(
     data = recruit_form.parse(app.data)
     if form == "3822H" and not data.medical.has:
         raise HTTPException(status_code=404, detail="No health declaration: the parent answered no to medical conditions.")
-    pdf = build_pdf(data, form, app.parent_signature, app.cadet_signature, app.submitted_at)
+    pdf = build_pdf(data, form, app.parent_signature, app.cadet_signature, app.submitted_at,
+                    cadet_name=(app.cadet_first_name, app.cadet_last_name))
     name = "3822A-H" if form == "both" else form
     filename = f"{name} {app.cadet_first_name} {app.cadet_last_name}.pdf"
     return Response(pdf, media_type="application/pdf",
@@ -266,7 +287,7 @@ def _public_view(app: RecruitApplication) -> dict:
 def open_form(token: str, db: Session = Depends(get_db)):
     app = _by_token(db, token)
     if not app.opened_at:
-        app.opened_at = datetime.now()
+        app.opened_at = london_now()
         db.commit()
     return _public_view(app)
 
@@ -275,7 +296,7 @@ def open_form(token: str, db: Session = Depends(get_db)):
 def save_progress(token: str, body: SaveBody, db: Session = Depends(get_db)):
     app = _open_for_editing(db, token)
     app.data = body.data.model_dump(mode="json")
-    app.last_saved_at = datetime.now()
+    app.last_saved_at = london_now()
     db.commit()
     return _public_view(app)
 
@@ -284,14 +305,14 @@ def save_progress(token: str, body: SaveBody, db: Session = Depends(get_db)):
 def submit_form(token: str, body: SubmitBody, db: Session = Depends(get_db)):
     app = _open_for_editing(db, token)
     form = body.data
-    now = datetime.now()
+    now = london_now()
 
     # Save what they sent either way, so a refused submit loses nothing.
     app.data = form.model_dump(mode="json")
     app.last_saved_at = now
     db.commit()
 
-    gaps = {step: items for step, items in recruit_form.missing(form).items() if items}
+    gaps = {step: items for step, items in recruit_form.missing(form, now.date()).items() if items}
     if not form.signer.forename or not form.signer.surname:
         gaps["sign"] = ["Your forename and surname"]
     if gaps:
@@ -302,6 +323,8 @@ def submit_form(token: str, body: SubmitBody, db: Session = Depends(get_db)):
     if recruit_form.cadet_signs_health_form(form, now.date()):
         cadet_sig = _decode_signature(body.cadetSignature, "cadet's")
 
+    # What's signed is only what the parent finally answered.
+    app.data = recruit_form.tidy(form).model_dump(mode="json")
     app.parent_signature = parent_sig
     app.cadet_signature = cadet_sig
     app.submitted_at = now

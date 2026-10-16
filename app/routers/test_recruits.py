@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 import routers.recruits as recruits
+from core.recruit_form import london_now
 from core.test_recruit_form import COMPLETE, complete_form
 from database.models import RecruitApplication
 
@@ -46,6 +47,7 @@ STAFF_ROUTES = [
     ("post", "/recruits"),
     ("get", "/recruits/1"),
     ("post", "/recruits/1/extend"),
+    ("post", "/recruits/1/reopen"),
     ("delete", "/recruits/1"),
     ("get", "/recruits/1/pdf"),
 ]
@@ -77,7 +79,7 @@ def test_adding_a_recruit_makes_a_14_day_link_and_prefills_what_staff_know(api, 
     assert body["link"] == f"{recruits.RECRUIT_FORM_URL}/{token}"
     assert len(token) >= 40
     expires = datetime.fromisoformat(body["expiresAt"])
-    assert timedelta(days=13, hours=23) < expires - datetime.now() <= timedelta(days=14)
+    assert timedelta(days=13, hours=23) < expires - london_now() <= timedelta(days=14)
     assert body["progress"] == {"done": 0, "total": 8, "steps": body["progress"]["steps"]}
 
     data = api.get(f"/recruit-form/{token}").json()["data"]
@@ -124,7 +126,7 @@ def test_the_list_is_empty_with_no_recruits(api):
 
 
 @pytest.mark.parametrize("method, path", [
-    ("get", "/recruits/999"), ("post", "/recruits/999/extend"),
+    ("get", "/recruits/999"), ("post", "/recruits/999/extend"), ("post", "/recruits/999/reopen"),
     ("delete", "/recruits/999"), ("get", "/recruits/999/pdf"),
 ])
 def test_a_missing_recruit_is_404(api, method, path):
@@ -143,14 +145,14 @@ def test_the_detail_shows_answers_gaps_and_options(api, recruit):
 def test_extending_gives_14_days_from_now_even_once_expired(api, db, recruit):
     body, token = recruit
     row = db.get(RecruitApplication, body["id"])
-    row.expires_at = datetime.now() - timedelta(days=3)
+    row.expires_at = london_now() - timedelta(days=3)
     db.commit()
     assert api.get(f"/recruit-form/{token}").status_code == 404
     assert api.get("/recruits", headers=STAFF).json()[0]["expired"] is True
 
     res = api.post(f"/recruits/{body['id']}/extend", headers=STAFF)
     assert res.status_code == 200 and res.json()["expired"] is False
-    assert datetime.fromisoformat(res.json()["expiresAt"]) - datetime.now() > timedelta(days=13)
+    assert datetime.fromisoformat(res.json()["expiresAt"]) - london_now() > timedelta(days=13)
     assert api.get(f"/recruit-form/{token}").status_code == 200   # same link works again
 
 
@@ -179,7 +181,7 @@ def test_an_unknown_link_says_invalid_the_same_way_every_time(api, method):
 
 def test_an_expired_link_looks_exactly_like_an_unknown_one(api, db, recruit):
     _, token = recruit
-    db.query(RecruitApplication).one().expires_at = datetime.now() - timedelta(seconds=1)
+    db.query(RecruitApplication).one().expires_at = london_now() - timedelta(seconds=1)
     db.commit()
     for res in (api.get(f"/recruit-form/{token}"),
                 api.put(f"/recruit-form/{token}", json={"data": {}}),
@@ -287,7 +289,7 @@ def test_a_complete_submission_is_locked_and_no_longer_shows_the_answers(api, db
 def test_a_submitted_link_still_answers_after_it_would_have_expired(api, db, recruit):
     _, token = recruit
     _submit(api, token)
-    db.query(RecruitApplication).one().expires_at = datetime.now() - timedelta(days=30)
+    db.query(RecruitApplication).one().expires_at = london_now() - timedelta(days=30)
     db.commit()
     assert api.get(f"/recruit-form/{token}").json()["status"] == "submitted"
     assert api.get("/recruits", headers=STAFF).json()[0]["expired"] is False
@@ -295,7 +297,7 @@ def test_a_submitted_link_still_answers_after_it_would_have_expired(api, db, rec
 
 def test_a_cadet_of_sixteen_with_a_health_declaration_must_sign_it_too(api, db, recruit):
     _, token = recruit
-    sixteen = f"{datetime.now().year - 17}-01-01"   # 16 or 17 today, never younger
+    sixteen = f"{london_now().year - 17}-01-01"   # 16 or 17 today, never younger
     data = complete_form(
         cadet={**COMPLETE["cadet"], "dob": sixteen},
         medical={"has": True, "diet": ["vegan"], "ehcPlan": False},
@@ -347,3 +349,79 @@ def test_a_non_ascii_name_still_downloads(api):
     _submit(api, body["link"].rsplit("/", 1)[1])
     res = api.get(f"/recruits/{body['id']}/pdf", headers=STAFF)
     assert res.status_code == 200 and "filename*=UTF-8''" in res.headers["content-disposition"]
+
+
+# ── reopening, tidying, and what must be true to sign ────────────────────────
+
+def test_reopening_sends_a_submitted_form_back_with_its_answers_but_not_its_signatures(api, db, recruit):
+    body, token = recruit
+    _submit(api, token)
+    row = db.query(RecruitApplication).one()
+    row.expires_at = london_now() - timedelta(days=1)   # long past the original link's life
+    db.commit()
+
+    res = api.post(f"/recruits/{body['id']}/reopen", headers=STAFF)
+    assert res.status_code == 200 and res.json()["status"] == "in_progress"
+    db.expire_all()
+    row = db.query(RecruitApplication).one()
+    assert row.submitted_at is None and row.parent_signature is None
+    assert row.expires_at - london_now() > timedelta(days=13)
+    # The parent's link works again, with their answers in it, and they re-sign.
+    view = api.get(f"/recruit-form/{token}").json()
+    assert view["status"] == "open" and view["data"]["about"]["school"] == "City Academy"
+    assert _submit(api, token).status_code == 200
+
+
+def test_only_a_submitted_form_can_be_reopened(api, recruit):
+    body, _ = recruit
+    assert api.post(f"/recruits/{body['id']}/reopen", headers=STAFF).status_code == 409
+
+
+def test_submitting_keeps_only_the_answers_the_parent_finally_gave(api, db, recruit):
+    # They ticked asthma, then answered "no" to medical: the asthma answers
+    # mustn't be stored against the child.
+    _, token = recruit
+    data = complete_form(medical={"has": False, "conditions": ["asthma"], "allergies": {"nut": {"severity": "mild"}}},
+                         cadet={**COMPLETE["cadet"], "genderOther": "left over"})
+    assert _submit(api, token, data).status_code == 200
+    stored = db.query(RecruitApplication).one().data
+    assert stored["medical"]["conditions"] == [] and stored["medical"]["allergies"] == {}
+    assert stored["medical"]["has"] is False
+    assert stored["cadet"]["genderOther"] == ""
+
+
+def test_a_child_under_twelve_cant_be_signed_up(api, recruit):
+    _, token = recruit
+    eleven = f"{london_now().year - 11}-01-01"   # 10 or 11 today, never 12
+    res = _submit(api, token, complete_form(cadet={**COMPLETE["cadet"], "dob": eleven}))
+    assert res.status_code == 422
+    assert res.json()["detail"]["missing"]["cadet"] == ["Date of birth: cadets must be at least 12 to join"]
+
+
+def test_someone_without_parental_responsibility_cant_sign(api, recruit):
+    _, token = recruit
+    nok = {**COMPLETE["nok"], "hasParentalResponsibility": False}
+    res = _submit(api, token, complete_form(nok=nok))
+    assert res.status_code == 422 and "parental responsibility" in res.json()["detail"]["missing"]["parent"][0]
+
+
+def test_the_cadets_own_signature_block_uses_the_names_staff_entered(api, recruit, monkeypatch):
+    # "Alex Jordan Smith" split on a space would make "Jordan Smith" the surname.
+    body, token = recruit
+    captured = {}
+    real = recruits.build_pdf
+    monkeypatch.setattr(recruits, "build_pdf", lambda *a, **k: captured.update(k) or real(*a, **k))
+    sixteen = f"{london_now().year - 17}-01-01"
+    data = complete_form(cadet={**COMPLETE["cadet"], "fullName": "Alex Jordan Smith", "dob": sixteen},
+                         medical={"has": True, "diet": ["vegan"], "ehcPlan": False})
+    _submit(api, token, data, cadetSignature=_sig())
+    api.get(f"/recruits/{body['id']}/pdf?form=3822H", headers=STAFF)
+    assert captured["cadet_name"] == ("Alex", "Smith")
+
+
+def test_link_tokens_are_kept_out_of_the_request_log():
+    from api import _loggable
+
+    assert _loggable("/recruit-form/s3cr3t-token/submit") == "/recruit-form/…/submit"
+    assert _loggable("/recruit-form/s3cr3t-token") == "/recruit-form/…"
+    assert _loggable("/recruits/4/pdf") == "/recruits/4/pdf"

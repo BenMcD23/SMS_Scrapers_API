@@ -371,7 +371,8 @@ def _child_header(f: _Filler, form: RecruitFormData):
 
 
 def build_3822h(form: RecruitFormData, parent_signature: bytes | None,
-                cadet_signature: bytes | None, signed_on: date | None) -> list:
+                cadet_signature: bytes | None, signed_on: date | None,
+                cadet_name: tuple[str, str] | None = None) -> list:
     """The health declaration. Two conditions fit on the first page; the form
     says to use further copies for more, so each further pair gets another
     copy of page 1, placed before the allergies page."""
@@ -380,6 +381,9 @@ def build_3822h(form: RecruitFormData, parent_signature: bytes | None,
     _child_header(f, form)
     for key in m.conditions:
         f.tick(CONDITION_FIELDS[key])
+    # A condition added by hand isn't in the list, so it counts as "Other".
+    if "other" not in m.conditions and any(d.condition is None for d in m.details):
+        f.tick(CONDITION_FIELDS["other"])
     f.yes_no("EHC", m.ehcPlan, " ")
     if m.ehcPlan:
         f.yes_no("EHC Provide Copy", m.ehcCopy, " ")
@@ -400,7 +404,9 @@ def build_3822h(form: RecruitFormData, parent_signature: bytes | None,
 
     if signed_on and cadet_signs_health_form(form, signed_on):
         names, sig, prefix = ("Forename_2", "Surname_2"), ("Cadet Signature", cadet_signature), "Cadet"
-        forename, _, surname = form.cadet.fullName.partition(" ")
+        # Staff's first/last name split, when known: splitting the full name
+        # can't tell a middle name from a two-word surname.
+        forename, surname = cadet_name or form.cadet.fullName.partition(" ")[::2]
     else:
         names, sig, prefix = ("Forename", "Surname"), ("Parent Signature", parent_signature), "Parent"
         forename, surname = form.signer.forename, form.signer.surname
@@ -424,14 +430,15 @@ def build_3822h(form: RecruitFormData, parent_signature: bytes | None,
 
 
 def build_pdf(form: RecruitFormData, which: str, parent_signature: bytes | None,
-              cadet_signature: bytes | None, submitted_at: datetime | None) -> bytes:
+              cadet_signature: bytes | None, submitted_at: datetime | None,
+              cadet_name: tuple[str, str] | None = None) -> bytes:
     """``which`` is "3822A", "3822H" or "both" (A then H, when there is an H)."""
     signed_on = submitted_at.date() if submitted_at else None
     pages = []
     if which in ("3822A", "both"):
         pages += build_3822a(form, parent_signature, signed_on)
     if which == "3822H" or (which == "both" and form.medical.has):
-        pages += build_3822h(form, parent_signature, cadet_signature, signed_on)
+        pages += build_3822h(form, parent_signature, cadet_signature, signed_on, cadet_name)
     writer = PdfWriter()
     for page in pages:
         writer.add_page(page)

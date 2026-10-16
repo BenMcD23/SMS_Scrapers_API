@@ -90,7 +90,7 @@ def test_accommodation_consent_needs_at_least_one_type():
 
 def _described(key: str, **over) -> dict:
     """A fully answered details card for a ticked condition."""
-    return {"condition": key, "name": recruit_form.condition_name(key), "severity": "mild", "soughtAdvice": False,
+    return {"condition": key, "name": recruit_form.condition_name(key) if key in dict(recruit_form.CONDITIONS) else key, "severity": "mild", "soughtAdvice": False,
             "routine": "None", "strenuous": "Short of breath", "control": "Yes, inhaler", **over}
 
 
@@ -186,3 +186,80 @@ def test_every_option_list_has_unique_keys():
     for name in ("ethnicities", "conditions", "allergies", "diets", "accommodation", "organisations", "consents"):
         keys = [o["key"] for o in opts[name]]
         assert len(keys) == len(set(keys)), name
+
+
+# ── dates, people and contact details ───────────────────────────────────────
+
+TODAY = date(2026, 10, 16)
+
+
+@pytest.mark.parametrize("dob, gap", [
+    ("2014-10-16", None),                                                 # 12 today
+    ("2014-10-17", "Date of birth: cadets must be at least 12 to join"),  # 12 tomorrow
+    ("2027-01-01", "Date of birth (it's in the future)"),
+])
+def test_the_child_must_be_at_least_twelve(dob, gap):
+    data = complete_form(cadet={**COMPLETE["cadet"], "dob": dob})
+    gaps = missing(RecruitFormData.model_validate(data), TODAY)["cadet"]
+    assert gaps == ([gap] if gap else [])
+
+
+def test_no_parental_responsibility_blocks_the_form():
+    nok = {**COMPLETE["nok"], "hasParentalResponsibility": False}
+    assert _gaps(complete_form(nok=nok))["parent"] == [
+        "Only someone with parental responsibility for the child can fill in and sign this form"]
+
+
+@pytest.mark.parametrize("change, gap", [
+    ({"mobile": "0770090"}, "Cadet's mobile number (it doesn't look complete)"),
+    ({"mobile": "call me"}, "Cadet's mobile number (it doesn't look complete)"),
+    ({"mobile": "+44 (0)7700 900123"}, None),
+    ({"email2": "nope"}, "Cadet's second email address (it doesn't look right)"),
+    ({"postcode": "12345"}, "Cadet's postcode (it doesn't look like a UK postcode)"),
+    ({"postcode": "m350aa"}, None),
+    ({"postcode": "12345", "country": "Ireland"}, None),                # not checked outside the UK
+    ({"postcode": "12345", "country": "United Kingdom"}, "Cadet's postcode (it doesn't look like a UK postcode)"),
+])
+def test_contact_details_must_look_real(change, gap):
+    data = complete_form(contact={**COMPLETE["contact"], **change})
+    assert _gaps(data).get("contact", []) == ([gap] if gap else [])
+
+
+def test_an_additional_contact_is_optional_but_needs_enough_to_be_reached():
+    assert "parent" not in _gaps(complete_form(extra={}))
+    gaps = _gaps(complete_form(extra={"fullName": "John Smith"}))["parent"]
+    assert gaps == ["Additional contact's relationship", "Additional contact's phone number",
+                    "Additional contact's email address"]
+    ok = {"fullName": "John Smith", "relationship": "Father", "mobile": "07700 900456", "email": "j@example.com"}
+    assert "parent" not in _gaps(complete_form(extra=ok))
+
+
+def test_a_condition_added_by_hand_counts_as_something_declared():
+    medical = {"has": True, "ehcPlan": False, "details": [_described("asthma", condition=None, name="Eczema")]}
+    assert "medical" not in _gaps(complete_form(medical=medical))
+
+
+def test_every_listed_condition_can_be_ticked_and_described():
+    keys = [k for k, _ in recruit_form.CONDITIONS]
+    medical = {"has": True, "conditions": keys, "ehcPlan": False, "details": [_described(k, name="x") for k in keys]}
+    assert "medical" not in _gaps(complete_form(medical=medical))
+
+
+def test_tidy_drops_answers_to_questions_the_parent_was_taken_past():
+    form = RecruitFormData.model_validate(complete_form(
+        cadet={**COMPLETE["cadet"], "gender": "male", "genderOther": "x"},
+        consent={**COMPLETE["consent"], "accommodation": False, "accommodationTypes": ["male"]},
+        medical={"has": True, "conditions": ["asthma"], "ehcPlan": False, "ehcCopy": True,
+                 "details": [_described("asthma"), _described("diabetes"), _described("x", condition=None, name="Eczema")],
+                 "allergies": {"nut": {"severity": "mild"}}, "allergyOther": "kiwi", "diet": ["vegan"], "dietOther": "x"},
+    ))
+    t = recruit_form.tidy(form)
+    assert t.cadet.genderOther == "" and t.consent.accommodationTypes == []
+    assert t.medical.ehcCopy is None and t.medical.allergyOther == "" and t.medical.dietOther == ""
+    # Diabetes was unticked; the hand-added one stays.
+    assert [d.name for d in t.medical.details] == ["Asthma", "Eczema"]
+    assert form.medical.ehcCopy is True          # the original is untouched
+
+    gone = recruit_form.tidy(RecruitFormData.model_validate(complete_form(
+        medical={"has": False, "conditions": ["asthma"], "diet": ["vegan"]})))
+    assert gone.medical == recruit_form.Medical(has=False)
