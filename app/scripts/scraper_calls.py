@@ -13,10 +13,7 @@ from core.emailer import ban_alert_email_html, send_email
 from core.qualifications import BLUE, YES, bader_quals_for
 from database.models import (
     AllEvent,
-    AssessmentSheet,
     AttachmentCheckQual,
-    BadgeOrder,
-    BadgeOrderItem,
     BanNotification,
     Cadet,
     CadetAbsence,
@@ -25,12 +22,7 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     CadetQualification,
-    CadetTheoryLesson,
-    CadetTheoryProgress,
-    FlyingPaperwork,
-    StoresItemIssuance,
-    StoresOrder,
-    StoresOrderItem,
+    RemovedCadet,
 )
 from scripts.absence_scraper import get_absences
 from scripts.add_quali import add_qualification_with_attachment
@@ -48,39 +40,27 @@ from scripts.scraper_utils import init_scraper, login, match_email, push_to_goog
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
 
 
-def remove_departed_cadets(db_session, scraped_cins):
-    """Hard-delete cadets in the DB whose CIN wasn't pulled this run (they've left SMS).
+def mark_missing_cadets(db_session, scraped_cins):
+    """Flag cadets in the DB whose CIN wasn't pulled this run; unflag the rest.
 
-    Deletes child rows explicitly, bottom-up, because SQLite (local) doesn't enforce
-    ondelete=CASCADE and several FKs to Cadets.cin have no cascade at all.
-    Returns the number of cadets removed.
+    Nobody is deleted here: a page that misreads must never cost a cadet their
+    records. The overview lists flagged cadets and staff remove them. Returns
+    how many are flagged after this run.
     """
     scraped_cins = set(scraped_cins)
     if not scraped_cins:
-        return 0  # safety: never wipe everyone if a run somehow produced no CINs
+        return 0  # safety: a run that produced no CINs says nothing about anyone
 
-    departed = [c for (c,) in db_session.query(Cadet.cin).all() if c not in scraped_cins]
-    if not departed:
-        return 0
-
-    # order/badge line-items first (FK to their order, not the cadet)
-    order_ids = [i for (i,) in db_session.query(StoresOrder.id).filter(StoresOrder.cadet_id.in_(departed)).all()]
-    if order_ids:
-        db_session.query(StoresOrderItem).filter(StoresOrderItem.order_id.in_(order_ids)).delete(synchronize_session=False)
-    badge_order_ids = [i for (i,) in db_session.query(BadgeOrder.id).filter(BadgeOrder.cadet_id.in_(departed)).all()]
-    if badge_order_ids:
-        db_session.query(BadgeOrderItem).filter(BadgeOrderItem.order_id.in_(badge_order_ids)).delete(synchronize_session=False)
-
-    for model in (
-        StoresOrder, BadgeOrder, StoresItemIssuance, AssessmentSheet,
-        CadetQualification, CadetEvent, CadetMedical, CadetDietary,
-        CadetTheoryProgress, CadetTheoryLesson, CadetAbsence, BanNotification, FlyingPaperwork,
-    ):
-        db_session.query(model).filter(model.cadet_id.in_(departed)).delete(synchronize_session=False)
-
-    db_session.query(Cadet).filter(Cadet.cin.in_(departed)).delete(synchronize_session=False)
+    now = datetime.now()
+    missing = 0
+    for cadet in db_session.query(Cadet).all():
+        if cadet.cin in scraped_cins:
+            cadet.missing_since = None
+        else:
+            cadet.missing_since = cadet.missing_since or now
+            missing += 1
     db_session.commit()
-    return len(departed)
+    return missing
 
 
 def remove_stale_qualifications(db_session, cadet, scraped_types):
@@ -155,19 +135,22 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         removed_quals = 0
         attendance_rows = 0
         scraped_cins = set()
+        removed_cins = {cin for (cin,) in db_session.query(RemovedCadet.cin)}
 
         for entry in cadet_data:
             cin = entry.get("cin")
-            if not cin:
-                logger.warning(f"Skipping {entry.get('first_name')} {entry.get('last_name')} — no CIN found")
-                skipped += 1
-                continue
             try:
                 cin = int(cin)
             except (ValueError, TypeError):
-                logger.warning(f"Skipping {entry.get('first_name')} {entry.get('last_name')} — CIN '{cin}' is not a valid integer")
                 skipped += 1
+                with scraper_lock:
+                    scraper_messages.append(json.dumps({
+                        "type": "warning",
+                        "value": f"[SKIPPED] {entry.get('first_name')} {entry.get('last_name')} — couldn't read a CIN ({cin!r})",
+                    }))
                 continue
+            if cin in removed_cins:
+                continue  # staff removed them; Bader can lag behind
 
             first_key = (entry.get("first_name") or "").strip().upper()
             last_key = (entry.get("last_name") or "").strip().upper()
@@ -263,13 +246,23 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         db_session.commit()
 
         # Run completed successfully (stop_event was checked before the save loop),
-        # so any cadet in the DB but not pulled this run has left SMS — hard-delete them.
-        removed = remove_departed_cadets(db_session, scraped_cins)
+        # so any cadet in the DB but not pulled this run may have left SMS.
+        # Not when someone was skipped: their CIN is missing from scraped_cins,
+        # so they'd be flagged as gone when they're only unread.
+        missing = 0
+        if skipped:
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "warning",
+                    "value": f"Not checking for cadets who've left SMS this run — {skipped} cadet(s) couldn't be read.",
+                }))
+        else:
+            missing = mark_missing_cadets(db_session, scraped_cins)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {removed} removed, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing} no longer on SMS, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
             }))
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 

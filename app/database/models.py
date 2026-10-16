@@ -40,6 +40,11 @@ class Cadet(Base):
     # date each classification was passed ({"Leading Cadet": "2025-07-16", ...}).
     joined_on            = Column(Date, nullable=True)
     classification_dates = Column(JSON, nullable=True)
+    # When the quali scraper first ran without finding this cadet on SMS;
+    # cleared when they're seen again. Nothing is deleted automatically (a
+    # misread page must never cost a cadet their records): the overview flags
+    # them and staff remove them (DELETE /cadets/{cin}).
+    missing_since        = Column(DateTime, nullable=True)
 
     qualifications    = relationship("CadetQualification", back_populates="cadet")
     cadet_events      = relationship("CadetEvent",         back_populates="cadet")
@@ -59,6 +64,18 @@ class Cadet(Base):
     portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
     flights           = relationship("CadetFlight",           back_populates="cadet", cascade="all, delete-orphan",
                                      order_by="CadetFlight.date.desc()")
+
+class RemovedCadet(Base):
+    """A cadet staff removed after they left SMS. The quali scraper skips these
+    CINs, so a cadet Bader still lists for a while isn't added straight back."""
+    __tablename__ = "Removed_Cadets"
+
+    cin        = Column(BigInteger, primary_key=True)
+    first_name = Column(Text, nullable=True)
+    last_name  = Column(Text, nullable=True)
+    removed_at = Column(DateTime, nullable=False)
+    removed_by = Column(Text, nullable=True)
+
 
 class Staff(Base):
     """Squadron staff (CFAV) roster scraped from SMS (staff/default.aspx)."""

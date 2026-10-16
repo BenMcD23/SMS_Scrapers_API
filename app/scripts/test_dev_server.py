@@ -42,6 +42,7 @@ def test_seeds_a_squadron_into_an_empty_database(db):
     missed = len(LAPSED_CADETS) * LAPSED_WEEKS
     assert db.query(CadetAttendance).count() == CADET_COUNT * PARADE_NIGHTS - missed
     assert db.query(Cadet).filter(Cadet.banned).count() == 1
+    assert db.query(Cadet).filter(Cadet.missing_since.isnot(None)).count() == 1  # the overview banner
     # Flights are stored as the letter, as the scraper stores them.
     assert {c.flight for c in db.query(Cadet)} <= {"A", "B", "C"}
 
