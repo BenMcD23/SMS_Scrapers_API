@@ -1312,6 +1312,36 @@ class BadgeItem(Base):
     cell = relationship("BadgeGridCell", back_populates="items")
 
 
+# ─── Recruits ─────────────────────────────────────────────────────────────────
+
+class RecruitApplication(Base):
+    """A new recruit's joining paperwork (RAFAC 3822A + 3822H), filled in online
+    by their parent from a link staff send them. Progress is saved here as they
+    go; once submitted, the PDFs are drawn from ``data`` and the signatures on
+    demand rather than stored. Kept as a holding area apart from Cadets: a
+    recruit has no CIN yet, and nothing here is scraped.
+    """
+    __tablename__ = "Recruit_Applications"
+
+    id               = Column(Integer,  primary_key=True, autoincrement=True)
+    cadet_first_name = Column(Text,     nullable=False)
+    cadet_last_name  = Column(Text,     nullable=False)
+    parent_name      = Column(Text,     nullable=False)
+    parent_email     = Column(Text,     nullable=False)
+    # The link's secret. Stored as-is (not hashed) so staff can copy the link
+    # again; it only opens this one form, whose answers sit in the same row.
+    token            = Column(Text,     nullable=False, unique=True)
+    expires_at       = Column(DateTime, nullable=False)
+    data             = Column(JSON,     nullable=False, default=dict)  # core.recruit_form.RecruitFormData
+    opened_at        = Column(DateTime, nullable=True)
+    last_saved_at    = Column(DateTime, nullable=True)
+    submitted_at     = Column(DateTime, nullable=True)
+    parent_signature = Column(LargeBinary, nullable=True)  # PNG
+    cadet_signature  = Column(LargeBinary, nullable=True)  # PNG; only when a cadet of 16+ signs the 3822H
+    created_by       = Column(Text,     nullable=True)
+    created_at       = Column(DateTime, nullable=False)
+
+
 # ─── Usage ────────────────────────────────────────────────────────────────────
 
 class UsageDaily(Base):

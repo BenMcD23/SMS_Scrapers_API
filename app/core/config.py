@@ -77,6 +77,10 @@ NCO_HOLIDAY_CALENDAR_ID = os.getenv("NCO_HOLIDAY_CALENDAR_ID", "")
 # email (e.g. the session plan awaiting review) instead of "log in and find it".
 SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://sms.317atc.co.uk").rstrip("/")
 
+# The public joining form on the squadron website. A recruit's link is this plus
+# their token; parents fill it in at home before their first parade night.
+RECRUIT_FORM_URL = os.getenv("RECRUIT_FORM_URL", "https://www.317atc.co.uk/enrol").rstrip("/")
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
@@ -94,16 +98,20 @@ SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
 # rather than silently dropping the request.
 ADJUTANT_EMAIL = os.getenv("ADJUTANT_EMAIL", "")
 
-# Browser origins allowed to call the API directly (the SMS site does; the cadet
-# portal proxies through its own server). Comma-separated; localhost is added
-# for local development when CORS_ALLOW_LOCALHOST is true.
+# Browser origins allowed to call the API directly (the SMS site does, and the
+# squadron website's joining form; the cadet portal proxies through its own
+# server). Comma-separated; localhost is added for local development when
+# CORS_ALLOW_LOCALHOST is true (3000 the SMS site, 5173 the website).
 CORS_ORIGINS = [
     o.strip()
-    for o in os.getenv("CORS_ORIGINS", "https://sms.317atc.co.uk,https://317-sms-site.vercel.app").split(",")
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "https://sms.317atc.co.uk,https://317-sms-site.vercel.app,https://www.317atc.co.uk,https://317atc.co.uk",
+    ).split(",")
     if o.strip()
 ]
 if os.getenv("CORS_ALLOW_LOCALHOST", "").lower() == "true":
-    CORS_ORIGINS.append("http://localhost:3000")
+    CORS_ORIGINS += ["http://localhost:3000", "http://localhost:5173"]
 # Vercel preview deploys of the SMS site. Anchored to this project's slug — an
 # unanchored pattern would also match attacker-registered *.vercel.app hosts.
 CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX", r"^https://317-sms-site-[a-z0-9-]+\.vercel\.app$")

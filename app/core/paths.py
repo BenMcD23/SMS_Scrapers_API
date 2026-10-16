@@ -12,3 +12,4 @@ APP_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = APP_DIR / "assets"
 ASSESSMENT_SHEETS_DIR = ASSETS_DIR / "assessment_sheets"
 TEMPLATES_DIR = ASSETS_DIR / "templates"
+RECRUIT_FORMS_DIR = ASSETS_DIR / "recruit_forms"

@@ -43,6 +43,7 @@ from routers import (
     oc,
     portal,
     programme,
+    recruits,
     reference,
     scrapers,
     session_plans,
@@ -194,6 +195,7 @@ app.include_router(nco_comments.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
 app.include_router(classification_day.router)
+app.include_router(recruits.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
 app.include_router(usage_router.router)
