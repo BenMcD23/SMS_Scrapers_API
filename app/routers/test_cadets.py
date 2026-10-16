@@ -18,6 +18,7 @@ from database.models import (
     CadetMedical,
     CadetQualification,
     NcoComment,
+    NcoCommentReply,
     RemovedCadet,
     StoresItemIssuance,
     StoresOrder,
@@ -316,6 +317,9 @@ def _gone(db, **over):
                            created_at=datetime.now()))
     db.add(NcoComment(author_id=1, subject="s", body="b", comment_date=datetime.now(), cadet_id=9,
                       cadet_name="Finley Kay", created_at=datetime.now()))
+    db.flush()
+    db.add(NcoCommentReply(comment_id=db.query(NcoComment.id).scalar(), author_id=1, body="r",
+                           created_at=datetime.now()))
     db.add(StoresOrder(id=5, cadet_id=9, created_at=datetime.now()))
     db.add(StoresOrderItem(order_id=5, item_type="Beret", size="56"))
     db.add(StoresItemIssuance(cadet_id=9, item_category="Beret", last_given=datetime.now()))
@@ -365,8 +369,7 @@ def test_removing_a_cadet_takes_their_records_but_keeps_order_sizes(api, db, per
     assert api.get("/stores/orders", headers=STAFF).json() == []
     [beret] = [t for t in api.get("/stores/insights", headers=STAFF).json()["items"] if t["itemType"] == "Beret"]
     assert beret["topSize"] == "56" and beret["sizes"][0]["waiting"] == 0
-    comment = db.query(NcoComment).one()
-    assert (comment.cadet_id, comment.cadet_name) == (None, "Finley Kay")
+    assert db.query(NcoComment).count() == 0 and db.query(NcoCommentReply).count() == 0
     removed = db.get(RemovedCadet, 9)
     assert (removed.first_name, removed.removed_by) == ("Finley", PERSONAS[persona]["email"])
 

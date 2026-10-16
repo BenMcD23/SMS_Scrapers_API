@@ -35,6 +35,7 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     NcoComment,
+    NcoCommentReply,
     RemovedCadet,
     StoresOrder,
 )
@@ -334,15 +335,15 @@ def _delete_cadet_records(db: Session, cin: int) -> int:
     """Delete everything that hangs off a cadet, except what outlives them.
 
     Stores orders are kept, detached and closed, because the stock insights
-    count their sizes; NCO comments keep the name they stored. Every other table
-    with a key to Cadets is found from the schema, so a new one can't block the
+    count their sizes. Every other table with a key to Cadets is found from the schema, so a new one can't block the
     delete. Returns how many orders were kept.
     """
     kept_orders = db.execute(
         update(StoresOrder).where(StoresOrder.cadet_id == cin)
         .values(cadet_id=None, completed=True)
     ).rowcount
-    db.execute(update(NcoComment).where(NcoComment.cadet_id == cin).values(cadet_id=None))
+    comments = db.query(NcoComment.id).filter(NcoComment.cadet_id == cin).scalar_subquery()
+    db.query(NcoCommentReply).filter(NcoCommentReply.comment_id.in_(comments)).delete(synchronize_session=False)
 
     badge_items = (db.query(BadgeOrderItem.id).join(BadgeOrder)
                    .filter(BadgeOrder.cadet_id == cin).scalar_subquery())
@@ -353,7 +354,7 @@ def _delete_cadet_records(db: Session, cin: int) -> int:
     cadets = Cadet.__table__
     for table in reversed(Base.metadata.sorted_tables):
         for fk in table.foreign_keys:
-            if fk.column.table is cadets and table.name not in ("Stores_Orders", "NCO_Comments"):
+            if fk.column.table is cadets and table.name != "Stores_Orders":
                 db.execute(table.delete().where(fk.parent == cin))
     return kept_orders
 
