@@ -221,6 +221,8 @@ class Consent(_Model):
 
 
 class ConditionDetail(_Model):
+    # The ticked condition this describes; None for one added by hand.
+    condition: ConditionKey | None = None
     name: Short = ""
     severity: Severity | None = None
     soughtAdvice: bool | None = None
@@ -311,6 +313,24 @@ def _address_missing(a: Phones, who: str) -> list[str]:
     return out
 
 
+# What each condition's details must have, in the order the form asks. Medication
+# is optional: plenty of conditions have none.
+_CONDITION_REQUIRED = [
+    ("name", "name"),
+    ("severity", "severity"),
+    ("soughtAdvice", "whether you've sought medical advice"),
+    ("routine", "how it affects them day to day"),
+    ("strenuous", "how it affects them during strenuous activity"),
+    ("control", "whether they can control it"),
+]
+
+
+def condition_name(key: str) -> str:
+    """A ticked condition's name as the details card starts it: the label
+    without its examples ("Learning difficulties", not "... (e.g. dyslexia)")."""
+    return dict(CONDITIONS)[key].split(" (")[0]
+
+
 def missing(form: RecruitFormData) -> dict[str, list[str]]:
     """{step: [what's still needed]} for every step but "sign" (that is the
     signatures themselves, checked at submission). Empty list = step done."""
@@ -354,11 +374,16 @@ def missing(form: RecruitFormData) -> dict[str, list[str]]:
             medical.append("Education, Health and Care Plan")
         elif m.ehcPlan and m.ehcCopy is None:
             medical.append("Whether you'll share the Education, Health and Care Plan")
-        if m.conditions and not m.details:
-            medical.append("Details of each condition")
+        described = {d.condition for d in m.details}
+        for key in m.conditions:
+            if key not in described:
+                medical.append(f"Details of {condition_name(key)}")
         for i, d in enumerate(m.details, 1):
-            if not d.name or not d.severity or d.soughtAdvice is None:
-                medical.append(f"Condition {i}: name, severity and whether you've sought advice")
+            # "No" to sought advice is an answer; only blanks are gaps.
+            gaps = [label for field, label in _CONDITION_REQUIRED if getattr(d, field) in (None, "")]
+            if gaps:
+                who = d.name or (condition_name(d.condition) if d.condition else f"Condition {i}")
+                medical.append(f"{who}: {', '.join(gaps)}")
         if any(a.severity is None for a in m.allergies.values()):
             medical.append("Severity of each allergy")
         if "other" in m.allergies and not m.allergyOther:

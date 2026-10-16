@@ -88,31 +88,64 @@ def test_accommodation_consent_needs_at_least_one_type():
     assert "consent" not in _gaps(complete_form(consent={**consent, "accommodation": False}))
 
 
+def _described(key: str, **over) -> dict:
+    """A fully answered details card for a ticked condition."""
+    return {"condition": key, "name": recruit_form.condition_name(key), "severity": "mild", "soughtAdvice": False,
+            "routine": "None", "strenuous": "Short of breath", "control": "Yes, inhaler", **over}
+
+
 def test_medical_yes_needs_the_details():
     gaps = _gaps(complete_form(medical={"has": True}))["medical"]
     assert "At least one condition, allergy or dietary requirement" in gaps
     assert "Education, Health and Care Plan" in gaps
 
-    medical = {"has": True, "conditions": ["asthma"], "ehcPlan": True,
+    medical = {"has": True, "conditions": ["asthma"], "ehcPlan": True, "details": [_described("asthma")],
                "allergies": {"nut": {"autoInjector": True}, "other": {"severity": "mild"}}, "diet": ["other"]}
     assert _gaps(complete_form(medical=medical))["medical"] == [
         "Whether you'll share the Education, Health and Care Plan",
-        "Details of each condition",
         "Severity of each allergy",
         "Details of the other allergy",
         "Details of the other dietary requirement",
     ]
 
-    medical.update(ehcCopy=True, details=[{"name": "Asthma", "severity": "mild", "soughtAdvice": True}],
-                   allergies={"nut": {"autoInjector": True, "severity": "severe"}}, diet=["vegan"])
+    medical.update(ehcCopy=True, allergies={"nut": {"autoInjector": True, "severity": "severe"}}, diet=["vegan"])
     assert "medical" not in _gaps(complete_form(medical=medical))
 
 
-def test_a_condition_without_its_severity_is_flagged_by_number():
-    medical = {"has": True, "conditions": ["asthma"], "ehcPlan": False,
-               "details": [{"name": "Asthma", "severity": "mild", "soughtAdvice": False}, {"name": "Eczema"}]}
+def test_every_ticked_condition_needs_its_own_details():
+    # Ticking three and describing one used to count as done.
+    medical = {"has": True, "conditions": ["asthma", "diabetes", "learning"], "ehcPlan": False,
+               "details": [_described("asthma")]}
     assert _gaps(complete_form(medical=medical))["medical"] == [
-        "Condition 2: name, severity and whether you've sought advice"]
+        "Details of Diabetes",
+        "Details of Learning difficulties",
+    ]
+    medical["details"] += [_described("diabetes"), _described("learning", name="Dyslexia")]
+    assert "medical" not in _gaps(complete_form(medical=medical))
+
+
+def test_a_condition_card_lists_exactly_what_it_is_missing():
+    medical = {"has": True, "conditions": ["asthma"], "ehcPlan": False,
+               "details": [_described("asthma", severity=None, routine="", control="  ")]}
+    assert _gaps(complete_form(medical=medical))["medical"] == [
+        "Asthma: severity, how it affects them day to day, whether they can control it"]
+
+
+def test_no_to_sought_advice_is_an_answer_and_medication_is_optional():
+    medical = {"has": True, "conditions": ["asthma"], "ehcPlan": False,
+               "details": [_described("asthma", soughtAdvice=False, medication="")]}
+    assert "medical" not in _gaps(complete_form(medical=medical))
+
+
+def test_a_condition_added_by_hand_is_named_by_number_until_it_has_a_name():
+    medical = {"has": True, "conditions": [], "diet": ["vegan"], "ehcPlan": False,
+               "details": [{"severity": "mild", "soughtAdvice": True, "routine": "a", "strenuous": "b", "control": "c"}]}
+    assert _gaps(complete_form(medical=medical))["medical"] == ["Condition 1: name"]
+
+
+def test_the_name_a_ticked_condition_starts_with_drops_the_examples():
+    assert recruit_form.condition_name("learning") == "Learning difficulties"
+    assert recruit_form.condition_name("asthma") == "Asthma"
 
 
 @pytest.mark.parametrize("dob, day, age", [

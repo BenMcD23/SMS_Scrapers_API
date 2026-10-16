@@ -426,7 +426,7 @@ RECRUIT_COMPLETE = {
                 "medicalInform": True, "accommodation": True, "accommodationTypes": ["female", "single"],
                 "transport": True, "medicalTreatment": True, "shareContact": True},
     "medical": {"has": True, "conditions": ["asthma"], "ehcPlan": False,
-                "details": [{"name": "Asthma", "severity": "mild", "soughtAdvice": True,
+                "details": [{"condition": "asthma", "name": "Asthma", "severity": "mild", "soughtAdvice": True,
                              "routine": "None", "strenuous": "Can get short of breath on long runs",
                              "control": "Yes, with her blue inhaler", "medication": "Salbutamol",
                              "dosage": "2 puffs when needed", "storage": "Carried by Erin"}],
