@@ -409,6 +409,19 @@ def seed_inspections(client, headers: dict, now: datetime | None = None) -> None
         assert res.status_code < 300, f"/inspections: {res.status_code} {res.text}"
 
 
+def schema_is_stale(engine, base) -> bool:
+    """True if an existing table lacks a column the models now have."""
+    from sqlalchemy import inspect
+
+    insp = inspect(engine)
+    for table in base.metadata.sorted_tables:
+        if insp.has_table(table.name):
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            if not {c.name for c in table.columns} <= have:
+                return True
+    return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8000)
@@ -432,6 +445,12 @@ def main() -> None:
 
     # create_all, not Alembic: the migrations are written for PostgreSQL, and a
     # throwaway preview database has no history to migrate.
+    if schema_is_stale(engine, Base):
+        # create_all never adds columns to existing tables, so a database seeded
+        # before a model change would 500. It's throwaway data: re-seed it.
+        print(f"{db_path} is behind the models — re-seeding")
+        engine.dispose()
+        db_path.unlink()
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         fresh = seed(db)

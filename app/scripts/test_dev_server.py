@@ -18,6 +18,7 @@ from scripts.dev_server import (
     LAPSED_WEEKS,
     PARADE_NIGHTS,
     _parade_nights,
+    schema_is_stale,
     seed,
     seed_inspections,
     seed_stores,
@@ -227,3 +228,14 @@ def test_the_classification_day_planner_has_every_group_to_show(api, db):
     kinds = {c["kind"] for c in body["cadets"]}
     assert {"exam", "lesson", "first_class", "complete"} <= kinds
     assert any(c["attendance"]["flags"] for c in body["cadets"])
+
+
+def test_a_database_missing_a_model_column_is_flagged_stale():
+    # A preview db seeded before a model gained a column would 500 on every query.
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    assert not schema_is_stale(engine, Base)  # empty: create_all will build it
+    Base.metadata.create_all(engine)
+    assert not schema_is_stale(engine, Base)
+    with engine.begin() as conn:
+        conn.exec_driver_sql('ALTER TABLE "Cadets" DROP COLUMN parent_emails')
+    assert schema_is_stale(engine, Base)
