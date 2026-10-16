@@ -9,3 +9,6 @@ service_account.json
 # pytest-cov output
 .coverage
 htmlcov/
+
+# Playwright MCP browser tool scratch (logs, snapshots)
+.playwright-mcp/
