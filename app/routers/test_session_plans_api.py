@@ -234,3 +234,35 @@ def test_pdf_filename_is_sanitised(api, name, expected):
     plan = _create(api, session_name=name)
     res = api.get(f"/session-plans/{plan['id']}/pdf", headers=NCO)
     assert res.status_code == 200 and expected in res.headers["content-disposition"]
+
+
+def test_ncos_get_names_not_email_addresses(api):
+    # Contact details are staff-only; an NCO sees who wrote, commented and
+    # reviewed by name, which is all the page needs.
+    plan = _submitted(api)
+    pid = plan["id"]
+    api.post(f"/session-plans/{pid}/comments", json={"body": "Looks good"}, headers=STAFF)
+    api.post(f"/session-plans/{pid}/approve", json={}, headers=STAFF)
+
+    for headers in (NCO, NCO2, {"Authorization": "Bearer snco"}):
+        seen = api.get(f"/session-plans/{pid}", headers=headers).json()
+        assert seen["author_email"] == "" and seen["author_name"] == "Nina Corporal"
+        assert seen["reviewed_by"] == "Sam Staff"
+        assert all(c["author_email"] == "" for c in seen["comments"])
+        listed = api.get("/session-plans", headers=headers).json()["plans"]
+        assert all(p["author_email"] == "" for p in listed)
+        assert "@" not in str(seen) + str(listed)
+
+    staff_view = api.get(f"/session-plans/{pid}", headers=STAFF).json()
+    assert staff_view["author_email"] == "nco@317atc.co.uk"
+    assert staff_view["reviewed_by"] == "staff@317atc.co.uk"
+    assert staff_view["comments"][0]["author_email"] == "staff@317atc.co.uk"
+
+
+def test_a_reviewer_with_no_account_shows_as_staff_to_ncos(api, db):
+    plan = _submitted(api)
+    api.post(f"/session-plans/{plan['id']}/approve", json={}, headers=STAFF)
+    row = db.get(sp.SessionPlan, plan["id"])
+    row.reviewed_by = "gone@317atc.co.uk"
+    db.commit()
+    assert api.get(f"/session-plans/{plan['id']}", headers=NCO).json()["reviewed_by"] == "Staff"

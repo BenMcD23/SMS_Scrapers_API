@@ -84,7 +84,8 @@ def _to_dict(comment: NcoComment, viewer: User, is_staff: bool) -> dict:
         "cadet_name": _cadet_name(comment.cadet) if comment.cadet else comment.cadet_name,
         "cadet_flight": comment.cadet.flight if comment.cadet else None,
         "author_name": _user_name(comment.author),
-        "author_email": comment.author.email if comment.author else "",
+        # Addresses for staff only; NCOs see the name (personal data they don't need).
+        "author_email": comment.author.email if comment.author and is_staff else "",
         "created_at": _iso(comment.created_at),
         "is_mine": comment.author_id == viewer.id,
         "can_delete": comment.author_id == viewer.id or is_staff,
@@ -93,7 +94,7 @@ def _to_dict(comment: NcoComment, viewer: User, is_staff: bool) -> dict:
                 "id": r.id,
                 "body": r.body,
                 "author_name": _user_name(r.author),
-                "author_email": r.author.email if r.author else "",
+                "author_email": r.author.email if r.author and is_staff else "",
                 "created_at": _iso(r.created_at),
                 "can_delete": r.author_id == viewer.id or is_staff,
             }
