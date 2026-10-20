@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from core.config import SESSION_PLAN_ALERT_EMAIL
 from core.db import get_db, get_or_create_user
@@ -128,7 +128,23 @@ def _is_staff(idinfo: dict) -> bool:
     return get_user_role(idinfo.get("email", "")) == "staff"
 
 
-def _summary(plan: SessionPlan) -> dict:
+def _email(user: User | None, is_staff: bool) -> str:
+    """A plan or comment author's address, for staff only. NCOs and SNCOs see
+    the name; contact details are personal data they have no need for."""
+    return user.email if user and is_staff else ""
+
+
+def _reviewer(plan: SessionPlan, is_staff: bool) -> str | None:
+    """Who reviewed the plan: their address for staff, their name for everyone
+    else (``reviewed_by`` stores the address, so look the account up)."""
+    if not plan.reviewed_by or is_staff:
+        return plan.reviewed_by
+    user = object_session(plan).query(User).filter(User.email == plan.reviewed_by).first()
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else ""
+    return name or "Staff"
+
+
+def _summary(plan: SessionPlan, is_staff: bool) -> dict:
     return {
         "id": plan.id,
         "session_name": plan.session_name,
@@ -136,7 +152,7 @@ def _summary(plan: SessionPlan) -> dict:
         "session_date": _iso(plan.session_date),
         "status": plan.status,
         "author_name": _user_name(plan.author),
-        "author_email": plan.author.email if plan.author else "",
+        "author_email": _email(plan.author, is_staff),
         "created_at": _iso(plan.created_at),
         "updated_at": _iso(plan.updated_at),
         "submitted_at": _iso(plan.submitted_at),
@@ -144,7 +160,7 @@ def _summary(plan: SessionPlan) -> dict:
 
 
 def _detail(plan: SessionPlan, viewer: User, is_staff: bool) -> dict:
-    data = _summary(plan)
+    data = _summary(plan, is_staff)
     is_author = plan.author_id == viewer.id
     data.update({
         "aim": plan.aim or "",
@@ -157,7 +173,7 @@ def _detail(plan: SessionPlan, viewer: User, is_staff: bool) -> dict:
         "feedback": plan.feedback or {},
         "amendment_note": plan.amendment_note,
         "reviewed_at": _iso(plan.reviewed_at),
-        "reviewed_by": plan.reviewed_by,
+        "reviewed_by": _reviewer(plan, is_staff),
         "attachments": [
             {"id": a.id, "filename": a.filename, "mime_type": a.mime_type,
              "uploaded_at": _iso(a.uploaded_at)}
@@ -165,7 +181,7 @@ def _detail(plan: SessionPlan, viewer: User, is_staff: bool) -> dict:
         ],
         "comments": [
             {"id": c.id, "body": c.body, "author_name": _user_name(c.author),
-             "author_email": c.author.email if c.author else "",
+             "author_email": _email(c.author, is_staff),
              "created_at": _iso(c.created_at),
              "can_delete": c.author_id == viewer.id or is_staff}
             for c in plan.comments
@@ -259,7 +275,7 @@ async def list_plans(
         .order_by(SessionPlan.updated_at.desc())
         .all()
     )
-    return {"plans": [_summary(p) for p in plans], "is_staff": is_staff}
+    return {"plans": [_summary(p, is_staff) for p in plans], "is_staff": is_staff}
 
 
 @router.get("/session-plans/{plan_id}")

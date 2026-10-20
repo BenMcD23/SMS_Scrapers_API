@@ -128,3 +128,18 @@ def test_a_renamed_cadet_shows_their_current_name(api, db, cadet):
     db.query(Cadet).update({"rank": "Sgt"})
     db.commit()
     assert api.get("/nco-comments", headers=NCO).json()["comments"][0]["cadet_name"] == "Sgt Amy Able"
+
+
+def test_only_staff_see_authors_email_addresses(api):
+    # NCOs see who wrote a note by name; the address is staff-only.
+    cid = _post(api).json()["id"]
+    api.post(f"/nco-comments/{cid}/replies", json={"body": "Agreed"}, headers=STAFF)
+
+    for headers in (NCO, NCO2, {"Authorization": "Bearer snco"}):
+        note = next(c for c in api.get("/nco-comments", headers=headers).json()["comments"] if c["id"] == cid)
+        assert note["author_email"] == "" and note["author_name"] == "Nina Corporal"
+        assert note["replies"][0]["author_email"] == ""
+
+    note = next(c for c in api.get("/nco-comments", headers=STAFF).json()["comments"] if c["id"] == cid)
+    assert note["author_email"] == "nco@317atc.co.uk"
+    assert note["replies"][0]["author_email"] == "staff@317atc.co.uk"
