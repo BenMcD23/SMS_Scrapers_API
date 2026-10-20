@@ -1,15 +1,22 @@
 version: 2
 
+# Version updates come once a quarter as at most two PRs per ecosystem: one
+# for minor/patch (auto-merged when CI passes, see
+# workflows/dependabot-automerge.yml) and one for majors (merged by hand). Small
+# regular steps keep a major from turning into a migration. Security updates
+# ignore the schedule, the groups and the cooldown: they open straight away,
+# one PR per advisory.
+
 updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "quarterly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
     # Skip releases younger than a week: bad releases are usually yanked or patched
-    # by then. Security updates ignore the cooldown.
+    # by then.
     cooldown:
       default-days: 7
     commit-message:
@@ -22,16 +29,20 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      pip-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
 
+  # Never auto-merged: a Python "minor" (3.14 -> 3.15) is a runtime change.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "quarterly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
-    # Skip releases younger than a week: bad releases are usually yanked or patched
-    # by then. Security updates ignore the cooldown.
     cooldown:
       default-days: 7
     commit-message:
@@ -40,12 +51,10 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "quarterly"
       time: "06:00"
       timezone: "Europe/London"
     open-pull-requests-limit: 5
-    # Skip releases younger than a week: bad releases are usually yanked or patched
-    # by then. Security updates ignore the cooldown.
     cooldown:
       default-days: 7
     commit-message:
