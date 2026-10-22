@@ -116,6 +116,8 @@ BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)
 # member can then review it, so this defaults to the shared notifications group
 # rather than one person.
 SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
+# Who gets a cadet's DofE activity log PDF when they finish a section.
+ACTIVITY_LOG_ALERT_EMAIL = os.getenv("ACTIVITY_LOG_ALERT_EMAIL", NOTIFY_GROUP)
 # The adjutant, who removes a cadet from the squadron. The OC dashboard's
 # "Request removal" button emails this address. Unset = the button refuses
 # rather than silently dropping the request.

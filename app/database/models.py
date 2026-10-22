@@ -65,6 +65,9 @@ class Cadet(Base):
     portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
     flights           = relationship("CadetFlight",           back_populates="cadet", cascade="all, delete-orphan",
                                      order_by="CadetFlight.date.desc()")
+    activity_log_enrolment = relationship("ActivityLogEnrolment", back_populates="cadet", uselist=False,
+                                          cascade="all, delete-orphan")
+    activity_logs     = relationship("ActivityLog", back_populates="cadet", cascade="all, delete-orphan")
 
 class RemovedCadet(Base):
     """A cadet staff removed after they left SMS. The quali scraper skips these
@@ -1375,6 +1378,66 @@ class RecruitApplication(Base):
     cadet_signature  = Column(LargeBinary, nullable=True)  # PNG; only when a cadet of 16+ signs the 3822H
     created_by       = Column(Text,     nullable=True)
     created_at       = Column(DateTime, nullable=False)
+
+
+# ─── Activity logs (DofE) ─────────────────────────────────────────────────────
+
+class ActivityLogEnrolment(Base):
+    """Staff switching a cadet's activity log on. The portal only shows the
+    Activity Log page to a cadet with one of these, so it never appears for
+    someone who isn't doing their DofE. Turning it off deletes this row and
+    keeps the logs, so switching it back on loses nothing."""
+    __tablename__ = "Activity_Log_Enrolments"
+
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), primary_key=True)
+    level      = Column(Text, nullable=False, default="Bronze")  # Bronze | Silver | Gold
+    enabled_at = Column(DateTime, nullable=False)
+    enabled_by = Column(Text, nullable=True)
+
+    cadet = relationship("Cadet", back_populates="activity_log_enrolment")
+
+
+class ActivityLog(Base):
+    """One section of a cadet's award (Skills, Volunteering or Physical) at one
+    level: what they're doing, for how long, and who signs it off. The paper
+    "Activity Log" sheet's header, with its rows in ActivityLogEntry."""
+    __tablename__ = "Activity_Logs"
+    __table_args__ = (UniqueConstraint("cadet_id", "section", "level", name="uq_activity_log_section"),)
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    cadet_id        = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    section         = Column(Text, nullable=False)  # skills | volunteering | physical
+    level           = Column(Text, nullable=False)
+    activity        = Column(Text, nullable=False, default="")
+    goal            = Column(Text, nullable=False, default="")
+    assessor_name   = Column(Text, nullable=False, default="")
+    assessor_role   = Column(Text, nullable=False, default="")
+    duration_months = Column(Integer, nullable=False)  # 3, 6, 12 or 18
+    start_date      = Column(Date, nullable=False)
+    # Set when the last week needed is logged and staff have been emailed the
+    # PDF; cleared if edits take it back under, so finishing again re-sends it.
+    completed_at    = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, nullable=False)
+    updated_at      = Column(DateTime, nullable=False)
+
+    cadet   = relationship("Cadet", back_populates="activity_logs")
+    entries = relationship("ActivityLogEntry", back_populates="log", cascade="all, delete-orphan",
+                           order_by="ActivityLogEntry.date")
+
+
+class ActivityLogEntry(Base):
+    """One thing the cadet did on one day, and for how long."""
+    __tablename__ = "Activity_Log_Entries"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    log_id      = Column(Integer, ForeignKey("Activity_Logs.id", ondelete="CASCADE"), nullable=False, index=True)
+    date        = Column(Date, nullable=False)
+    description = Column(Text, nullable=False)
+    minutes     = Column(Integer, nullable=False)
+    created_at  = Column(DateTime, nullable=False)
+    created_by  = Column(Text, nullable=True)  # email: the cadet, or the staff member who added it
+
+    log = relationship("ActivityLog", back_populates="entries")
 
 
 # ─── Usage ────────────────────────────────────────────────────────────────────

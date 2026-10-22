@@ -9,7 +9,8 @@ realistic data, e.g. from a cloud Claude session that can't reach the cluster.
 The database (data/dev.db by default, gitignored) is seeded on first run and
 kept after that, so anything clicked into the UI survives a restart. Sign in
 with the site's dev buttons (AUTH_DEV_BYPASS=1): "Staff" is the owner account,
-"SNCO" and "NCO" are cadets on the seeded roster.
+"SNCO" and "NCO" are cadets on the seeded roster, and the portal's "Cadet" is
+an ordinary cadet (Cdt Kian Ashworth) with no NCO role.
 
 The seed is deterministic, so a screenshot taken today matches one taken next
 week. It never touches a database that already has cadets in it.
@@ -135,6 +136,9 @@ def seed(db, now: datetime | None = None) -> bool:
     # pages that look the signed-in NCO up by email find them.
     cadets[0].rank, cadets[0].email = "Sgt", security._dev_fake_email("snco")
     cadets[1].rank, cadets[1].email = "Cpl", security._dev_fake_email("nco")
+    # The portal's plain-cadet login. The name matches the portal's DEV_USERS.
+    cadets[2].first_name, cadets[2].last_name = "Kian", "Ashworth"
+    cadets[2].rank, cadets[2].email = "Cadet", security._dev_fake_email("cadet")
     cadets[7].banned = True
     # One the scraper stopped finding on SMS, so the overview's banner shows.
     cadets[22].missing_since = now - timedelta(days=9)
@@ -161,6 +165,7 @@ def seed(db, now: datetime | None = None) -> bool:
 
     seed_portal(db, cadets, rng, now)
     seed_flying_paperwork(db, cadets, now)
+    seed_activity_logs(db, cadets, now)
 
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
@@ -184,6 +189,79 @@ def seed(db, now: datetime | None = None) -> bool:
 
     db.commit()
     return True
+
+
+def ensure_dev_cadet(db, now: datetime | None = None) -> bool:
+    """Give a database seeded before the portal's plain-cadet login existed
+    that cadet, so it signs in to a real roster record with DofE switched on
+    (Bronze, no sections yet) without a --reset. Returns whether it added one."""
+    from sqlalchemy import func
+
+    import core.security as security
+    from database.models import ActivityLogEnrolment, Cadet
+
+    email = security._dev_fake_email("cadet")
+    if db.query(Cadet).filter(func.lower(Cadet.email) == email).count():
+        return False
+    now = now or datetime.now()
+    cin = (db.query(func.max(Cadet.cin)).scalar() or FIRST_CIN) + 1
+    db.add(Cadet(cin=cin, first_name="Kian", last_name="Ashworth", email=email, rank="Cadet", flight="A",
+                 phone_number="07700900999", date_of_birth=datetime(now.year - 15, 3, 14)))
+    db.add(ActivityLogEnrolment(cadet_id=cin, level="Bronze", enabled_at=now - timedelta(weeks=2)))
+    db.commit()
+    return True
+
+
+# DofE activity logs: (cadet index, section, months, weeks since start, weeks
+# skipped). The dev NCO is part-way through two sections with a gap to catch
+# up and one still to set up; the dev SNCO isn't switched on, so the portal's
+# other path (no Activity Log link) shows too. Index 2 is up to date on all
+# three, index 4 has finished one and index 6 hasn't started.
+ACTIVITY_LOGS = [
+    (1, "volunteering", 3, 10, (3, 7)),
+    (1, "skills", 6, 5, ()),
+    (2, "physical", 3, 6, ()),
+    (2, "skills", 3, 6, (5,)),
+    (2, "volunteering", 3, 6, ()),
+    (3, "volunteering", 6, 8, (4, 5, 6, 8)),
+    (4, "volunteering", 3, 13, ()),
+    (4, "physical", 6, 13, (12,)),
+    (5, "skills", 3, 2, (0, 1)),
+]
+ACTIVITY_LOG_CADETS = (1, 2, 3, 4, 5, 6)
+
+
+def seed_activity_logs(db, cadets, now: datetime) -> None:
+    """Written directly, like the roster: the API would refuse back-dated
+    starts relative to the real today, and these are relative to ``now``."""
+    from core.activity_log import SECTIONS, progress, week_start
+    from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry
+
+    today = now.date()
+    for i in ACTIVITY_LOG_CADETS:
+        db.add(ActivityLogEnrolment(cadet_id=cadets[i].cin, level="Bronze", enabled_at=now - timedelta(weeks=14),
+                                    enabled_by="s.hughes@example.com"))
+    what = {"volunteering": ("Helping at the charity shop", "Learn to run the till on my own", "Shop manager"),
+            "skills": ("Learning the guitar", "Play three songs all the way through", "Music teacher"),
+            "physical": ("Swimming", "Swim 1km without stopping", "Swimming coach")}
+    for i, section, months, weeks_ago, skipped in ACTIVITY_LOGS:
+        activity, goal, role = what[section]
+        start = week_start(today) - timedelta(weeks=weeks_ago)
+        log = ActivityLog(cadet_id=cadets[i].cin, section=section, level="Bronze", activity=activity, goal=goal,
+                          assessor_name="Sarah Hughes", assessor_role=role, duration_months=months,
+                          start_date=start, created_at=now - timedelta(weeks=weeks_ago),
+                          updated_at=now - timedelta(weeks=weeks_ago))
+        for week in range(weeks_ago + 1):
+            day = start + timedelta(weeks=week, days=2)
+            if week in skipped or day > today:
+                continue
+            log.entries.append(ActivityLogEntry(
+                date=day, description=f"{activity} ({SECTIONS[section].lower()})", minutes=60 + 15 * (week % 3),
+                created_at=datetime.combine(day, datetime.min.time()) + timedelta(hours=19),
+                created_by=cadets[i].email))
+        if progress(log, today)["complete"]:
+            log.completed_at = now - timedelta(days=1)
+        db.add(log)
 
 
 def seed_flying_paperwork(db, cadets, now: datetime) -> None:
@@ -472,6 +550,20 @@ def _signature_png() -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
+    """A few rows in the audit trail, so a preview has reads and sends to show.
+    The medical read goes through the real endpoint, which records itself. A
+    parade-night text can't be sent from a preview, so its row is written
+    directly, the way the send handler would."""
+    from database.models import AuditEvent
+
+    client.get("/cadets/audit/medical", headers=headers)
+    db.add(AuditEvent(occurred_at=(now or datetime.now()) - timedelta(days=6), actor_email="s.hughes@example.com",
+                      actor_role="staff", action="send", resource="parade_message", resource_id="1",
+                      detail={"sent": 41, "failed": 2}))
+    db.commit()
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -579,9 +671,14 @@ def main() -> None:
         with SessionLocal() as db:
             seed_recruits(client, headers, db)
         seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
+        with SessionLocal() as db:
+            seed_audit(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
+        with SessionLocal() as db:
+            if ensure_dev_cadet(db):
+                print("added the portal's dev cadet, Cdt Kian Ashworth")
 
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 
