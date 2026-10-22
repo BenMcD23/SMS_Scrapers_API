@@ -239,7 +239,8 @@ def seed_activity_logs(db, cadets, now: datetime) -> None:
 
     today = now.date()
     for i in ACTIVITY_LOG_CADETS:
-        db.add(ActivityLogEnrolment(cadet_id=cadets[i].cin, level="Bronze", enabled_at=now - timedelta(weeks=14)))
+        db.add(ActivityLogEnrolment(cadet_id=cadets[i].cin, level="Bronze", enabled_at=now - timedelta(weeks=14),
+                                    enabled_by="s.hughes@example.com"))
     what = {"volunteering": ("Helping at the charity shop", "Learn to run the till on my own", "Shop manager"),
             "skills": ("Learning the guitar", "Play three songs all the way through", "Music teacher"),
             "physical": ("Swimming", "Swim 1km without stopping", "Swimming coach")}
@@ -549,6 +550,20 @@ def _signature_png() -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
+    """A few rows in the audit trail, so a preview has reads and sends to show.
+    The medical read goes through the real endpoint, which records itself. A
+    parade-night text can't be sent from a preview, so its row is written
+    directly, the way the send handler would."""
+    from database.models import AuditEvent
+
+    client.get("/cadets/audit/medical", headers=headers)
+    db.add(AuditEvent(occurred_at=(now or datetime.now()) - timedelta(days=6), actor_email="s.hughes@example.com",
+                      actor_role="staff", action="send", resource="parade_message", resource_id="1",
+                      detail={"sent": 41, "failed": 2}))
+    db.commit()
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -656,6 +671,8 @@ def main() -> None:
         with SessionLocal() as db:
             seed_recruits(client, headers, db)
         seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
+        with SessionLocal() as db:
+            seed_audit(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

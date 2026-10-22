@@ -30,6 +30,7 @@ from scripts.dev_server import (
     ensure_dev_cadet,
     schema_is_stale,
     seed,
+    seed_audit,
     seed_inspections,
     seed_oc_dashboard,
     seed_recruits,
@@ -363,6 +364,19 @@ def _seed_everything(api, db):
     seed_inspections(api, staff, now=NOW)
     seed_recruits(api, staff, db)
     seed_oc_dashboard(api, api.as_("oc"))
+    seed_audit(api, staff, db, now=NOW)
+
+
+def test_the_audit_trail_has_a_read_through_the_api_and_a_send(api, db):
+    from database.models import AuditEvent
+
+    seed(db, now=NOW)
+    seed_audit(api, api.as_("staff"), db, now=NOW)
+    rows = {(e.action, e.resource): e for e in db.query(AuditEvent)}
+    # The medical read was recorded by the endpoint itself, as the real one is.
+    read = rows[("read", "cadet_medical")]
+    assert read.actor_role == "staff" and read.detail["cadet_count"] > 0
+    assert rows[("send", "parade_message")].resource_id == "1"
 
 
 def test_the_oc_custom_dashboard_has_panels_that_all_answer(api, db):
