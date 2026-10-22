@@ -61,7 +61,6 @@ def bader(monkeypatch):
 
     monkeypatch.setattr(calls, "init_scraper", lambda user_id, db: ("page", Ctx(), {}))
     monkeypatch.setattr(calls, "login", lambda *a, **k: None)
-    monkeypatch.setattr(calls, "push_to_google_apps_script", lambda *a, **k: None)
     monkeypatch.setattr(calls, "get_cadet_names", lambda page: (["x"], 1, {}))
     monkeypatch.setattr(calls, "get_parent_emails", lambda page: [])
     monkeypatch.setattr(calls, "get_workspace_users", lambda: [
@@ -578,31 +577,3 @@ def test_medical_replaces_per_cadet_and_skips_unknowns(db, bader, monkeypatch):
     assert len(run.warnings()) == 2
     assert run.parsed()[-1] == {"type": "status", "value": "done"}
 
-
-# ── sheets push ───────────────────────────────────────────────────────────────
-
-def test_sheets_push_failures_are_warnings(monkeypatch):
-    import requests
-
-    import scripts.scraper_utils as su
-
-    run = Run()
-    seen = {}
-
-    def ok(url, json, headers, timeout):
-        seen["timeout"] = timeout
-        return type("R", (), {"status_code": 200, "text": "ok"})()
-
-    monkeypatch.setattr(su.requests, "post", ok)
-    su.push_to_google_apps_script({"a": 1}, "https://x", run.messages, run.lock)
-    assert seen["timeout"] and run.warnings() == []
-
-    monkeypatch.setattr(su.requests, "post", lambda *a, **k: type("R", (), {"status_code": 500, "text": "boom"})())
-    su.push_to_google_apps_script({}, "https://x", run.messages, run.lock)
-
-    def down(*a, **k):
-        raise requests.ConnectionError("no route")
-
-    monkeypatch.setattr(su.requests, "post", down)
-    su.push_to_google_apps_script({}, "https://x", run.messages, run.lock)
-    assert run.errors() == [] and len(run.warnings()) == 2
