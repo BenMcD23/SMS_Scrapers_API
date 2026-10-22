@@ -374,6 +374,75 @@ def save_custom_dashboard(
     return _custom_response(row)
 
 
+# ── Leaver email template ─────────────────────────────────────────────────────
+#
+# The email the OC sends to a leaver's parents from their own account. Saved per
+# user in DashboardLayout (like the custom dashboard) so it needs no migration.
+# {{ cadet_name }} and {{ weeks_absent }} are filled in by the site per cadet.
+
+OC_LEAVING_EMAIL = "oc-leaving-email"
+
+
+class LeavingEmailBody(BaseModel):
+    subject: str = Field(max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+
+
+def _leaving_email_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else {}
+    except ValueError:
+        saved = {}  # A damaged row reads as "nothing saved" so the site falls back to its default.
+    if not isinstance(saved, dict):
+        saved = {}
+    subject, body = saved.get("subject"), saved.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        return {"subject": None, "body": None}
+    return {"subject": subject, "body": body}
+
+
+def _leaving_email_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_LEAVING_EMAIL)
+        .first()
+    )
+    return user, row
+
+
+@router.get("/oc/leaving-email")
+def get_leaving_email(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """The saved template, or ``null`` subject and body when none is saved."""
+    return _leaving_email_response(_leaving_email_row(db, idinfo)[1])
+
+
+@router.put("/oc/leaving-email")
+def save_leaving_email(
+    body: LeavingEmailBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    user, row = _leaving_email_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_LEAVING_EMAIL)
+        db.add(row)
+    row.sections = json.dumps({"subject": body.subject, "body": body.body})
+    row.updated_at = datetime.now()
+    db.commit()
+    return _leaving_email_response(row)
+
+
+@router.delete("/oc/leaving-email")
+def reset_leaving_email(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """Back to the site's default wording."""
+    _, row = _leaving_email_row(db, idinfo)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return _leaving_email_response(None)
+
+
 class ParentEmails(BaseModel):
     emails: str = ""
 
