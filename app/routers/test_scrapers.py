@@ -64,39 +64,22 @@ def test_staff_only(api, method, path, persona):
 
 
 @pytest.mark.parametrize("path", ["/scraper-stream/medical", "/upload-stream/x"])
-def test_streams_check_the_header_or_a_ticket(api, path):
+def test_streams_check_the_authorization_header(api, path):
     assert api.get(path).status_code == 401
+    assert api.get(path, headers=api.as_("nco")).status_code == 403
     assert api.get(path, headers=api.as_("cadet")).status_code == 403
 
 
 @pytest.mark.parametrize("path", ["/scraper-stream/medical", "/upload-stream/x"])
-def test_streams_no_longer_accept_the_id_token_in_the_query(api, path):
-    # The whole point of tickets: a raw ID token in a URL ends up in proxy logs.
-    assert api.get(path + "?token=staff").status_code == 401
-
-
-def test_stream_ticket_needs_staff(api):
-    assert api.post("/stream-ticket").status_code == 401
-    for persona in ("snco", "nco", "cadet"):
-        assert api.post("/stream-ticket", headers=api.as_(persona)).status_code == 403
-
-
-def test_stream_ticket_opens_one_stream_once(api):
-    res = api.post("/stream-ticket", headers=STAFF)
-    assert res.status_code == 200 and res.json()["expires_in"] == 30
-    ticket = res.json()["ticket"]
-    # Past auth (404 for the unknown job), and then burnt.
-    assert api.get(f"/upload-stream/nope?ticket={ticket}").status_code == 404
-    assert api.get(f"/upload-stream/nope?ticket={ticket}").status_code == 401
-
-
-def test_stream_rejects_an_unknown_ticket(api):
-    assert api.get("/scraper-stream/medical?ticket=made-up").status_code == 401
+@pytest.mark.parametrize("persona", ["staff", "nco"])
+def test_streams_no_longer_accept_the_id_token_in_the_query(api, path, persona):
+    # A raw ID token in a URL ends up in proxy logs, history and Referer, so the
+    # sites send it as a header; a query token must not authenticate anyone.
+    assert api.get(f"{path}?token={persona}").status_code == 401
 
 
 def test_stream_unknown_names(api):
-    ticket = api.post("/stream-ticket", headers=STAFF).json()["ticket"]
-    assert api.get(f"/scraper-stream/nope?ticket={ticket}").status_code == 404
+    assert api.get("/scraper-stream/nope", headers=STAFF).status_code == 404
     assert api.get("/upload-stream/nope", headers=STAFF).status_code == 404
 
 

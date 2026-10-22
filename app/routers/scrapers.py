@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -25,7 +25,6 @@ from core.config import SCHEDULER_ENABLED
 from core.db import get_db, get_or_create_user
 from core.scheduler import scheduler
 from core.security import require_staff
-from core.stream_ticket import TTL_SECONDS, issue_ticket, redeem_ticket
 from database.database import SessionLocal, engine
 from database.models import AttachmentCheckQual, ScraperRun, ScraperSchedule
 from routers.cadets import invalidate_cadet_caches
@@ -381,37 +380,12 @@ def _format_run_logs(messages: list[str]) -> str:
     return "\n".join(lines)
 
 
-@router.post("/stream-ticket")
-def create_stream_ticket(idinfo: dict = Depends(require_staff)):
-    """Mint a short-lived ticket for an EventSource connection.
-
-    Called over a normal authenticated request; the ticket is what goes in the
-    stream URL, so the ID token never reaches a query string.
-    """
-    return {"ticket": issue_ticket(idinfo["email"]), "expires_in": TTL_SECONDS}
-
-
-def _staff_from_header_or_ticket(authorization: str, ticket: str):
-    """Authorise a stream from either a normal header or a stream ticket.
-
-    Tickets are only issued behind require_staff and live 30 seconds, so
-    redeeming one is proof of a recent staff check; no second role lookup.
-    """
-    if authorization:
-        return require_staff(authorization)
-    email = redeem_ticket(ticket)
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid or expired stream ticket")
-    return {"email": email}
-
-
 @router.get("/scraper-stream/{name}")
 async def named_scraper_stream(
     name: str,
     authorization: str = Header(None),
-    ticket: str = Query(None),
 ):
-    _staff_from_header_or_ticket(authorization, ticket)
+    require_staff(authorization)
 
     if name not in named_scraper_states:
         raise HTTPException(status_code=404, detail="Unknown scraper")
@@ -448,9 +422,8 @@ async def named_scraper_stream(
 async def upload_stream(
     job_id: str,
     authorization: str = Header(None),
-    ticket: str = Query(None),
 ):
-    _staff_from_header_or_ticket(authorization, ticket)
+    require_staff(authorization)
 
     with upload_jobs_lock:
         state = upload_jobs.get(job_id)
