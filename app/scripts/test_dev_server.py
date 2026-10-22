@@ -13,6 +13,7 @@ from database.database import Base
 from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
 from scripts.dev_server import (
     CADET_COUNT,
+    DEV_ENV,
     INSPECTION_NIGHTS,
     LAPSED_CADETS,
     LAPSED_WEEKS,
@@ -27,6 +28,12 @@ from scripts.dev_server import (
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
+
+
+def test_the_preview_server_declares_itself_dev():
+    # core.config refuses to start with the fake-auth bypass unless ENV=dev, so
+    # DEV_ENV must carry both or the preview crashes on import.
+    assert DEV_ENV["DEV_FAKE_AUTH"] == "1" and DEV_ENV["ENV"] == "dev"
 
 
 def fresh_session():

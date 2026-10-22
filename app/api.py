@@ -13,12 +13,16 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from core import leader, usage
-from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, SCHEDULER_ENABLED
+from core.config import CORS_ORIGIN_REGEX, CORS_ORIGINS, IS_PROD, SCHEDULER_ENABLED
 from core.jobs import register_jobs
 from core.logging import configure_logging
+from core.ratelimit import limiter
 from core.scheduler import scheduler
 from core.security import require_user
 from database.database import engine
@@ -80,7 +84,21 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown()
 
 
-app = FastAPI(lifespan=lifespan)
+# The API is published to the public internet over Tailscale Funnel, so in prod
+# the interactive docs would hand any passer-by a full route and schema
+# inventory. They stay on in dev, where they're genuinely useful.
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
+    openapi_url=None if IS_PROD else "/openapi.json",
+)
+
+# Per-caller rate limiting. SlowAPIMiddleware applies the default limit to every
+# route; the tight per-endpoint limits live on the handlers themselves.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Compress larger JSON payloads (cadet lists, stats, stores) — the home link is
 # the bottleneck, so shrinking the body cuts transfer time noticeably.

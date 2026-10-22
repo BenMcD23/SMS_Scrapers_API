@@ -30,6 +30,9 @@ DEFAULT_DB = ROOT / "data" / "dev.db"
 # Without Google service-account keys the group lookup returns None rather than
 # calling out, and the dev token (DEV_FAKE_AUTH) decides the role instead.
 DEV_ENV = {
+    # Required alongside DEV_FAKE_AUTH: config refuses to start with the bypass
+    # on unless ENV=dev.
+    "ENV": "dev",
     "DEV_FAKE_AUTH": "1",
     "CORS_ALLOW_LOCALHOST": "true",
     "SCHEDULER_ENABLED": "false",

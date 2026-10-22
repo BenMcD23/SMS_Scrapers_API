@@ -278,7 +278,7 @@ Real auth needs a Google login plus a Workspace service account, which can't be
 automated (e.g. for Playwright UI sweeps). A flag-gated bypass sidesteps it:
 
 ```bash
-DEV_FAKE_AUTH=1 PYTHONPATH=app uvicorn api:app --reload
+ENV=dev DEV_FAKE_AUTH=1 PYTHONPATH=app uvicorn api:app --reload
 ```
 
 When `DEV_FAKE_AUTH=1`, `verify_token` accepts `Bearer dev-fake-token` as the
@@ -286,7 +286,10 @@ owner account (`OWNER_EMAIL`, role `staff`) — no Google round-trip. A role
 suffix picks a different tier: `dev-fake-token:snco` and `dev-fake-token:nco`
 log in as `dev.snco@` / `dev.nco@` with that role, so you can test what an NCO
 or SNCO actually sees. It's inert unless the flag is set, so production is
-unaffected (see `app/core/security.py`).
+unaffected (see `app/core/security.py`). The app also refuses to start with the
+flag on unless `ENV=dev`, so a stray `DEV_FAKE_AUTH=1` in a deploy fails loudly
+instead of opening the API. `ENV=dev` also turns on `/docs`, `/redoc` and
+`/openapi.json`, which are hidden everywhere else.
 
 The frontend has the matching flag: set `AUTH_DEV_BYPASS=1` in the UI's
 `.env.local` and the login page shows Staff / SNCO / NCO buttons that issue the
