@@ -61,7 +61,7 @@ def _section(body, key):
 # ── who can get in ───────────────────────────────────────────────────────────
 
 STAFF_ROUTES = [
-    ("get", "/activity-logs/weekly", None),
+    ("get", "/activity-logs/grid", None),
     ("get", "/activity-logs/cadets/1", None),
     ("put", "/activity-logs/cadets/1/enrolment", {"level": "Bronze"}),
     ("delete", "/activity-logs/cadets/1/enrolment", None),
@@ -86,7 +86,7 @@ def test_staff_routes_turn_away_everyone_but_staff(api, cadets, persona, method,
 
 @pytest.mark.parametrize("persona", ["staff", "owner", "oc"])
 def test_every_staff_member_sees_the_dashboard(api, persona):
-    assert api.get("/activity-logs/weekly", headers=api.as_(persona)).status_code == 200
+    assert api.get("/activity-logs/grid", headers=api.as_(persona)).status_code == 200
 
 
 @pytest.mark.parametrize("method,path,body", [
@@ -321,9 +321,9 @@ def test_finishing_a_section_emails_staff_the_pdf_once(api, enrolled, outbox, db
     assert len(outbox) == 1
     mail = outbox[0]
     assert mail["to"] == ACTIVITY_LOG_ALERT_EMAIL
-    assert mail["subject"] == "Cpl Cara Cadet has finished their Bronze Volunteering section"
+    assert mail["subject"] == "Cpl Cara Cadet has finished their Bronze DofE Volunteering section"
     assert "Kate Siddall" in mail["html"]
-    assert mail["attachment_filename"] == "Volunteering Section Bronze Activity Log - Cara Cadet.pdf"
+    assert mail["attachment_filename"] == "Volunteering Section Bronze DofE Activity Log - Cara Cadet.pdf"
     text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(mail["attachment"])).pages)
     assert "Barnardo" in text and "12 of 12" in text
 
@@ -424,81 +424,98 @@ def test_the_pdf_of_a_section_not_set_up_is_404(api, enrolled):
     assert api.get("/activity-logs/cadets/1/skills/pdf", headers=api.as_("staff")).status_code == 404
 
 
-# ── the weekly dashboard ─────────────────────────────────────────────────────
+# ── the week grid ────────────────────────────────────────────────────────────
 
-def _dashboard(api, **params):
-    res = api.get("/activity-logs/weekly", params=params, headers=api.as_("staff"))
+def _grid(api, **params):
+    res = api.get("/activity-logs/grid", params=params, headers=api.as_("staff"))
     assert res.status_code == 200
     return res.json()
 
 
-def test_the_dashboard_is_empty_with_nobody_switched_on(api, cadets):
-    body = _dashboard(api)
+def _cells(cadet, key):
+    """One section's states across the weeks shown, oldest first."""
+    return [w["cells"][key]["state"] for w in cadet["weeks"]]
+
+
+def test_the_grid_is_the_last_eight_weeks_ending_this_one(api, cadets):
+    body = _grid(api)
     assert body["cadets"] == []
-    assert (body["week_start"], body["week_end"], body["is_current_week"]) == ("2026-10-19", "2026-10-25", True)
+    assert body["current_week"] == "2026-10-19"
+    assert body["weeks"][0] == "2026-08-31" and body["weeks"][-1] == "2026-10-19"
+    assert len(body["weeks"]) == 8
 
 
-def test_the_dashboard_shows_who_has_and_hasnt_logged_this_week(api, enrolled):
-    # Cara: volunteering done this week, skills a bit, physical not set up.
+def test_each_week_shows_which_sections_got_their_hour(api, enrolled):
+    # Cara: volunteering logged three weeks ago, last week a bit, this week done.
     _setup(api)
-    _setup(api, section="skills")
-    api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(TODAY)]}, headers=api.as_("cadet"))
-    api.post(f"{ME}/skills/entries", json={"entries": [_entry(TODAY, 20)]}, headers=api.as_("cadet"))
+    body = {"entries": [_entry(TODAY - timedelta(weeks=3)), _entry(TODAY - timedelta(weeks=1), 20), _entry(TODAY)]}
+    api.post(f"{ME}/volunteering/entries", json=body, headers=api.as_("cadet"))
     # Zoë: volunteering set up, nothing logged.
     _setup(api, who="cadet2")
 
-    body = _dashboard(api)
+    grid = _grid(api, weeks=4)
     # Nora isn't switched on, so isn't listed. Sorted by surname, Ó under O.
-    assert [c["name"] for c in body["cadets"]] == ["Cara Cadet", "Zoë Ó Briain"]
-    cara, zoe = body["cadets"]
-    assert {s["section"]: (s["status"], s["minutes"]) for s in cara["sections"]} == {
-        "skills": ("some", 20), "volunteering": ("done", 60), "physical": ("not_set_up", 0)}
-    assert cara["behind"] is True
+    assert [c["name"] for c in grid["cadets"]] == ["Cara Cadet", "Zoë Ó Briain"]
+    cara, zoe = grid["cadets"]
+    assert _cells(cara, "volunteering") == ["done", "missed", "short", "done"]
+    assert cara["weeks"][2]["cells"]["volunteering"]["minutes"] == 20
+    # Not set up: nothing due, in any week.
+    assert _cells(cara, "physical") == ["off"] * 4
+    # Nothing yet this week isn't "missed" while there are days left.
+    assert _cells(zoe, "volunteering") == ["missed", "missed", "missed", "due"]
+    assert cara["behind"] is False and zoe["behind"] is True
     vol = _section(zoe, "volunteering")
-    assert (vol["status"], vol["missed"], vol["last_added"]) == ("none", 12, None)
+    assert (vol["set_up"], vol["weeks_done"], vol["weeks_needed"], vol["last_added"]) == (True, 0, 12, None)
+
+
+def test_under_an_hour_this_week_needs_chasing(api, enrolled):
+    _setup(api)
+    api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(TODAY, 30)]}, headers=api.as_("cadet"))
+    cara = _grid(api)["cadets"][0]
+    assert cara["behind"] is True
+    assert _cells(cara, "volunteering")[-1] == "short"
 
 
 def test_a_section_not_set_up_yet_isnt_chased_but_nothing_set_up_is(api, enrolled):
     # Cadets often start one section at a time.
     _setup(api)
     api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(TODAY)]}, headers=api.as_("cadet"))
-    cara, zoe = sorted(_dashboard(api)["cadets"], key=lambda c: c["cin"])
+    cara, zoe = sorted(_grid(api)["cadets"], key=lambda c: c["cin"])
     assert cara["behind"] is False
     assert zoe["behind"] is True
 
 
-def test_a_cadet_with_everything_done_isnt_behind(api, enrolled):
-    for section in ("skills", "volunteering", "physical"):
-        _setup(api, section=section)
-        api.post(f"{ME}/{section}/entries", json={"entries": [_entry(TODAY)]}, headers=api.as_("cadet"))
-    cara = _dashboard(api)["cadets"][0]
-    assert cara["behind"] is False
-    assert all(s["last_added"] for s in cara["sections"])
-
-
-def test_finished_and_not_yet_started_sections_have_nothing_due(api, enrolled):
-    _setup(api)
-    api.post(f"{ME}/volunteering/entries", json=_twelve_weeks(), headers=api.as_("cadet"))
+def test_weeks_before_the_start_and_after_finishing_have_nothing_due(api, enrolled, db):
+    _setup(api, start_date=(TODAY - timedelta(weeks=2)).isoformat())
     _setup(api, section="skills", start_date=(TODAY + timedelta(days=10)).isoformat())
-    _setup(api, section="physical", start_date=(TODAY + timedelta(days=10)).isoformat())
-    cara = _dashboard(api)["cadets"][0]
-    assert [s["status"] for s in cara["sections"]] == ["not_started", "complete", "not_started"]
+    cara = _grid(api, weeks=5)["cadets"][0]
+    assert _cells(cara, "volunteering") == ["off", "off", "missed", "missed", "due"]
+    assert _cells(cara, "skills") == ["off"] * 5
+
+    # Finished two weeks ago: the weeks since have nothing due.
+    from datetime import datetime
+    log = db.query(ActivityLog).filter(ActivityLog.section == "volunteering").one()
+    log.completed_at = datetime(2026, 10, 7)
+    db.commit()
+    cara = _grid(api, weeks=5)["cadets"][0]
+    assert _cells(cara, "volunteering")[-2:] == ["off", "off"]
+    assert _section(cara, "volunteering")["complete"] is True
     assert cara["behind"] is False
 
 
-def test_looking_back_a_week_counts_that_weeks_entries(api, enrolled):
+def test_stepping_back_shows_earlier_weeks_but_never_future_ones(api, enrolled):
     _setup(api)
-    last_week = TODAY - timedelta(days=7)
-    api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(last_week, 90)]}, headers=api.as_("cadet"))
-    body = _dashboard(api, week=last_week.isoformat())
-    assert (body["week_start"], body["is_current_week"]) == ("2026-10-12", False)
-    assert _section(body["cadets"][0], "volunteering")["minutes"] == 90
-    assert _section(_dashboard(api)["cadets"][0], "volunteering")["status"] == "none"
+    api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(START, 90)]}, headers=api.as_("cadet"))
+    grid = _grid(api, end=(START + timedelta(days=3)).isoformat(), weeks=2)
+    assert grid["weeks"] == ["2026-07-20", "2026-07-27"]
+    assert grid["cadets"][0]["weeks"][1]["cells"]["volunteering"] == {"state": "done", "minutes": 90}
+    # A date after this week is clamped to this week.
+    assert _grid(api, end="2027-01-01")["weeks"][-1] == "2026-10-19"
 
 
-def test_a_garbled_week_is_422(api):
-    res = api.get("/activity-logs/weekly", params={"week": "last"}, headers=api.as_("staff"))
-    assert res.status_code == 422
+@pytest.mark.parametrize("params", [{"end": "last"}, {"weeks": 0}, {"weeks": 27}])
+def test_bad_grid_params_are_422(api, params):
+    assert api.get("/activity-logs/grid", params=params, headers=api.as_("staff")).status_code == 422
 
 
 def test_removing_a_cadet_takes_their_log_with_them(api, enrolled, db):

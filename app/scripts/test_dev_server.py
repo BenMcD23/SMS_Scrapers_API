@@ -304,7 +304,8 @@ def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, mo
     assert db.get(ActivityLogEnrolment, nco.cin) and not db.get(ActivityLogEnrolment, snco.cin)
     assert db.query(ActivityLog).filter(ActivityLog.completed_at.isnot(None)).count() >= 1
 
-    body = api.get("/activity-logs/weekly", headers=api.as_("staff")).json()
-    statuses = {s["status"] for c in body["cadets"] for s in c["sections"]}
-    assert {"done", "none", "not_set_up", "complete"} <= statuses
+    body = api.get("/activity-logs/grid", headers=api.as_("staff")).json()
+    states = {cell["state"] for c in body["cadets"] for w in c["weeks"] for cell in w["cells"].values()}
+    assert {"done", "missed", "due", "off"} <= states
+    assert any(s["complete"] for c in body["cadets"] for s in c["sections"])
     assert any(c["behind"] for c in body["cadets"]) and not all(c["behind"] for c in body["cadets"])

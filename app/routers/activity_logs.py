@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session, selectinload
 
-from core.activity_log import SECTIONS, WEEKLY_MINUTES, progress, week_start
+from core.activity_log import SECTIONS, WEEKLY_MINUTES, minutes_by_week, progress, week_start
 from core.config import ACTIVITY_LOG_ALERT_EMAIL
 from core.db import get_current_cadet, get_db
 from core.emailer import activity_log_complete_email_html, send_email
@@ -154,8 +154,8 @@ def _enrolment(cadet: Cadet, *, staff: bool) -> ActivityLogEnrolment:
     if not cadet.activity_log_enrolment:
         raise HTTPException(
             status_code=409 if staff else 403,
-            detail="Turn on this cadet's activity log first." if staff
-            else "Your activity log isn't switched on yet. Speak to a member of staff.",
+            detail="Turn on this cadet's DofE activity log first." if staff
+            else "Your DofE activity log isn't switched on yet. Speak to a member of staff.",
         )
     return cadet.activity_log_enrolment
 
@@ -199,7 +199,7 @@ def _pdf_fields(log: ActivityLog, cadet: Cadet) -> dict:
 
 
 def _pdf_filename(log: ActivityLog, cadet: Cadet) -> str:
-    return f"{SECTIONS[log.section]} Section {log.level} Activity Log - {cadet.first_name} {cadet.last_name}.pdf"
+    return f"{SECTIONS[log.section]} Section {log.level} DofE Activity Log - {cadet.first_name} {cadet.last_name}.pdf"
 
 
 def _settle(db: Session, log: ActivityLog, cadet: Cadet) -> None:
@@ -223,7 +223,7 @@ def _settle(db: Session, log: ActivityLog, cadet: Cadet) -> None:
         fields = _pdf_fields(log, cadet)
         send_email(
             ACTIVITY_LOG_ALERT_EMAIL,
-            f"{fields['cadet_name']} has finished their {log.level} {fields['section']} section",
+            f"{fields['cadet_name']} has finished their {log.level} DofE {fields['section']} section",
             activity_log_complete_email_html(
                 fields["cadet_name"], fields["section"], log.level, fields["weeks_done"],
                 fields["assessor_name"], log.activity,
@@ -338,33 +338,44 @@ def my_delete_entry(section: Section, entry_id: int, db: Session = Depends(get_d
 
 # ── Staff ────────────────────────────────────────────────────────────────────
 
-def _week_status(log: ActivityLog | None, minutes: int, week: date, today: date) -> str:
-    """One section's state for the week being looked at, as the dashboard
-    colours it. A finished section or one that hasn't begun has nothing due."""
-    if log is None:
-        return "not_set_up"
-    if log.completed_at is not None:
-        return "complete"
-    if week_start(log.start_date) > week:
-        return "not_started"
+GRID_WEEKS = 8
+MAX_GRID_WEEKS = 26
+
+
+def _cell(log: ActivityLog | None, minutes: int, week: date, current: date) -> str:
+    """One section in one week of the grid. ``off`` is a week with nothing
+    due: not set up, before the start, after finishing, or still to come.
+    The current week is ``due`` rather than ``missed`` while there are days
+    left to do it."""
+    if log is None or week > current or week < week_start(log.start_date):
+        return "off"
+    if log.completed_at is not None and week > week_start(log.completed_at.date()):
+        return "off"
     if minutes >= WEEKLY_MINUTES:
         return "done"
-    return "some" if minutes else "none"
+    if minutes:
+        return "short"
+    return "due" if week == current else "missed"
 
 
-@router.get("/activity-logs/weekly")
-def weekly_dashboard(
-    week: date | None = Query(None, description="Any day in the week; this week when omitted"),
+@router.get("/activity-logs/grid")
+def weekly_grid(
+    end: date | None = Query(None, description="Any day in the last week shown; this week when omitted"),
+    weeks: int = Query(GRID_WEEKS, ge=1, le=MAX_GRID_WEEKS),
     db: Session = Depends(get_db),
     _: dict = Depends(require_staff),
 ):
-    """Every cadet with their log switched on, and what they've logged for
-    each section in one Monday–Sunday week. ``behind`` marks a cadet with a
-    section that's due and under an hour, or nothing set up, so staff can
-    chase them."""
+    """Every cadet with their log switched on, against a run of Monday–Sunday
+    weeks: which sections got their hour each week. One look shows who's
+    logging, who's slipping and who never does.
+
+    ``behind`` is about this week, whatever weeks are shown: a section that's
+    due and still under an hour, or nothing set up at all (a section not set
+    up yet isn't chased on its own; cadets often start them one at a time)."""
     today = _today()
-    start = week_start(week or today)
-    end = start + timedelta(days=6)
+    current = week_start(today)
+    last = min(week_start(end or today), current)
+    shown = [last - timedelta(weeks=n) for n in range(weeks - 1, -1, -1)]
     enrolments = (db.query(ActivityLogEnrolment)
                   .options(selectinload(ActivityLogEnrolment.cadet)).all())
     logs = (db.query(ActivityLog).options(selectinload(ActivityLog.entries))
@@ -377,22 +388,26 @@ def weekly_dashboard(
     for enrolment in enrolments:
         cadet = enrolment.cadet
         mine = by_cadet.get((cadet.cin, enrolment.level), {})
+        totals = {key: minutes_by_week(log.entries) for key, log in mine.items()}
+
+        def cell(key: str, week: date, mine=mine, totals=totals) -> dict:
+            minutes = totals.get(key, {}).get(week, 0)
+            return {"state": _cell(mine.get(key), minutes, week, current), "minutes": minutes}
+
         sections = []
         for key, label in SECTIONS.items():
             log = mine.get(key)
-            in_week = [e for e in log.entries if start <= e.date <= end] if log else []
-            minutes = sum(e.minutes for e in in_week)
             prog = progress(log, today) if log else None
             sections.append({
                 "section": key,
                 "label": label,
-                "status": _week_status(log, minutes, start, today),
-                "minutes": minutes,
+                "set_up": log is not None,
+                "complete": log is not None and log.completed_at is not None,
                 "weeks_done": prog["weeks_done"] if prog else 0,
                 "weeks_needed": prog["weeks_needed"] if prog else None,
-                "missed": len(prog["missed"]) if prog else 0,
                 "last_added": max((e.created_at for e in log.entries), default=None) if log else None,
             })
+        now = [cell(key, current)["state"] for key in SECTIONS]
         rows.append({
             "_sort": (_fold(cadet.last_name), _fold(cadet.first_name)),
             "cin": cadet.cin,
@@ -400,15 +415,14 @@ def weekly_dashboard(
             "rank": cadet.rank,
             "flight": cadet.flight,
             "level": enrolment.level,
-            # A section not set up yet isn't chased (cadets often start them
-            # one at a time), unless none is: then they haven't begun at all.
-            "behind": any(s["status"] in ("none", "some") for s in sections)
-            or all(s["status"] == "not_set_up" for s in sections),
+            "behind": any(state in ("due", "short") for state in now) or not mine,
             "sections": sections,
+            "weeks": [{"week_start": w.isoformat(), "cells": {key: cell(key, w) for key in SECTIONS}}
+                      for w in shown],
         })
     rows.sort(key=lambda r: r.pop("_sort"))
-    return {"week_start": start.isoformat(), "week_end": end.isoformat(),
-            "is_current_week": start == week_start(today), "cadets": rows}
+    return {"weeks": [w.isoformat() for w in shown], "current_week": current.isoformat(),
+            "cadets": rows}
 
 
 @router.get("/activity-logs/cadets/{cin}")
@@ -437,7 +451,7 @@ def unenrol(cin: int, db: Session = Depends(get_db), _: dict = Depends(require_s
     on picks up where they were."""
     cadet = _cadet_or_404(db, cin)
     if not cadet.activity_log_enrolment:
-        raise HTTPException(status_code=404, detail="This cadet's activity log isn't switched on.")
+        raise HTTPException(status_code=404, detail="This cadet's DofE activity log isn't switched on.")
     db.delete(cadet.activity_log_enrolment)
     db.commit()
     db.refresh(cadet)

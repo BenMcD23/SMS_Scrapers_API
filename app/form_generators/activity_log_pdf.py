@@ -36,7 +36,7 @@ def build_activity_log_pdf(log: dict) -> bytes:
     goal, assessor_name, assessor_role, start_date, end_date (dates),
     weeks_done, weeks_needed, and entries [{date, description, minutes}]."""
     buf = io.BytesIO()
-    title = f"{log['section']} Section {log['level']} Activity Log — {log['cadet_name']}"
+    title = f"{log['section']} Section {log['level']} DofE Activity Log — {log['cadet_name']}"
     doc = SimpleDocTemplate(
         buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
         topMargin=12 * mm, bottomMargin=14 * mm, title=title,
