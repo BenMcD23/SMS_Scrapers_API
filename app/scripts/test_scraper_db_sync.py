@@ -20,6 +20,7 @@ from database.models import (
     CadetAttendance,
     CadetDietary,
     CadetEvent,
+    CadetLeavingProcess,
     CadetMedical,
     CadetQualification,
     FlyingEvent,
@@ -62,6 +63,7 @@ def bader(monkeypatch):
     monkeypatch.setattr(calls, "login", lambda *a, **k: None)
     monkeypatch.setattr(calls, "push_to_google_apps_script", lambda *a, **k: None)
     monkeypatch.setattr(calls, "get_cadet_names", lambda page: (["x"], 1, {}))
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [])
     monkeypatch.setattr(calls, "get_workspace_users", lambda: [
         {"first_name_key": "AMY", "last_name_key": "ABLE", "email": "amy@317atc.co.uk"}])
     return closed
@@ -274,6 +276,105 @@ def test_a_playwright_timeout_is_reported_as_such(db, bader, monkeypatch):
     run = Run()
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     assert run.errors() == ["A page took too long to load (Timeout)."]
+
+
+# ── parent emails (end of the cadet scrape) ───────────────────────────────────
+
+def _nok(cin, first, last, email):
+    return {"cin": cin, "first_name": first, "last_name": last, "email": email}
+
+
+def test_parent_emails_from_bader_are_added_to_the_ones_the_oc_typed(db, bader, monkeypatch):
+    db.add_all([
+        Cadet(cin=1001, first_name="Amy", last_name="Able", parent_emails="typed@x.com"),
+        Cadet(cin=1002, first_name="Bob", last_name="Baker"),
+        Cadet(cin=1003, first_name="Cat", last_name="Cole", parent_emails="kept@x.com"),
+    ])
+    db.commit()
+    _quali(monkeypatch, [_amy(), _amy(cin="1002", first_name="Bob", last_name="Baker"),
+                         _amy(cin="1003", first_name="Cat", last_name="Cole")])
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [
+        _nok(1001, "Amy", "Able", "mum@x.com"),
+        _nok(1001, "Amy", "Able", "TYPED@x.com"),       # already there, other case
+        _nok(1002, "Robert", "Baker", "dad@x.com"),     # matched on CIN, not the name
+        _nok(1002, "Robert", "Baker", "not an address"),
+        _nok(1003, "Cat", "Cole", ""),                  # NoK without an email
+        _nok(9999, "Ghost", "Nobody", "ghost@x.com"),
+        _nok(None, "No", "Cin", "nocin@x.com"),
+    ])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.get(Cadet, 1001).parent_emails == "typed@x.com;mum@x.com"
+    assert db.get(Cadet, 1002).parent_emails == "dad@x.com"
+    assert db.get(Cadet, 1003).parent_emails == "kept@x.com"   # nothing new: untouched
+    assert run.errors() == []
+    warnings = run.warnings()
+    assert any("[NO MATCH] Ghost Nobody (CIN 9999)" in w for w in warnings)
+    assert any("[NO MATCH] No Cin (no CIN)" in w for w in warnings)
+    assert not any("ghost@x.com" in w or "nocin@x.com" in w for w in warnings)
+    # An invalid address is reported by cadet, never echoed into the run log.
+    assert any("Robert Baker is not a valid address" in w for w in warnings)
+    assert not any("not an address" in w for w in warnings)
+
+
+def test_scraped_parent_emails_are_what_the_oc_leaving_page_offers(api, db, bader, monkeypatch):
+    # Amy has been off parade nine weeks, so she's on the leaving list.
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
+    db.add_all([
+        CadetAttendance(cadet_id=1001, date=datetime(2026, 7, 29), status="Present", register_type="Parade Night"),
+        CadetAttendance(cadet_id=1001, date=datetime(2026, 9, 30), status="Absent", register_type="Parade Night"),
+    ])
+    db.commit()
+    _quali(monkeypatch, [_amy()])
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [
+        _nok(1001, "Amy", "Able", "mum@x.com"), _nok(1001, "Amy", "Able", "dad@x.com")])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+
+    oc = api.as_("oc")
+    [row] = api.get("/leaving-process", headers=oc).json()["cadets"]
+    assert (row["cin"], row["parentEmails"]) == (1001, ["mum@x.com", "dad@x.com"])
+    assert api.get("/oc/parent-emails", headers=oc).json()["bcc"] == "mum@x.com;dad@x.com"
+    # Marking the parents notified records the scraped addresses it went to.
+    assert api.post("/leaving-process/1001/notified", headers=oc).status_code == 200
+    db.expire_all()
+    assert db.query(CadetLeavingProcess).one().sent_to == "mum@x.com;dad@x.com"
+
+
+@pytest.mark.parametrize("report", [
+    lambda page: [],
+    lambda page: (_ for _ in ()).throw(calls.PlaywrightTimeoutError("report never drew")),
+    lambda page: (_ for _ in ()).throw(RuntimeError("Bader 500")),
+])
+def test_a_missing_or_empty_report_keeps_parent_emails_and_the_cadet_scrape(db, bader, monkeypatch, report):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able", parent_emails="typed@x.com"))
+    db.commit()
+    _quali(monkeypatch, [_amy(rank="Sgt")])
+    monkeypatch.setattr(calls, "get_parent_emails", report)
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    amy = db.get(Cadet, 1001)
+    assert (amy.parent_emails, amy.rank) == ("typed@x.com", "Sgt")
+    # A warning, not an error: the run still counts as a success.
+    assert run.errors() == []
+    assert any("parent emails left as they were" in w for w in run.warnings())
+
+
+def test_a_stopped_run_does_not_read_the_next_of_kin_report(db, bader, monkeypatch):
+    _quali(monkeypatch, [_amy()])
+    read = []
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: read.append(page) or [])
+    run = Run()
+    real_commit = db.commit
+
+    def commit_then_stop():
+        real_commit()
+        run.stop.set()
+    monkeypatch.setattr(db, "commit", commit_then_stop)
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert read == []
 
 
 # ── absences ──────────────────────────────────────────────────────────────────
