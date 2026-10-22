@@ -569,9 +569,10 @@ class UserProfile(Base):
 
 
 class DashboardLayout(Base):
-    """One user's order for the sections of a dashboard they can rearrange
-    (the OC dashboard today). Per user, so one OC moving things round doesn't
-    reshuffle another's; `dashboard` names the page so others can join later."""
+    """One user's saved arrangement of a dashboard: the section order of the
+    OC dashboard ("oc"), or the panels of the OC's custom dashboard
+    ("oc-custom"). Per user, so one OC moving things round doesn't reshuffle
+    another's; `dashboard` names the page so others can join later."""
     __tablename__ = "Dashboard_Layouts"
     __table_args__ = (
         UniqueConstraint("user_id", "dashboard", name="uq_dashboard_layout_user"),
@@ -580,7 +581,7 @@ class DashboardLayout(Base):
     id         = Column(Integer,  primary_key=True, autoincrement=True)
     user_id    = Column(Integer,  ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
     dashboard  = Column(Text,     nullable=False)
-    sections   = Column(Text,     nullable=False, default="[]")  # JSON list of section ids, top first
+    sections   = Column(Text,     nullable=False, default="[]")  # JSON: section ids top first, or {"panels": [...]} for oc-custom
     updated_at = Column(DateTime, nullable=False)
 
 

@@ -6,12 +6,13 @@ coverage and expiries); the committee-request section lives on the frontend.
 
 import json
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from core import cache
+from core import cache, dashboard_query
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.db import get_db, get_or_create_user
 from core.leaving import parse_emails
@@ -262,6 +263,115 @@ def reset_dashboard_layout(db: Session = Depends(get_db), idinfo: dict = Depends
         db.delete(row)
         db.commit()
     return _layout_response(None)
+
+
+# ── Custom dashboard ──────────────────────────────────────────────────────────
+#
+# A second, build-your-own dashboard: the OC adds panels, each a query from
+# core.dashboard_query, and drags and resizes them on a 12-column grid. Saved
+# per user in the same table as the section order, under its own name.
+
+OC_CUSTOM = "oc-custom"
+MAX_PANELS = 40
+GRID_COLS = 12
+
+
+class PanelQueryBody(BaseModel):
+    query: dashboard_query.QuerySpec
+    range_days: int | None = Field(default=None, ge=1, le=3660)
+
+
+class Panel(BaseModel):
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    title: str = Field(min_length=1, max_length=80)
+    viz: Literal["bar", "line", "stat", "table"]
+    query: dashboard_query.QuerySpec
+    x: int = Field(ge=0, lt=GRID_COLS)
+    y: int = Field(ge=0, le=1000)
+    w: int = Field(ge=1, le=GRID_COLS)
+    h: int = Field(ge=1, le=20)
+
+
+class CustomDashboardBody(BaseModel):
+    range_days: int | None = Field(default=90, ge=1, le=3660)
+    panels: list[Panel] = Field(default_factory=list, max_length=MAX_PANELS)
+
+
+def _custom_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_CUSTOM)
+        .first()
+    )
+    return user, row
+
+
+def _custom_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else {}
+    except ValueError:
+        saved = {}  # A damaged row reads as an empty dashboard rather than breaking the page.
+    if not isinstance(saved, dict):
+        saved = {}
+    panels = saved.get("panels")
+    return {
+        "range_days": saved.get("range_days", 90),
+        # Passed back as saved, even a panel whose field has since left the
+        # allowlist: its query answers 400 and the panel says why, rather than
+        # vanishing from the OC's dashboard without a word.
+        "panels": panels if isinstance(panels, list) else [],
+        "customised": row is not None,
+    }
+
+
+@router.get("/oc/custom-dashboard/datasets")
+def custom_dashboard_datasets(idinfo: dict = Depends(require_oc)):
+    """What a panel can be built from: datasets, their fields and measures."""
+    return dashboard_query.catalogue()
+
+
+@router.post("/oc/custom-dashboard/query")
+def custom_dashboard_query(
+    body: PanelQueryBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    try:
+        return dashboard_query.run(db, body.query, body.range_days)
+    except dashboard_query.QueryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/oc/custom-dashboard")
+def get_custom_dashboard(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    return _custom_response(_custom_row(db, idinfo)[1])
+
+
+@router.put("/oc/custom-dashboard")
+def save_custom_dashboard(
+    body: CustomDashboardBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    ids = [p.id for p in body.panels]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="Each panel needs its own id")
+    for p in body.panels:
+        if p.x + p.w > GRID_COLS:
+            raise HTTPException(status_code=400, detail=f"'{p.title}' runs off the side of the grid")
+        try:
+            dashboard_query.validate(p.query)
+        except dashboard_query.QueryError as e:
+            raise HTTPException(status_code=400, detail=f"{p.title}: {e}")
+    user, row = _custom_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_CUSTOM)
+        db.add(row)
+    row.sections = json.dumps(body.model_dump())
+    row.updated_at = datetime.now()
+    db.commit()
+    return _custom_response(row)
 
 
 class ParentEmails(BaseModel):
