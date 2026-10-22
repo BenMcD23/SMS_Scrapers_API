@@ -10,7 +10,15 @@ from sqlalchemy.pool import StaticPool
 import core.security as security
 from core.qualifications import BADGE_TYPES
 from database.database import Base
-from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
+from database.models import (
+    ActivityLogEnrolment,
+    Cadet,
+    CadetAttendance,
+    CadetFlight,
+    CadetQualification,
+    CadetTheoryProgress,
+    Staff,
+)
 from scripts.dev_server import (
     CADET_COUNT,
     INSPECTION_NIGHTS,
@@ -18,6 +26,7 @@ from scripts.dev_server import (
     LAPSED_WEEKS,
     PARADE_NIGHTS,
     _parade_nights,
+    ensure_dev_cadet,
     schema_is_stale,
     seed,
     seed_inspections,
@@ -60,8 +69,33 @@ def test_the_dev_logins_are_on_the_roster(db):
     emails = {c.email: c.rank for c in db.query(Cadet)}
     assert emails[security._dev_fake_email("snco")] == "Sgt"
     assert emails[security._dev_fake_email("nco")] == "Cpl"
+    assert emails[security._dev_fake_email("cadet")] == "Cadet"
     # The dev staff login is the owner; Settings needs a staff record to link to.
     assert db.query(Staff).filter(Staff.email == security.OWNER_EMAIL).count() == 1
+
+
+def test_the_dev_cadet_has_dofe_switched_on(db):
+    # The portal's cadet login is for testing DofE, so it must land enrolled.
+    seed(db, now=NOW)
+    cadet = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("cadet")).one()
+    assert (cadet.first_name, cadet.last_name) == ("Kian", "Ashworth")
+    assert cadet.activity_log_enrolment.level == "Bronze"
+    # A freshly seeded database already has them, so a restart adds nobody.
+    assert ensure_dev_cadet(db, now=NOW) is False
+    assert db.query(Cadet).count() == CADET_COUNT
+
+
+def test_a_database_seeded_before_the_dev_cadet_gets_one_added(db):
+    # Someone's preview database from before the login existed: the cadet is
+    # added alongside what's there, enrolled for DofE, and only once.
+    db.add(Cadet(cin=5, first_name="Kept", last_name="Mine"))
+    db.commit()
+    assert ensure_dev_cadet(db, now=NOW) is True
+    assert ensure_dev_cadet(db, now=NOW) is False
+    cadet = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("cadet")).one()
+    assert cadet.cin == 6 and cadet.rank == "Cadet"
+    assert db.query(ActivityLogEnrolment).filter_by(cadet_id=6, level="Bronze").count() == 1
+    assert db.get(Cadet, 5).first_name == "Kept"
 
 
 def test_every_seeded_qualification_counts_toward_a_dashboard_badge(db):

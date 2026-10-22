@@ -188,6 +188,27 @@ def seed(db, now: datetime | None = None) -> bool:
     return True
 
 
+def ensure_dev_cadet(db, now: datetime | None = None) -> bool:
+    """Give a database seeded before the portal's plain-cadet login existed
+    that cadet, so it signs in to a real roster record with DofE switched on
+    (Bronze, no sections yet) without a --reset. Returns whether it added one."""
+    from sqlalchemy import func
+
+    import core.security as security
+    from database.models import ActivityLogEnrolment, Cadet
+
+    email = security._dev_fake_email("cadet")
+    if db.query(Cadet).filter(func.lower(Cadet.email) == email).count():
+        return False
+    now = now or datetime.now()
+    cin = (db.query(func.max(Cadet.cin)).scalar() or FIRST_CIN) + 1
+    db.add(Cadet(cin=cin, first_name="Kian", last_name="Ashworth", email=email, rank="Cadet", flight="A",
+                 phone_number="07700900999", date_of_birth=datetime(now.year - 15, 3, 14)))
+    db.add(ActivityLogEnrolment(cadet_id=cin, level="Bronze", enabled_at=now - timedelta(weeks=2)))
+    db.commit()
+    return True
+
+
 # DofE activity logs: (cadet index, section, months, weeks since start, weeks
 # skipped). The dev NCO is part-way through two sections with a gap to catch
 # up and one still to set up; the dev SNCO isn't switched on, so the portal's
@@ -597,6 +618,9 @@ def main() -> None:
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
+        with SessionLocal() as db:
+            if ensure_dev_cadet(db):
+                print("added the portal's dev cadet, Cdt Kian Ashworth")
 
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 
