@@ -13,15 +13,16 @@ def test_dev_token_roles(monkeypatch):
         ("Bearer dev-fake-token", "staff"),
         ("Bearer dev-fake-token:snco", "snco"),
         ("Bearer dev-fake-token:nco", "nco"),
+        ("Bearer dev-fake-token:cadet", None),
     ]:
         idinfo = verify_token(token)
         assert get_user_role(idinfo["email"]) == role
     # Distinct identities, so NCO/SNCO rows aren't mixed with the owner's.
-    subs = {verify_token(f"Bearer dev-fake-token:{r}")["sub"] for r in ("staff", "snco", "nco")}
-    assert len(subs) == 3
+    subs = {verify_token(f"Bearer dev-fake-token:{r}")["sub"] for r in ("staff", "snco", "nco", "cadet")}
+    assert len(subs) == 4
 
     with pytest.raises(HTTPException):
-        verify_token("Bearer dev-fake-token:cadet")
+        verify_token("Bearer dev-fake-token:bogus")
 
 
 def test_dev_token_inert_without_flag(monkeypatch):

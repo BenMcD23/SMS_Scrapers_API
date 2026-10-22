@@ -91,24 +91,27 @@ CLOCK_SKEW_S = 60
 
 def _dev_fake_email(role: str) -> str:
     """Identity the dev bypass logs in as for a role. Staff keeps the owner
-    account so owner-only pages stay reachable; SNCO/NCO get their own accounts
-    so role checks and the rows they create match what a real one would see."""
+    account so owner-only pages stay reachable; SNCO/NCO/cadet get their own
+    accounts so role checks and the rows they create match what a real one
+    would see."""
     return OWNER_EMAIL if role == "staff" else f"dev.{role}@{GOOGLE_DOMAIN}"
 
 
 def verify_token(authorization: str) -> dict:
     # ponytail: dev-only fake token for local UI testing, pairs with the
     # frontend's AUTH_DEV_BYPASS. Inert unless DEV_FAKE_AUTH=1 (never in prod).
-    # "Bearer dev-fake-token" is staff; ":snco"/":nco" suffix picks that role.
+    # "Bearer dev-fake-token" is staff; ":snco"/":nco"/":cadet" picks that one.
     if os.environ.get("DEV_FAKE_AUTH") == "1" and (authorization or "").startswith("Bearer dev-fake-token"):
         role = authorization.split("dev-fake-token", 1)[1].lstrip(":") or "staff"
-        if role not in ("staff", "snco", "nco"):
+        if role not in ("staff", "snco", "nco", "cadet"):
             raise HTTPException(status_code=401, detail="Invalid Token")
         return {
             "email": _dev_fake_email(role), "email_verified": True, "hd": GOOGLE_DOMAIN,
             # A stable sub per role so get_or_create_user works under the bypass.
             "sub": "dev-fake-sub" if role == "staff" else f"dev-fake-sub-{role}",
-            "given_name": "Dev", "family_name": "Owner" if role == "staff" else role.upper(),
+            # The cadet's name matches its seeded roster record (dev_server.py).
+            **({"given_name": "Kian", "family_name": "Ashworth"} if role == "cadet" else
+               {"given_name": "Dev", "family_name": "Owner" if role == "staff" else role.upper()}),
         }
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -252,6 +255,9 @@ def get_user_role(email: str) -> str | None:
         for role in ("staff", "snco", "nco"):
             if (email or "").lower() == _dev_fake_email(role).lower():
                 return role
+        # A plain cadet: on the roster but in no staff/NCO group.
+        if (email or "").lower() == _dev_fake_email("cadet").lower():
+            return None
     return _role_in(_groups(), email) or _role_in(_groups(unknown=True), email)
 
 

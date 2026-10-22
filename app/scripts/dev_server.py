@@ -9,7 +9,8 @@ realistic data, e.g. from a cloud Claude session that can't reach the cluster.
 The database (data/dev.db by default, gitignored) is seeded on first run and
 kept after that, so anything clicked into the UI survives a restart. Sign in
 with the site's dev buttons (AUTH_DEV_BYPASS=1): "Staff" is the owner account,
-"SNCO" and "NCO" are cadets on the seeded roster.
+"SNCO" and "NCO" are cadets on the seeded roster, and the portal's "Cadet" is
+an ordinary cadet (Cdt Kian Ashworth) with no NCO role.
 
 The seed is deterministic, so a screenshot taken today matches one taken next
 week. It never touches a database that already has cadets in it.
@@ -132,6 +133,9 @@ def seed(db, now: datetime | None = None) -> bool:
     # pages that look the signed-in NCO up by email find them.
     cadets[0].rank, cadets[0].email = "Sgt", security._dev_fake_email("snco")
     cadets[1].rank, cadets[1].email = "Cpl", security._dev_fake_email("nco")
+    # The portal's plain-cadet login. The name matches the portal's DEV_USERS.
+    cadets[2].first_name, cadets[2].last_name = "Kian", "Ashworth"
+    cadets[2].rank, cadets[2].email = "Cadet", security._dev_fake_email("cadet")
     cadets[7].banned = True
     # One the scraper stopped finding on SMS, so the overview's banner shows.
     cadets[22].missing_since = now - timedelta(days=9)
