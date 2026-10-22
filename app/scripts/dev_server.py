@@ -286,6 +286,7 @@ def seed_stores(client, headers: dict) -> None:
     def post(path, body):
         res = client.post(path, json=body, headers=headers)
         assert res.status_code < 300, f"{path}: {res.status_code} {res.text}"
+        return res.json()
 
     for box in ("A", "B", "C"):
         post("/stores/structure", {"action": "add-box", "box": box})
@@ -306,6 +307,15 @@ def seed_stores(client, headers: dict) -> None:
             {"itemType": sized[(n + 1) % len(sized)], "needSizing": True, "sizingDetails": "Growing fast"},
         ]})
     post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 4, "items": [{"badgeName": "ATC"}]})
+    # Badges at each stage short of given, so the dashboard's "to give out"
+    # list has something in every state.
+    order = post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 11, "items": [
+        {"badgeName": "Leadership – Blue"}, {"badgeName": "Radio – Bronze"}, {"badgeName": "First Class"},
+    ]})
+    _, radio, first_class = (i["id"] for i in order["items"])
+    entry = post("/stores/badges/order-lists/entries", {"orderItemId": radio})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", {})
+    post(f"/stores/badges/orders/{order['id']}/items/{first_class}/mark-ready", {})
 
     # What each of those cadets was last given, so the orders page's Sizes
     # popover and the record's Uniform tab have history to show.

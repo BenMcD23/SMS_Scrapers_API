@@ -4,6 +4,7 @@ Real data where it exists (squadron strength, parade turnout, qualification
 coverage and expiries); the committee-request section lives on the frontend.
 """
 
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from core import cache
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
-from core.db import get_db
+from core.db import get_db, get_or_create_user
 from core.leaving import parse_emails
 from core.qualifications import quali_expiry_cutoff
 from core.security import require_oc
@@ -20,6 +21,7 @@ from database.models import (
     Cadet,
     CadetAttendance,
     CadetQualification,
+    DashboardLayout,
     Staff,
     StaffAttendance,
 )
@@ -181,6 +183,85 @@ async def oc_dashboard(
         "qual_summary": _qual_summary(db, today, exclude_juniors),
         "expiring_quals": expiring_quals,
     }
+
+
+# ── Layout ────────────────────────────────────────────────────────────────────
+#
+# The OC drags the dashboard's sections into the order they want; it's saved
+# per user so it follows them between devices and the printed copy matches.
+
+OC_LAYOUT = "oc"
+# The sections, in the order a new OC sees them. The site holds the same ids.
+OC_SECTIONS = ("committee", "strength", "qualifications", "pipeline")
+
+
+def _normalise_sections(saved: list) -> list[str]:
+    """The saved order with sections the page no longer has dropped and any it
+    has gained since added at the bottom, so a layout saved before a section
+    was added or removed still covers exactly what's on the page."""
+    kept = [s for s in dict.fromkeys(saved) if s in OC_SECTIONS]
+    return kept + [s for s in OC_SECTIONS if s not in kept]
+
+
+def _layout_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_LAYOUT)
+        .first()
+    )
+    return user, row
+
+
+def _layout_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else []
+    except ValueError:
+        saved = []  # A damaged row reads as the default rather than breaking the page.
+    return {
+        "sections": _normalise_sections(saved if isinstance(saved, list) else []),
+        "customised": row is not None,
+    }
+
+
+class DashboardLayoutBody(BaseModel):
+    sections: list[str]
+
+
+@router.get("/oc/dashboard/layout")
+def get_dashboard_layout(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    return _layout_response(_layout_row(db, idinfo)[1])
+
+
+@router.put("/oc/dashboard/layout")
+def save_dashboard_layout(
+    body: DashboardLayoutBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    unknown = [s for s in body.sections if s not in OC_SECTIONS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {', '.join(unknown)}")
+    if len(set(body.sections)) != len(body.sections):
+        raise HTTPException(status_code=400, detail="Each section can only appear once")
+    user, row = _layout_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_LAYOUT)
+        db.add(row)
+    row.sections = json.dumps(_normalise_sections(body.sections))
+    row.updated_at = datetime.now()
+    db.commit()
+    return _layout_response(row)
+
+
+@router.delete("/oc/dashboard/layout")
+def reset_dashboard_layout(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """Back to the default order."""
+    _, row = _layout_row(db, idinfo)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return _layout_response(None)
 
 
 class ParentEmails(BaseModel):
