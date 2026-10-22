@@ -256,3 +256,69 @@ def test_recruits_cover_every_stage_of_the_joining_form(api, db):
     for form in ("3822A", "3822H"):
         res = api.get(f"/recruits/{rows['Erin']['id']}/pdf?form={form}", headers=staff)
         assert res.status_code == 200
+
+
+# What the preview seed doesn't fill yet. Only ever shrink these: a new table or
+# column must be seeded with a value that shows it in the UI, not added here.
+# (Add one here only when there is genuinely nothing to show, e.g. a secret, and
+# say why.) Both lists are checked both ways, so seeding one of these without
+# taking it off fails too, keeping the list honest.
+UNSEEDED_TABLES = {
+    "317_Events", "All_Events", "Assessment_Sheets", "Attachment_Check_Quals",
+    "Bader_Credentials",  # secrets: a preview never scrapes
+    "Badge_Grid_Cells", "Badge_Grid_Config", "Badge_Items", "Badge_Order_List_Entries",
+    "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
+    "Cadet_Portal_Data", "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
+    "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders", "NCO_Appraisals",
+    "NCO_Comment_Replies", "NCO_Comments", "NCO_Holidays", "Parade_Night_Messages",
+    "Removed_Cadets", "Scraper_Runs", "Scraper_Schedules", "Session_Plan_Attachments",
+    "Session_Plan_Comments", "Session_Plans", "Sms_Recipients", "Staff_Attendance",
+    "Stats_Snapshots", "Stats_Targets", "Text_Settings", "User_Profiles", "User_Signatures",
+    "Users",  # made by the dev sign-in on first login, not by the seed
+}
+UNSEEDED_COLUMNS = {
+    ("Badge_Order_Items", "given_at"), ("Badge_Order_Items", "given_by"),
+    ("Badge_Order_Items", "ready_to_collect"), ("Badge_Order_Items", "gained_where"),
+    ("Badge_Order_Items", "gained_where_detail"), ("Badge_Order_Items", "gained_date_from"),
+    ("Badge_Order_Items", "gained_date_to"),
+    ("Cadet_Dietary", "details"),
+    ("Cadet_Qualifications", "expiry_alert_sent_at"),
+    ("Flying_Paperwork", "updated_at"), ("Flying_Paperwork", "updated_by"),
+    ("Recruit_Applications", "cadet_signature"),
+    ("Staff", "address"),
+    ("Stores_Item_Issuances", "user_id"),
+    ("Stores_Order_Items", "ready_to_collect"),
+    ("Stores_Orders", "user_id"),
+}
+
+
+def _seed_everything(api, db):
+    """Every seed step, in the order dev_server.main runs them."""
+    staff = api.as_("staff")
+    seed(db, now=NOW)
+    seed_stores(api, staff)
+    seed_stores_history(api, staff, db, now=NOW)
+    seed_inspections(api, staff, now=NOW)
+    seed_recruits(api, staff, db)
+
+
+def test_every_table_and_column_the_models_have_is_seeded(api, db):
+    # A column the seed never sets is invisible in every preview and screenshot,
+    # so UI work against it is checked against nothing.
+    from sqlalchemy import text
+
+    _seed_everything(api, db)
+    empty, unset = set(), set()
+    for table in Base.metadata.sorted_tables:
+        q = f'SELECT COUNT(*) FROM "{table.name}"'
+        if not db.execute(text(q)).scalar():
+            empty.add(table.name)
+            continue
+        for col in table.columns:
+            if not db.execute(text(f'{q} WHERE "{col.name}" IS NOT NULL')).scalar():
+                unset.add((table.name, col.name))
+
+    assert empty - UNSEEDED_TABLES == set(), "new tables the preview seed leaves empty: seed them"
+    assert unset - UNSEEDED_COLUMNS == set(), "new columns the preview seed never sets: seed them"
+    assert UNSEEDED_TABLES - empty == set(), "seeded now: take these off UNSEEDED_TABLES"
+    assert UNSEEDED_COLUMNS - unset == set(), "seeded now: take these off UNSEEDED_COLUMNS"
