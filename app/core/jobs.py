@@ -13,6 +13,7 @@ from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func
 
+from core import push
 from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
@@ -88,6 +89,12 @@ def quali_expiry_alert() -> None:
             QUALI_EXPIRY_ALERT_EMAIL,
             f"Qualifications expiring in 3 months ({len(rows)})",
             quali_expiry_email_html(rows),
+        )
+        push.notify(
+            "qualifications",
+            f"{len(rows)} qualification{'' if len(rows) == 1 else 's'} expiring",
+            ", ".join(f"{name} ({qual})" for name, qual, _, _ in rows[:3]) + (" and more" if len(rows) > 3 else ""),
+            "/stats",
         )
         # Only stamp as notified after the send is attempted, so a qualification
         # is never marked without an email having gone out for it.

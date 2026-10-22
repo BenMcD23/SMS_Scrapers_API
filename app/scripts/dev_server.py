@@ -512,6 +512,12 @@ def main() -> None:
     os.environ.update(DEV_ENV)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     sys.path.insert(0, str(ROOT / "app"))
+    # Push on with a throwaway key pair, so the settings page shows its toggles.
+    # A new pair each run: a device signed up last time just turns it on again.
+    if not os.environ.get("VAPID_PRIVATE_KEY"):
+        from scripts.gen_vapid_keys import generate
+
+        os.environ["VAPID_PUBLIC_KEY"], os.environ["VAPID_PRIVATE_KEY"] = generate()
 
     import uvicorn
     from fastapi.testclient import TestClient

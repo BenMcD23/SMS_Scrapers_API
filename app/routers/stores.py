@@ -6,12 +6,12 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import given_events, stock_events, stock_insights
+from core import given_events, push, stock_events, stock_insights
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
@@ -712,6 +712,7 @@ def stores_kit_flight(
 @router.post("/stores/orders/form-import", status_code=201)
 def stores_form_import(
     body: dict,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     x_import_key: str = Header(None),
 ):
@@ -766,6 +767,11 @@ def stores_form_import(
     statuses = [r["status"] for r in results]
     logger.info("form import: %d rows -> %d created, %d skipped, %d errors",
                 len(rows), statuses.count("created"), statuses.count("skipped"), statuses.count("error"))
+    created = statuses.count("created")
+    if created:
+        background.add_task(push.notify, "orders", "New uniform orders",
+                            f"{created} order{'' if created == 1 else 's'} came in from the order form",
+                            "/stores/uniform/orders")
     for r in results:
         if r["status"] == "error":
             logger.warning("form import: %s: %s", r["email"] or "<no email>", r["detail"])

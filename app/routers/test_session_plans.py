@@ -6,7 +6,7 @@ comment on plans they can't approve.
 """
 import asyncio
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -50,7 +50,7 @@ def test(monkeypatch):
             assert e.status_code == 404
 
     # Once submitted, every NCO can read it — but only staff can review it.
-    run(sp.submit_plan(plan_id, db, alice))
+    run(sp.submit_plan(plan_id, BackgroundTasks(), db, alice))
     assert run(sp.get_plan(plan_id, db, bob))["can_review"] is False
     assert run(sp.get_plan(plan_id, db, staff))["can_review"] is True
     assert run(sp.get_plan(plan_id, db, bob))["can_edit"] is False
@@ -79,7 +79,7 @@ def test(monkeypatch):
 
     # Approving is unchanged, and doesn't lose the plan's comments.
     run(sp.add_comment(plan_id, sp.CommentBody(body="second"), db, alice))
-    approved = run(sp.approve_plan(plan_id, sp.ReviewBody(note="Good"), db, staff))
+    approved = run(sp.approve_plan(plan_id, sp.ReviewBody(note="Good"), BackgroundTasks(), db, staff))
     assert approved["status"] == "approved"
     assert len(approved["comments"]) == 1
     assert db.query(SessionPlan).count() == 1
