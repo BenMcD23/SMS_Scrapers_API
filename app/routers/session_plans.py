@@ -12,12 +12,13 @@ can read the plan and leave comments on it. Only staff can approve or send back.
 import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, object_session
 
+from core import push
 from core.config import SESSION_PLAN_ALERT_EMAIL
 from core.db import get_db, get_or_create_user
 from core.emailer import (
@@ -354,6 +355,7 @@ async def update_plan(
 @router.post("/session-plans/{plan_id}/submit")
 async def submit_plan(
     plan_id: int,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -395,6 +397,11 @@ async def submit_plan(
     db.refresh(plan)
 
     _notify_staff_of_submission(plan, resubmission)
+    background.add_task(
+        push.notify, "session_plans",
+        "Session plan resubmitted" if resubmission else "Session plan to review",
+        f"{plan.session_name} by {_user_name(plan.author)}", f"/session-plans/{plan.id}",
+    )
     return _detail(plan, user, is_staff)
 
 
@@ -402,6 +409,7 @@ async def submit_plan(
 async def approve_plan(
     plan_id: int,
     body: ReviewBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -429,6 +437,8 @@ async def approve_plan(
                 _user_name(user), plan.amendment_note,
             ),
         )
+        background.add_task(push.notify, "my_session_plans", "Session plan approved",
+                            plan.session_name, f"/session-plans/{plan.id}", emails=[plan.author.email])
     return _detail(plan, user, is_staff=True)
 
 
@@ -436,6 +446,7 @@ async def approve_plan(
 async def request_amendments(
     plan_id: int,
     body: ReviewBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -474,6 +485,8 @@ async def request_amendments(
                 [(SECTION_LABELS[k], feedback[k]) for k in SESSION_PLAN_SECTIONS if k in feedback],
             ),
         )
+        background.add_task(push.notify, "my_session_plans", "Amendments needed",
+                            plan.session_name, f"/session-plans/{plan.id}", emails=[plan.author.email])
     return _detail(plan, user, is_staff=True)
 
 

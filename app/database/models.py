@@ -1374,3 +1374,26 @@ class UsageDaily(Base):
     email   = Column(Text, nullable=False, default="")     # "" for unauthenticated calls
     calls   = Column(Integer, nullable=False, default=0)
     last_at = Column(DateTime, nullable=False)
+
+
+# ─── Push notifications ──────────────────────────────────────────────────────
+
+class PushSubscription(Base):
+    """One browser or installed app that has agreed to take push notifications.
+
+    The endpoint and keys come from the browser's PushManager and are only
+    useful to whoever holds our VAPID private key. A person can have several
+    (phone and laptop); each picks its own topics, so the laptop can stay quiet
+    while the phone buzzes. Deleted when the push service says it has gone.
+    """
+    __tablename__ = "Push_Subscriptions"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    email        = Column(Text, nullable=False, index=True)    # lower-cased
+    endpoint     = Column(Text, nullable=False, unique=True)
+    p256dh       = Column(Text, nullable=False)
+    auth         = Column(Text, nullable=False)
+    topics       = Column(JSON, nullable=False, default=list)  # keys of core.push.TOPICS
+    user_agent   = Column(Text, nullable=True)
+    created_at   = Column(DateTime, nullable=False)
+    last_sent_at = Column(DateTime, nullable=True)
