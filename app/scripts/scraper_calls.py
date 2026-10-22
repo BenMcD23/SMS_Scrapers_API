@@ -34,10 +34,9 @@ from scripts.event_scraper import (
     get_event_names_and_317_links,
 )
 from scripts.flying_paperwork import sync_flying_events
+from scripts.parent_email_scraper import get_parent_emails, merge_emails, valid_email
 from scripts.quali_scraper import get_cadet_info_and_qualifications, get_cadet_names
-from scripts.scraper_utils import init_scraper, login, match_email, push_to_google_apps_script
-
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
+from scripts.scraper_utils import init_scraper, login, match_email
 
 
 def mark_missing_cadets(db_session, scraped_cins):
@@ -264,19 +263,10 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 "type": "info",
                 "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing} no longer on SMS, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
             }))
-            scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
 
-        apps_script_payload = [
-            {
-                "cadet_name": f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
-                "qualifications": [
-                    q if isinstance(q, str) else q.get("qual_type", "")
-                    for q in entry.get("qualifications") or []
-                ]
-            }
-            for entry in cadet_data
-        ]
-        push_to_google_apps_script({"cadet_quali": apps_script_payload}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
+        if stop_event.is_set():
+            return
+        sync_parent_emails(page, db_session, scraper_messages, scraper_lock)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
@@ -387,6 +377,74 @@ def absence_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 context.close()
             except Exception:
                 pass
+
+
+def sync_parent_emails(page, db_session, scraper_messages, scraper_lock):
+    """Add Bader's next-of-kin addresses to Cadets.parent_emails (the OC's BCC list).
+
+    Runs at the end of the cadet scrape, once the cadet list is fresh to match
+    against. Rows are matched on CIN (the report's service number). Only ever adds (see merge_emails), and a failure here is a warning,
+    not a failed run: the cadet data is already saved, and the OC can still type
+    addresses in by hand. An empty report changes nothing.
+    """
+    def note(level, value):
+        with scraper_lock:
+            scraper_messages.append(json.dumps({"type": level, "value": value}))
+
+    note("info", "Reading parent emails from the Next Of Kin report...")
+    try:
+        records = get_parent_emails(page)
+    except Exception as e:
+        note("warning", f"Could not read the Next Of Kin report, parent emails left as they were: {e}")
+        return
+
+    if not records:
+        # A unit with cadets always has CDT rows; none means a misread page,
+        # which must not be taken as "nobody has a parent email".
+        note("warning", "No cadet rows found in the Next Of Kin report, parent emails left as they were.")
+        return
+
+    try:
+        cadets = db_session.query(Cadet).all()
+        known_cins = {c.cin for c in cadets}
+        scraped: dict[int, list[str]] = {}
+        unmatched = set()
+        invalid = 0
+        for r in records:
+            name = f"{r['first_name']} {r['last_name']}".strip() or "A cadet"
+            cin = r["cin"]
+            if cin not in known_cins:
+                unmatched.add(f"{name} (CIN {cin})" if cin else f"{name} (no CIN)")
+                continue
+            if not r["email"]:
+                continue
+            if not valid_email(r["email"]):
+                invalid += 1
+                # The address itself stays out of the run log, which all staff can read.
+                note("warning", f"[SKIPPED] The next-of-kin email for {name} is not a valid address")
+                continue
+            scraped.setdefault(cin, []).append(r["email"])
+
+        for name in sorted(unmatched):
+            note("warning", f"[NO MATCH] {name} is in the Next Of Kin report but not in the cadet list")
+
+        updated = 0
+        for cadet in cadets:
+            merged = merge_emails(cadet.parent_emails, scraped.get(cadet.cin, []))
+            if merged != cadet.parent_emails:
+                cadet.parent_emails = merged
+                updated += 1
+        db_session.commit()
+    except Exception as e:
+        db_session.rollback()
+        note("warning", f"Could not save parent emails: {e}")
+        return
+
+    missing = sum(1 for c in cadets if not c.parent_emails)
+    note("info", (
+        f"Parent emails: {updated} cadet(s) updated from {len(records)} next-of-kin row(s), "
+        f"{len(unmatched)} unmatched, {invalid} invalid, {missing} cadet(s) still without an address."
+    ))
 
 
 def check_ban_notifications(db_session):
@@ -764,12 +822,6 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 "value": f"DB update complete — {saved} cadets saved, {skipped} skipped."
             }))
 
-        push_to_google_apps_script(
-            cadet_allergies_data,
-            "https://script.google.com/macros/s/AKfycbxl94R1lBUwx4R2yu3Bzi82GEvPk6tpDVNE1EW065STdDUBYEDrC2ItdpfidcuRPwBg/exec",
-            scraper_messages,
-            scraper_lock,
-        )
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 

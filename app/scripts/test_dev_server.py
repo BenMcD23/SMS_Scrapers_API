@@ -21,6 +21,7 @@ from database.models import (
 )
 from scripts.dev_server import (
     CADET_COUNT,
+    DEV_ENV,
     INSPECTION_NIGHTS,
     LAPSED_CADETS,
     LAPSED_WEEKS,
@@ -30,12 +31,19 @@ from scripts.dev_server import (
     schema_is_stale,
     seed,
     seed_inspections,
+    seed_oc_dashboard,
     seed_recruits,
     seed_stores,
     seed_stores_history,
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
+
+
+def test_the_preview_server_declares_itself_dev():
+    # core.config refuses to start with the fake-auth bypass unless ENV=dev, so
+    # DEV_ENV must carry both or the preview crashes on import.
+    assert DEV_ENV["DEV_FAKE_AUTH"] == "1" and DEV_ENV["ENV"] == "dev"
 
 
 def fresh_session():
@@ -141,7 +149,9 @@ def test_stores_seed_goes_through_the_api(api, db):
     assert all(not o["completed"] for o in orders)
     assert any(i["needSizing"] for o in orders for i in o["items"])
     assert api.get("/stores/stock", headers=staff).json()
-    assert len(api.get("/stores/badges/orders", headers=staff).json()) == 1
+    assert len(api.get("/stores/badges/orders", headers=staff).json()) == 2
+    stages = {b["stage"] for b in api.get("/stores/badges/to-give", headers=staff).json()}
+    assert stages == {"not_ordered", "on_order", "in_hand", "notified"}
     # Cadets with orders have sizes on record too, for the orders page's Sizes popover.
     issued = [api.get(f"/stores/issuances/{o['cadetCin']}", headers=staff).json() for o in orders]
     assert sum(1 for i in issued if i) == 3
@@ -309,3 +319,84 @@ def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, mo
     assert {"done", "missed", "due", "off"} <= states
     assert any(s["complete"] for c in body["cadets"] for s in c["sections"])
     assert any(c["behind"] for c in body["cadets"]) and not all(c["behind"] for c in body["cadets"])
+
+
+# What the preview seed doesn't fill yet. Only ever shrink these: a new table or
+# column must be seeded with a value that shows it in the UI, not added here.
+# (Add one here only when there is genuinely nothing to show, e.g. a secret, and
+# say why.) Both lists are checked both ways, so seeding one of these without
+# taking it off fails too, keeping the list honest.
+UNSEEDED_TABLES = {
+    "317_Events", "All_Events", "Assessment_Sheets", "Attachment_Check_Quals",
+    "Bader_Credentials",  # secrets: a preview never scrapes
+    "Badge_Grid_Cells", "Badge_Grid_Config", "Badge_Items",
+    "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
+    "Cadet_Portal_Data", "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
+    "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders", "NCO_Appraisals",
+    "NCO_Comment_Replies", "NCO_Comments", "NCO_Holidays", "Parade_Night_Messages",
+    "Removed_Cadets", "Scraper_Runs", "Scraper_Schedules", "Session_Plan_Attachments",
+    "Session_Plan_Comments", "Session_Plans", "Sms_Recipients", "Staff_Attendance",
+    "Stats_Snapshots", "Stats_Targets", "Text_Settings", "User_Profiles", "User_Signatures",
+}
+UNSEEDED_COLUMNS = {
+    ("Badge_Order_Items", "given_at"), ("Badge_Order_Items", "given_by"),
+    ("Badge_Order_Items", "gained_where"),
+    ("Badge_Order_Items", "gained_where_detail"), ("Badge_Order_Items", "gained_date_from"),
+    ("Badge_Order_Items", "gained_date_to"),
+    ("Cadet_Dietary", "details"),
+    ("Cadet_Qualifications", "expiry_alert_sent_at"),
+    ("Flying_Paperwork", "updated_at"), ("Flying_Paperwork", "updated_by"),
+    ("Recruit_Applications", "cadet_signature"),
+    ("Staff", "address"),
+    ("Stores_Item_Issuances", "user_id"),
+    ("Stores_Order_Items", "ready_to_collect"),
+    ("Stores_Orders", "user_id"),
+}
+
+
+def _seed_everything(api, db):
+    """Every seed step, in the order dev_server.main runs them."""
+    staff = api.as_("staff")
+    seed(db, now=NOW)
+    seed_stores(api, staff)
+    seed_stores_history(api, staff, db, now=NOW)
+    seed_inspections(api, staff, now=NOW)
+    seed_recruits(api, staff, db)
+    seed_oc_dashboard(api, api.as_("oc"))
+
+
+def test_the_oc_custom_dashboard_has_panels_that_all_answer(api, db):
+    # A panel whose query 400s shows an error box: the preview would look broken.
+    seed(db, now=NOW)
+    oc = api.as_("oc")
+    seed_oc_dashboard(api, oc)
+    dash = api.get("/oc/custom-dashboard", headers=oc).json()
+    assert dash["customised"] is True
+    assert {p["viz"] for p in dash["panels"]} == {"stat", "bar", "line", "table"}
+    for p in dash["panels"]:
+        res = api.post("/oc/custom-dashboard/query", headers=oc,
+                       json={"query": p["query"], "range_days": dash["range_days"]})
+        assert res.status_code == 200, (p["id"], res.text)
+        assert res.json()["rows"], p["id"]
+
+
+def test_every_table_and_column_the_models_have_is_seeded(api, db):
+    # A column the seed never sets is invisible in every preview and screenshot,
+    # so UI work against it is checked against nothing.
+    from sqlalchemy import text
+
+    _seed_everything(api, db)
+    empty, unset = set(), set()
+    for table in Base.metadata.sorted_tables:
+        q = f'SELECT COUNT(*) FROM "{table.name}"'
+        if not db.execute(text(q)).scalar():
+            empty.add(table.name)
+            continue
+        for col in table.columns:
+            if not db.execute(text(f'{q} WHERE "{col.name}" IS NOT NULL')).scalar():
+                unset.add((table.name, col.name))
+
+    assert empty - UNSEEDED_TABLES == set(), "new tables the preview seed leaves empty: seed them"
+    assert unset - UNSEEDED_COLUMNS == set(), "new columns the preview seed never sets: seed them"
+    assert UNSEEDED_TABLES - empty == set(), "seeded now: take these off UNSEEDED_TABLES"
+    assert UNSEEDED_COLUMNS - unset == set(), "seeded now: take these off UNSEEDED_COLUMNS"

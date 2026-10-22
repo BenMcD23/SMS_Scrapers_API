@@ -4,7 +4,7 @@ are routers/theory.py."""
 import io
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import exists, or_, update
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from core import cache
 from core.attendance import attendance_state
+from core.audit import record_audit
 from core.db import escape_like, get_db
 from core.http import content_disposition
 from core.qualifications import (
@@ -21,6 +22,7 @@ from core.qualifications import (
     held_level,
     qual_names_with_flights,
 )
+from core.ratelimit import limiter
 from core.security import require_staff, require_staff_or_nco, require_staff_or_snco
 from core.xlsx_export import table_to_xlsx
 from database.database import Base
@@ -74,7 +76,12 @@ def _cadet_summary(c: Cadet) -> dict:
 
 
 @router.get("/cadets/search")
+# Free-text roster lookup available to every NCO, so it's the cheapest way to
+# enumerate cadet names. Generous enough for type-ahead, tight enough to make
+# scraping the roster slow.
+@limiter.limit("60/minute")
 def search_cadets(
+    request: Request,
     q: str = "",
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -217,6 +224,13 @@ def audit_medical(
         .options(selectinload(Cadet.medical), selectinload(Cadet.dietary))
         .order_by(Cadet.last_name, Cadet.first_name)
         .all()
+    )
+    # Special-category data on minors — the read itself is the thing worth
+    # answering for, and nothing on the record can show who merely looked.
+    record_audit(
+        db, idinfo,
+        action="read", resource="cadet_medical",
+        detail={"cadet_count": len(cadets)},
     )
     return [
         {

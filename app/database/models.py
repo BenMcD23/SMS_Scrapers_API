@@ -27,8 +27,9 @@ class Cadet(Base):
     # Mobile the cadet gets parade-night texts on. Owned by the cadet — they set
     # it themselves on the portal — so nothing scraped ever overwrites it.
     phone_number = Column(Text, nullable=True)
-    # Parents'/guardians' addresses, ";"-separated, entered by the OC on the OC
-    # dashboard (SMS has no scrapable source), so no scraper ever overwrites it.
+    # Parents'/guardians' addresses, ";"-separated. The cadet scraper adds
+    # Bader's next-of-kin addresses; the OC can add more on the OC dashboard. It
+    # only ever adds, so nothing the OC typed is lost.
     parent_emails = Column(Text, nullable=True)
 
     date_of_birth = Column(DateTime, nullable=True)
@@ -569,6 +570,23 @@ class UserProfile(Base):
     bank_account_number = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="profile")
+
+
+class DashboardLayout(Base):
+    """One user's saved arrangement of a dashboard: the section order of the
+    OC dashboard ("oc"), or the panels of the OC's custom dashboard
+    ("oc-custom"). Per user, so one OC moving things round doesn't reshuffle
+    another's; `dashboard` names the page so others can join later."""
+    __tablename__ = "Dashboard_Layouts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dashboard", name="uq_dashboard_layout_user"),
+    )
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    user_id    = Column(Integer,  ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    dashboard  = Column(Text,     nullable=False)
+    sections   = Column(Text,     nullable=False, default="[]")  # JSON: section ids top first, or {"panels": [...]} for oc-custom
+    updated_at = Column(DateTime, nullable=False)
 
 
 # ─── Committee purchase requests ──────────────────────────────────────────────
@@ -1437,3 +1455,29 @@ class UsageDaily(Base):
     email   = Column(Text, nullable=False, default="")     # "" for unauthenticated calls
     calls   = Column(Integer, nullable=False, default=0)
     last_at = Column(DateTime, nullable=False)
+
+
+# ─── Audit Trail ──────────────────────────────────────────────────────────────
+
+class AuditEvent(Base):
+    """Who did what, for actions the domain tables don't already stamp.
+
+    The squadron holds records on minors, including medical details, so reads
+    of that data have to be answerable after the fact — an actor column on the
+    record itself can't show who merely *looked*. This covers those reads plus
+    deletions and anything that leaves the system (SMS sends, DB restores).
+
+    Deliberately not a full request log: it records the handful of actions
+    worth answering for, so it stays small enough to keep for a long retention
+    and readable when someone actually has to audit it.
+    """
+    __tablename__ = "Audit_Events"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    occurred_at = Column(DateTime, nullable=False, index=True)  # indexed for the retention sweep
+    actor_email = Column(Text, nullable=False)
+    actor_role  = Column(Text, nullable=True)   # staff/snco/nco at the time of the action
+    action      = Column(Text, nullable=False)  # e.g. "read", "delete", "send", "restore"
+    resource    = Column(Text, nullable=False)  # e.g. "cadet_medical", "stores_order"
+    resource_id = Column(Text, nullable=True)   # text so ints and composite keys both fit
+    detail      = Column(JSON, nullable=True)   # small extras, e.g. {"count": 12}

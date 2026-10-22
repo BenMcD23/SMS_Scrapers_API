@@ -31,6 +31,9 @@ DEFAULT_DB = ROOT / "data" / "dev.db"
 # Without Google service-account keys the group lookup returns None rather than
 # calling out, and the dev token (DEV_FAKE_AUTH) decides the role instead.
 DEV_ENV = {
+    # Required alongside DEV_FAKE_AUTH: config refuses to start with the bypass
+    # on unless ENV=dev.
+    "ENV": "dev",
     "DEV_FAKE_AUTH": "1",
     "CORS_ALLOW_LOCALHOST": "true",
     "SCHEDULER_ENABLED": "false",
@@ -363,6 +366,7 @@ def seed_stores(client, headers: dict) -> None:
     def post(path, body):
         res = client.post(path, json=body, headers=headers)
         assert res.status_code < 300, f"{path}: {res.status_code} {res.text}"
+        return res.json()
 
     for box in ("A", "B", "C"):
         post("/stores/structure", {"action": "add-box", "box": box})
@@ -383,6 +387,20 @@ def seed_stores(client, headers: dict) -> None:
             {"itemType": sized[(n + 1) % len(sized)], "needSizing": True, "sizingDetails": "Growing fast"},
         ]})
     post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 4, "items": [{"badgeName": "ATC"}]})
+    # Badges at each stage short of given, so the dashboard's "to give out"
+    # list has something in every state.
+    order = post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 11, "items": [
+        {"badgeName": "Leadership – Blue"}, {"badgeName": "Radio – Bronze"}, {"badgeName": "First Class"},
+        {"badgeName": "Shooting – Bronze"},
+    ]})
+    _, radio, first_class, shooting = (i["id"] for i in order["items"])
+    entry = post("/stores/badges/order-lists/entries", {"orderItemId": radio})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", {})
+    # One already in from the supplier, so the order list shows a received row.
+    entry = post("/stores/badges/order-lists/entries", {"orderItemId": shooting})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", {})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-received", {})
+    post(f"/stores/badges/orders/{order['id']}/items/{first_class}/mark-ready", {})
 
     # What each of those cadets was last given, so the orders page's Sizes
     # popover and the record's Uniform tab have history to show.
@@ -531,6 +549,28 @@ def _signature_png() -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def seed_oc_dashboard(client, headers: dict) -> None:
+    """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
+    to drag and resize rather than the empty starting state. Saved through the
+    real endpoint, so every panel passes the query allowlist. ``headers`` must
+    be the OC: layouts are per user, and this is the account that signs in."""
+    def panel(pid, title, viz, x, y, w, h, **query):
+        return {"id": pid, "title": title, "viz": viz, "x": x, "y": y, "w": w, "h": h, "query": query}
+
+    res = client.put("/oc/custom-dashboard", headers=headers, json={"range_days": 90, "panels": [
+        panel("cadets", "Cadets", "stat", 0, 0, 3, 2, dataset="cadets"),
+        panel("turnout", "Parade turnout", "stat", 3, 0, 3, 2, dataset="cadet_attendance", measure="turnout",
+              filters=[{"field": "register_type", "op": "eq", "value": "Parade Night"}]),
+        panel("by-flight", "Cadets by flight", "bar", 6, 0, 6, 4, dataset="cadets",
+              group_by=[{"field": "flight"}]),
+        panel("trend", "Turnout by week", "line", 0, 2, 6, 4, dataset="cadet_attendance", measure="turnout",
+              group_by=[{"field": "date", "grain": "week"}]),
+        panel("quals", "Qualifications", "table", 0, 6, 12, 4, dataset="qualifications",
+              group_by=[{"field": "qual_type"}], sort="value_desc"),
+    ]})
+    res.raise_for_status()
+
+
 def seed_recruits(client, headers: dict, db) -> None:
     """Recruits at each stage of the joining form, through the real endpoints:
     one submitted (so the PDFs open), one part-way, one never opened, and one
@@ -615,6 +655,7 @@ def main() -> None:
         seed_inspections(client, headers)
         with SessionLocal() as db:
             seed_recruits(client, headers, db)
+        seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

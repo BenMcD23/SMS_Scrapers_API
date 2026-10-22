@@ -21,6 +21,7 @@ STAFF_ONLY = [
     ("delete", "/stores/badges/rows/0"),
     ("delete", "/stores/badges/cols/0"),
     ("get", "/stores/badges/orders"),
+    ("get", "/stores/badges/to-give"),
     ("post", "/stores/badges/orders"),
     ("patch", "/stores/badges/orders/1"),
     ("delete", "/stores/badges/orders/1"),
@@ -543,3 +544,89 @@ def test_badge_give_event_carries_the_same_instant_as_the_stamp(api, db):
     order = _order(api)
     item = _given_call(api, order, order["items"][0], "mark-given").json()["items"][0]
     assert item["givenEvents"][0]["timestamp"] == item["givenAt"]
+
+
+# ── badges still to give out (the dashboard's quick view) ─────────────────────
+
+def _to_give(api):
+    res = api.get("/stores/badges/to-give", headers=STAFF)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_nothing_to_give_is_an_empty_list(api):
+    assert _to_give(api) == []
+
+
+def test_to_give_lists_every_badge_not_yet_given_with_its_stage(api, db):
+    _cadet(db, 1)
+    _cadet(db, 2, first_name="Zoë", last_name="Ó Briain")
+    _, grid_item = _grid_item(api, name="Radio – Blue")
+    names = ["Not ordered", "Queued", "On order", "Received", "From grid", "Notified", "Given"]
+    order = _order(api, 1, [{"badgeName": n} for n in names])
+    ids = {i["badgeName"]: i["id"] for i in order["items"]}
+    other = _order(api, 2, [{"badgeName": "Leadership – Blue"}])
+
+    def entry(name):
+        return api.post("/stores/badges/order-lists/entries", json={"orderItemId": ids[name]},
+                        headers=STAFF).json()["id"]
+
+    entry("Queued")
+    ordered = entry("On order")
+    api.post(f"/stores/badges/order-lists/entries/{ordered}/mark-ordered", json={}, headers=STAFF)
+    received = entry("Received")
+    api.post(f"/stores/badges/order-lists/entries/{received}/mark-ordered", json={}, headers=STAFF)
+    api.post(f"/stores/badges/order-lists/entries/{received}/mark-received", json={}, headers=STAFF)
+    api.post(f"/stores/badges/orders/{order['id']}/items/{ids['From grid']}/stock",
+             json={"action": "remove", "itemId": grid_item["id"]}, headers=STAFF)
+    api.post(f"/stores/badges/orders/{order['id']}/items/{ids['Notified']}/mark-ready", headers=STAFF)
+    api.post(f"/stores/badges/orders/{order['id']}/items/{ids['Given']}/mark-given", headers=STAFF)
+
+    rows = _to_give(api)
+    stages = {r["badgeName"]: r["stage"] for r in rows if r["cadetCin"] == 1}
+    assert stages == {
+        "Not ordered": "not_ordered", "Queued": "queued", "On order": "on_order",
+        "Received": "in_hand", "From grid": "in_hand", "Notified": "notified",
+    }
+    # Furthest along first, so what can be handed over tonight is at the top.
+    assert [r["stage"] for r in rows] == sorted(
+        (r["stage"] for r in rows), key=badges.TO_GIVE_STAGES.index)
+    assert rows[0]["badgeName"] == "Notified"
+    mine = next(r for r in rows if r["cadetCin"] == 2)
+    assert mine == {
+        "orderId": other["id"], "itemId": other["items"][0]["id"], "badgeName": "Leadership – Blue",
+        "cadetName": "Zoë Ó Briain", "cadetCin": 2, "orderedAt": other["timestamp"], "stage": "not_ordered",
+    }
+
+
+def test_a_badge_put_back_on_the_grid_is_no_longer_in_hand(api, db):
+    _cadet(db)
+    _, grid_item = _grid_item(api)
+    order = _order(api)
+    _stock(api, order, {"action": "remove", "itemId": grid_item["id"]})
+    _stock(api, order, {"action": "return"})
+    assert [r["stage"] for r in _to_give(api)] == ["not_ordered"]
+
+
+def test_to_give_waits_longest_first_within_a_stage(api, db):
+    _cadet(db)
+    first = _order(api, items=[{"badgeName": "Older"}])
+    second = _order(api, items=[{"badgeName": "Newer"}])
+    db.query(badges.BadgeOrder).filter_by(id=int(first["id"])).one().created_at = datetime(2026, 1, 1)
+    db.query(badges.BadgeOrder).filter_by(id=int(second["id"])).one().created_at = datetime(2026, 2, 1)
+    db.commit()
+    assert [r["badgeName"] for r in _to_give(api)] == ["Older", "Newer"]
+
+
+def test_given_badges_and_completed_orders_drop_off_the_list(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _given_call(api, order, item, "mark-given")
+    assert _to_give(api) == []
+
+    # A completed order with a badge somehow left ungiven is history, not a badge owed.
+    stale = _order(api, items=[{"badgeName": "Old"}])
+    db.query(badges.BadgeOrder).filter_by(id=int(stale["id"])).one().completed = True
+    db.commit()
+    assert _to_give(api) == []
