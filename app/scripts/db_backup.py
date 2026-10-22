@@ -7,19 +7,32 @@ helpers to list, restore and preview those backups.
 
 Dumps are plain SQL with `--clean --if-exists` so any backup can be restored
 straight over the live database with psql.
+
+Every dump holds the whole database, cadets' medical details included, so it is
+encrypted before it leaves the cluster: Drive only ever sees ciphertext. The key
+is derived from ENCRYPTION_KEY, so keep a copy of that secret somewhere other
+than the cluster, or the backups can't be read when the cluster is what's lost.
+To decrypt one by hand: `python -m scripts.db_backup decrypt in.enc out.sql.gz`.
 """
 
+import base64
 import gzip
 import logging
 import os
 import shutil
+import struct
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from googleapiclient.discovery import build as google_build
 from googleapiclient.http import MediaFileUpload
 
@@ -40,7 +53,92 @@ logger = logging.getLogger(__name__)
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 _NAME_PREFIX = "317_SMS"
-_GZIP_MIME = "application/gzip"
+_ENC_MIME = "application/octet-stream"
+
+
+# ── encryption ────────────────────────────────────────────────────────────────
+# File layout: MAGIC, an 8-byte random nonce prefix, then chunks of
+# [1-byte final flag][4-byte ciphertext length][AES-256-GCM ciphertext]. Each
+# chunk's nonce is the prefix plus its index, and the flag is authenticated
+# data, so reordered, dropped or truncated chunks all fail to decrypt rather
+# than restoring a silently incomplete database. A plain gzip dump from before
+# encryption starts with the gzip magic instead, which is how restore tells the
+# two apart while those older backups age out.
+
+_MAGIC = b"317SMSBK1"
+_CHUNK = 1 << 20
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _backup_key() -> bytes:
+    """A key used only for backups, derived from ENCRYPTION_KEY so there is no
+    second secret to lose. Missing key is an error, never a plaintext upload."""
+    raw = os.environ.get("ENCRYPTION_KEY")
+    if not raw:
+        raise RuntimeError("ENCRYPTION_KEY is not set; refusing to write an unencrypted backup")
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=b"317-sms-db-backup-v1",
+    ).derive(base64.urlsafe_b64decode(raw))
+
+
+def _nonce(prefix: bytes, index: int) -> bytes:
+    return prefix + struct.pack(">I", index)
+
+
+def encrypt_file(src: str, dst: str) -> None:
+    aes = AESGCM(_backup_key())
+    prefix = os.urandom(8)
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        fout.write(_MAGIC + prefix)
+        index = 0
+        chunk = fin.read(_CHUNK)
+        while True:
+            nxt = fin.read(_CHUNK)
+            # Always end on a flagged chunk (empty for an empty file) so a
+            # truncated download can't pass as complete.
+            flag = b"\x01" if not nxt else b"\x00"
+            ct = aes.encrypt(_nonce(prefix, index), chunk, flag)
+            fout.write(flag + struct.pack(">I", len(ct)) + ct)
+            if not nxt:
+                return
+            chunk, index = nxt, index + 1
+
+
+def decrypt_file(src: str, dst: str) -> None:
+    aes = AESGCM(_backup_key())
+    with open(src, "rb") as fin, open(dst, "wb") as fout:
+        if fin.read(len(_MAGIC)) != _MAGIC:
+            raise RuntimeError("not an encrypted 317 SMS backup")
+        prefix = fin.read(8)
+        index = 0
+        while True:
+            head = fin.read(5)
+            if len(head) < 5:
+                raise RuntimeError("backup is truncated")
+            flag, size = head[:1], struct.unpack(">I", head[1:])[0]
+            ct = fin.read(size)
+            if len(ct) < size:
+                raise RuntimeError("backup is truncated")
+            try:
+                fout.write(aes.decrypt(_nonce(prefix, index), ct, flag))
+            except InvalidTag:
+                raise RuntimeError("backup could not be decrypted: wrong ENCRYPTION_KEY or a damaged file") from None
+            if flag == b"\x01":
+                if fin.read(1):
+                    raise RuntimeError("unexpected data after the end of the backup")
+                return
+            index += 1
+
+
+def _plain_dump(path: str) -> str:
+    """Path to a gzipped SQL dump for `path`, decrypting next to it if needed."""
+    with open(path, "rb") as f:
+        head = f.read(len(_MAGIC))
+    if head.startswith(_GZIP_MAGIC):
+        return path
+    plain = path + ".sql.gz"
+    decrypt_file(path, plain)
+    return plain
 
 
 # ── connection helpers ────────────────────────────────────────────────────────
@@ -161,16 +259,19 @@ def run_db_backup() -> dict:
 
     env = os.environ.get("BACKUP_ENV", os.environ.get("ENV", "prod"))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    name = f"{_NAME_PREFIX}_{env}_{stamp}.sql.gz"
+    name = f"{_NAME_PREFIX}_{env}_{stamp}.sql.gz.enc"
 
     tmp_dir = tempfile.mkdtemp(prefix="dbbackup_")
+    dump_path = os.path.join(tmp_dir, "dump.sql.gz")
     local_path = os.path.join(tmp_dir, name)
     try:
         logger.info(f"dumping database -> {name}")
-        _dump_to_file(local_path)
+        _dump_to_file(dump_path)
+        encrypt_file(dump_path, local_path)
+        os.remove(dump_path)
 
         drive = _drive_client()
-        media = MediaFileUpload(local_path, mimetype=_GZIP_MIME, resumable=True)
+        media = MediaFileUpload(local_path, mimetype=_ENC_MIME, resumable=True)
         created = drive.files().create(
             body={"name": name, "parents": [DB_BACKUP_DRIVE_FOLDER_ID]},
             media_body=media,
@@ -217,11 +318,14 @@ def _run_psql(url: str, sql_path: str) -> None:
 def restore_backup(file_id: str) -> dict:
     """Download `file_id` and restore it over the live database."""
     tmp_dir = tempfile.mkdtemp(prefix="dbrestore_")
-    path = os.path.join(tmp_dir, "backup.sql.gz")
+    path = os.path.join(tmp_dir, "backup")
     try:
         name = _download_backup(file_id, path)
+        # Decrypt before touching the live database, so a bad key or damaged
+        # file fails here instead of half-way through a restore.
+        plain = _plain_dump(path)
         logger.info(f"restoring {name} over live database")
-        _run_psql(_pg_url(), path)
+        _run_psql(_pg_url(), plain)
         logger.info(f"restore of {name} complete")
         return {"restored": name}
     finally:
@@ -253,16 +357,17 @@ def preview_backup(file_id: str) -> dict:
     scratch = f"sms_preview_{int(time.time())}"
     admin_url = _pg_url("postgres")
     tmp_dir = tempfile.mkdtemp(prefix="dbpreview_")
-    path = os.path.join(tmp_dir, "backup.sql.gz")
+    path = os.path.join(tmp_dir, "backup")
 
     admin = psycopg2.connect(admin_url)
     admin.autocommit = True
     try:
         name = _download_backup(file_id, path)
+        plain = _plain_dump(path)
         with admin.cursor() as cur:
             cur.execute(f'CREATE DATABASE "{scratch}"')
         try:
-            _run_psql(_pg_url(scratch), path)
+            _run_psql(_pg_url(scratch), plain)
             current = _table_counts(_pg_url())
             backup = _table_counts(_pg_url(scratch))
         finally:
@@ -285,3 +390,18 @@ def preview_backup(file_id: str) -> dict:
     finally:
         admin.close()
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def main(argv: list[str]) -> int:
+    """Disaster-recovery entry point: decrypt a backup downloaded from Drive
+    when the API (and its /backups restore) isn't running to do it."""
+    if len(argv) != 3 or argv[0] != "decrypt":
+        print("usage: ENCRYPTION_KEY=... python -m scripts.db_backup decrypt <in.enc> <out.sql.gz>",
+              file=sys.stderr)
+        return 2
+    decrypt_file(argv[1], argv[2])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
