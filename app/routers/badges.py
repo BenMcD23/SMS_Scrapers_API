@@ -337,6 +337,63 @@ def badge_orders_list(
     return [badge_order_to_dict(o) for o in orders]
 
 
+# Where a badge that hasn't been handed over has got to, furthest along first.
+# The dashboard's "to give out" list reads this so staff can see at a glance
+# which ones they could hand over tonight and which are still with the supplier.
+TO_GIVE_STAGES = ("notified", "in_hand", "on_order", "queued", "not_ordered")
+
+
+def _to_give_stage(item: BadgeOrderItem, entry: BadgeOrderListEntry | None) -> str:
+    if item.ready_to_collect:
+        return "notified"
+    # Taken off the badge grid for this cadet, or come back from the supplier.
+    if stock_events.is_removed(stock_events.events_list(item.stock_events)) or (entry and entry.received_at):
+        return "in_hand"
+    if entry and entry.ordered_at:
+        return "on_order"
+    if entry:
+        return "queued"
+    return "not_ordered"
+
+
+@router.get("/stores/badges/to-give")
+def badge_orders_to_give(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Every badge ordered for a cadet but not yet given to them, with how far
+    along it is. Completed orders are left out: completing needs every badge
+    given, so anything left on one is an old record, not a badge owed."""
+    items = (
+        db.query(BadgeOrderItem)
+        .join(BadgeOrder)
+        .options(joinedload(BadgeOrderItem.order).joinedload(BadgeOrder.cadet))
+        .filter(BadgeOrderItem.given_at.is_(None), BadgeOrder.completed.is_(False))
+        .all()
+    )
+    entries = {
+        e.order_item_id: e
+        for e in db.query(BadgeOrderListEntry).filter(
+            BadgeOrderListEntry.order_item_id.in_([i.id for i in items])
+        )
+    } if items else {}
+    rows = [
+        {
+            "orderId":   str(i.order.id),
+            "itemId":    str(i.id),
+            "badgeName": i.badge_name,
+            "cadetName": f"{i.order.cadet.first_name} {i.order.cadet.last_name}".strip(),
+            "cadetCin":  i.order.cadet.cin,
+            "orderedAt": i.order.created_at.isoformat(),
+            "stage":     _to_give_stage(i, entries.get(i.id)),
+        }
+        for i in items
+    ]
+    # Ready-to-hand-over first, then the longest-waiting within each stage.
+    rows.sort(key=lambda r: (TO_GIVE_STAGES.index(r["stage"]), r["orderedAt"], r["cadetName"]))
+    return rows
+
+
 @router.post("/stores/badges/orders", status_code=201)
 def badge_orders_create(
     body: dict,

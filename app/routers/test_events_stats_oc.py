@@ -14,11 +14,13 @@ from database.models import (
     CadetAttendance,
     CadetEvent,
     CadetQualification,
+    DashboardLayout,
     Event317,
     Location,
     Staff,
     StaffAttendance,
     StatsSnapshot,
+    User,
 )
 
 STAFF = {"Authorization": "Bearer staff"}
@@ -251,3 +253,81 @@ def test_oc_dashboard_numbers(api, db, cadets):
     assert juniors_out["badge_coverage"]["cadets"] == 1
     assert all(q["cadet_name"] == "A One" for q in juniors_out["expiring_quals"])
     assert juniors_out["qual_summary"]["total"] == 4
+
+
+# ── OC dashboard layout ───────────────────────────────────────────────────────
+
+DEFAULT_LAYOUT = ["committee", "strength", "qualifications", "pipeline"]
+LAYOUT = "/oc/dashboard/layout"
+
+
+@pytest.mark.parametrize("method", ["get", "put", "delete"])
+def test_oc_layout_needs_a_token(api, method):
+    kw = {"json": {"sections": DEFAULT_LAYOUT}} if method == "put" else {}
+    assert getattr(api, method)(LAYOUT, **kw).status_code == 401
+
+
+@pytest.mark.parametrize("persona", ["staff", "owner", "snco", "nco", "cadet"])
+@pytest.mark.parametrize("method", ["get", "put", "delete"])
+def test_oc_layout_is_oc_only(api, persona, method):
+    kw = {"json": {"sections": DEFAULT_LAYOUT}} if method == "put" else {}
+    assert getattr(api, method)(LAYOUT, headers=api.as_(persona), **kw).status_code == 403
+
+
+def test_oc_layout_starts_as_the_default_order(api):
+    assert api.get(LAYOUT, headers=OC).json() == {"sections": DEFAULT_LAYOUT, "customised": False}
+
+
+def test_saved_oc_layout_comes_back_and_reset_restores_the_default(api):
+    order = ["qualifications", "committee", "pipeline", "strength"]
+    saved = api.put(LAYOUT, json={"sections": order}, headers=OC)
+    assert saved.status_code == 200 and saved.json() == {"sections": order, "customised": True}
+    assert api.get(LAYOUT, headers=OC).json()["sections"] == order
+
+    # Saving again updates the one row rather than adding another.
+    api.put(LAYOUT, json={"sections": list(reversed(order))}, headers=OC)
+    assert api.get(LAYOUT, headers=OC).json()["sections"] == list(reversed(order))
+
+    assert api.delete(LAYOUT, headers=OC).json() == {"sections": DEFAULT_LAYOUT, "customised": False}
+    assert api.get(LAYOUT, headers=OC).json()["customised"] is False
+    # Resetting when nothing is saved is harmless.
+    assert api.delete(LAYOUT, headers=OC).status_code == 200
+
+
+def test_a_partial_layout_keeps_every_section(api):
+    # Sections left out go to the bottom in their default order, so none vanish.
+    body = api.put(LAYOUT, json={"sections": ["pipeline"]}, headers=OC).json()
+    assert body["sections"] == ["pipeline", "committee", "strength", "qualifications"]
+    assert api.put(LAYOUT, json={"sections": []}, headers=OC).json()["sections"] == DEFAULT_LAYOUT
+
+
+@pytest.mark.parametrize("body,code", [
+    ({"sections": ["committee", "bogus"]}, 400),
+    ({"sections": ["committee", "committee"]}, 400),
+    ({"sections": "committee"}, 422),
+    ({}, 422),
+])
+def test_bad_oc_layouts_are_rejected_and_change_nothing(api, body, code):
+    api.put(LAYOUT, json={"sections": ["pipeline"]}, headers=OC)
+    assert api.put(LAYOUT, json=body, headers=OC).status_code == code
+    assert api.get(LAYOUT, headers=OC).json()["sections"][0] == "pipeline"
+
+
+def test_a_stored_layout_drops_retired_sections_and_gains_new_ones(api, db):
+    # A layout saved before the page changed (a section removed, one added)
+    # still lists exactly the sections the page has.
+    api.get(LAYOUT, headers=OC)  # creates the user row
+    user = db.query(User).filter(User.email == "oc@317atc.co.uk").one()
+    db.add(DashboardLayout(user_id=user.id, dashboard="oc", updated_at=datetime.now(),
+                           sections='["pipeline", "retired", "strength"]'))
+    db.commit()
+    assert api.get(LAYOUT, headers=OC).json()["sections"] == ["pipeline", "strength", "committee", "qualifications"]
+
+
+@pytest.mark.parametrize("raw", ["not json", '{"a": 1}', "null"])
+def test_a_damaged_stored_layout_reads_as_the_default(api, db, raw):
+    api.get(LAYOUT, headers=OC)
+    user = db.query(User).filter(User.email == "oc@317atc.co.uk").one()
+    db.add(DashboardLayout(user_id=user.id, dashboard="oc", updated_at=datetime.now(), sections=raw))
+    db.commit()
+    assert api.get(LAYOUT, headers=OC).json() == {"sections": DEFAULT_LAYOUT, "customised": True}
