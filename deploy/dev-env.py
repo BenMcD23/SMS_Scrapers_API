@@ -34,6 +34,8 @@ LOCAL = {
     "EMAIL_DISABLED": "true",
     "DB_BACKUP_ENABLED": "false",
     "CORS_ALLOW_LOCALHOST": "true",
+    # The fake-auth bypass only starts under ENV=dev (core/config.py).
+    "ENV": "dev",
     "DEV_FAKE_AUTH": "1",
 }
 # An existing local database keeps working: these survive a re-run.

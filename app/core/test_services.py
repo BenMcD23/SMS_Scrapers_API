@@ -13,7 +13,7 @@ import core.calendar as cal
 import core.emailer as emailer
 import core.jobs as jobs
 import core.llm as llm
-from database.models import AssessmentSheet, Cadet, CadetQualification, StoresOrder, User
+from database.models import AssessmentSheet, AuditEvent, Cadet, CadetQualification, StoresOrder, User
 
 # ── send_email ────────────────────────────────────────────────────────────────
 
@@ -317,6 +317,38 @@ def test_cleanup_jobs_swallow_errors(monkeypatch):
 
     monkeypatch.setattr(jobs, "SessionLocal", Broken)
     jobs.cleanup_old_completed_assessments()
+
+
+def test_audit_events_are_kept_for_the_retention_window(db, monkeypatch):
+    # Longer than the 182-day cleanups on purpose: a safeguarding trail should
+    # outlive the records it describes.
+    monkeypatch.setattr(jobs, "AUDIT_RETENTION_DAYS", 365)
+    now = datetime.now()
+    row = dict(actor_email="a@x", action="read", resource="cadet_medical")
+    db.add_all([
+        AuditEvent(id=1, occurred_at=now - timedelta(days=366), **row),
+        AuditEvent(id=2, occurred_at=now - timedelta(days=200), **row),  # past 182, still kept
+        AuditEvent(id=3, occurred_at=now, **row),
+    ])
+    db.commit()
+    jobs.cleanup_old_audit_events()
+    db.expire_all()
+    assert sorted(e.id for e in db.query(AuditEvent).all()) == [2, 3]
+
+
+def test_audit_cleanup_swallows_errors(monkeypatch):
+    class Broken:
+        def query(self, *a):
+            raise RuntimeError("db gone")
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(jobs, "SessionLocal", Broken)
+    jobs.cleanup_old_audit_events()
 
 
 def test_quali_expiry_alert_emails_each_qual_once(db, session_factory, outbox):

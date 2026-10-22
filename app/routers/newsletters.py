@@ -23,6 +23,22 @@ router = APIRouter()
 WEBSITE_CURRENT_JSON_PATH = "src/data/currentNewsletter.json"
 
 
+MAX_PDF_BYTES = 25 * 1024 * 1024
+
+
+async def _read_pdf(file: UploadFile) -> bytes:
+    """Read an uploaded newsletter PDF, refusing anything over MAX_PDF_BYTES.
+
+    The other upload paths cap their payloads (2 MB signatures, 5 MB receipts);
+    these commit the bytes straight into a GitHub repo, so they need a ceiling
+    too. 25 MB is comfortably above a real newsletter.
+    """
+    data = await file.read(MAX_PDF_BYTES + 1)
+    if len(data) > MAX_PDF_BYTES:
+        raise HTTPException(status_code=400, detail="Newsletter PDF must be under 25 MB")
+    return data
+
+
 def _newsletter_pdf_path(issue: int) -> str:
     return f"317_newsletter/public/newsletters/issue-{issue}.pdf"
 
@@ -144,7 +160,7 @@ async def upload_newsletter(
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a PDF")
 
-    pdf_bytes = await file.read()
+    pdf_bytes = await _read_pdf(file)
     newsletter_id = f"issue-{issue}"
 
     entry = {
@@ -220,7 +236,7 @@ async def update_newsletter(
         if file is not None and file.filename:
             if file.content_type != "application/pdf":
                 raise HTTPException(status_code=400, detail="File must be a PDF")
-            new_pdf_bytes = await file.read()
+            new_pdf_bytes = await _read_pdf(file)
             files.append({"path": _newsletter_pdf_path(issue), "content": new_pdf_bytes})
 
         await commit_files_to_github(
