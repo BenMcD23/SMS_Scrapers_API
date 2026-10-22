@@ -158,6 +158,7 @@ def seed(db, now: datetime | None = None) -> bool:
 
     seed_portal(db, cadets, rng, now)
     seed_flying_paperwork(db, cadets, now)
+    seed_activity_logs(db, cadets, now)
 
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
@@ -181,6 +182,57 @@ def seed(db, now: datetime | None = None) -> bool:
 
     db.commit()
     return True
+
+
+# DofE activity logs: (cadet index, section, months, weeks since start, weeks
+# skipped). The dev NCO is part-way through two sections with a gap to catch
+# up and one still to set up; the dev SNCO isn't switched on, so the portal's
+# other path (no Activity Log link) shows too. Index 2 is up to date on all
+# three, index 4 has finished one and index 6 hasn't started.
+ACTIVITY_LOGS = [
+    (1, "volunteering", 3, 10, (3, 7)),
+    (1, "skills", 6, 5, ()),
+    (2, "physical", 3, 6, ()),
+    (2, "skills", 3, 6, (5,)),
+    (2, "volunteering", 3, 6, ()),
+    (3, "volunteering", 6, 8, (4, 5, 6, 8)),
+    (4, "volunteering", 3, 13, ()),
+    (4, "physical", 6, 13, (12,)),
+    (5, "skills", 3, 2, (0, 1)),
+]
+ACTIVITY_LOG_CADETS = (1, 2, 3, 4, 5, 6)
+
+
+def seed_activity_logs(db, cadets, now: datetime) -> None:
+    """Written directly, like the roster: the API would refuse back-dated
+    starts relative to the real today, and these are relative to ``now``."""
+    from core.activity_log import SECTIONS, progress, week_start
+    from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry
+
+    today = now.date()
+    for i in ACTIVITY_LOG_CADETS:
+        db.add(ActivityLogEnrolment(cadet_id=cadets[i].cin, level="Bronze", enabled_at=now - timedelta(weeks=14)))
+    what = {"volunteering": ("Helping at the charity shop", "Learn to run the till on my own", "Shop manager"),
+            "skills": ("Learning the guitar", "Play three songs all the way through", "Music teacher"),
+            "physical": ("Swimming", "Swim 1km without stopping", "Swimming coach")}
+    for i, section, months, weeks_ago, skipped in ACTIVITY_LOGS:
+        activity, goal, role = what[section]
+        start = week_start(today) - timedelta(weeks=weeks_ago)
+        log = ActivityLog(cadet_id=cadets[i].cin, section=section, level="Bronze", activity=activity, goal=goal,
+                          assessor_name="Sarah Hughes", assessor_role=role, duration_months=months,
+                          start_date=start, created_at=now - timedelta(weeks=weeks_ago),
+                          updated_at=now - timedelta(weeks=weeks_ago))
+        for week in range(weeks_ago + 1):
+            day = start + timedelta(weeks=week, days=2)
+            if week in skipped or day > today:
+                continue
+            log.entries.append(ActivityLogEntry(
+                date=day, description=f"{activity} ({SECTIONS[section].lower()})", minutes=60 + 15 * (week % 3),
+                created_at=datetime.combine(day, datetime.min.time()) + timedelta(hours=19),
+                created_by=cadets[i].email))
+        if progress(log, today)["complete"]:
+            log.completed_at = now - timedelta(days=1)
+        db.add(log)
 
 
 def seed_flying_paperwork(db, cadets, now: datetime) -> None:

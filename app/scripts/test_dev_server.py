@@ -256,3 +256,21 @@ def test_recruits_cover_every_stage_of_the_joining_form(api, db):
     for form in ("3822A", "3822H"):
         res = api.get(f"/recruits/{rows['Erin']['id']}/pdf?form={form}", headers=staff)
         assert res.status_code == 200
+
+
+def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, monkeypatch):
+    import routers.activity_logs
+    from database.models import ActivityLog, ActivityLogEnrolment
+
+    monkeypatch.setattr(routers.activity_logs, "_today", lambda: NOW.date())
+    seed(db, now=NOW)
+    nco = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("nco")).one()
+    snco = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("snco")).one()
+    # The NCO login sees the page; the SNCO login is the "not switched on" path.
+    assert db.get(ActivityLogEnrolment, nco.cin) and not db.get(ActivityLogEnrolment, snco.cin)
+    assert db.query(ActivityLog).filter(ActivityLog.completed_at.isnot(None)).count() >= 1
+
+    body = api.get("/activity-logs/weekly", headers=api.as_("staff")).json()
+    statuses = {s["status"] for c in body["cadets"] for s in c["sections"]}
+    assert {"done", "none", "not_set_up", "complete"} <= statuses
+    assert any(c["behind"] for c in body["cadets"]) and not all(c["behind"] for c in body["cadets"])

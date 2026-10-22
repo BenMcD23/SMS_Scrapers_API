@@ -23,6 +23,7 @@ from core.scheduler import scheduler
 from core.security import require_user
 from database.database import engine
 from routers import (
+    activity_logs,
     assessments,
     attendance,
     backups,
@@ -176,6 +177,7 @@ def health_check(idinfo: dict = Depends(require_user)):
 
 # portal must come before cadets so /cadets/me isn't swallowed by /cadets/{cin}
 app.include_router(portal.router)
+app.include_router(activity_logs.router)
 app.include_router(theory.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
