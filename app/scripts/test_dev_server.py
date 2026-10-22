@@ -107,7 +107,9 @@ def test_stores_seed_goes_through_the_api(api, db):
     assert all(not o["completed"] for o in orders)
     assert any(i["needSizing"] for o in orders for i in o["items"])
     assert api.get("/stores/stock", headers=staff).json()
-    assert len(api.get("/stores/badges/orders", headers=staff).json()) == 1
+    assert len(api.get("/stores/badges/orders", headers=staff).json()) == 2
+    stages = {b["stage"] for b in api.get("/stores/badges/to-give", headers=staff).json()}
+    assert stages == {"not_ordered", "on_order", "notified"}
     # Cadets with orders have sizes on record too, for the orders page's Sizes popover.
     issued = [api.get(f"/stores/issuances/{o['cadetCin']}", headers=staff).json() for o in orders]
     assert sum(1 for i in issued if i) == 3
