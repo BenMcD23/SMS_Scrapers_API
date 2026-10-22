@@ -27,8 +27,9 @@ class Cadet(Base):
     # Mobile the cadet gets parade-night texts on. Owned by the cadet — they set
     # it themselves on the portal — so nothing scraped ever overwrites it.
     phone_number = Column(Text, nullable=True)
-    # Parents'/guardians' addresses, ";"-separated, entered by the OC on the OC
-    # dashboard (SMS has no scrapable source), so no scraper ever overwrites it.
+    # Parents'/guardians' addresses, ";"-separated. The cadet scraper adds
+    # Bader's next-of-kin addresses; the OC can add more on the OC dashboard. It
+    # only ever adds, so nothing the OC typed is lost.
     parent_emails = Column(Text, nullable=True)
 
     date_of_birth = Column(DateTime, nullable=True)

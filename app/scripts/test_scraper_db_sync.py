@@ -62,6 +62,7 @@ def bader(monkeypatch):
     monkeypatch.setattr(calls, "login", lambda *a, **k: None)
     monkeypatch.setattr(calls, "push_to_google_apps_script", lambda *a, **k: None)
     monkeypatch.setattr(calls, "get_cadet_names", lambda page: (["x"], 1, {}))
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [])
     monkeypatch.setattr(calls, "get_workspace_users", lambda: [
         {"first_name_key": "AMY", "last_name_key": "ABLE", "email": "amy@317atc.co.uk"}])
     return closed
@@ -274,6 +275,78 @@ def test_a_playwright_timeout_is_reported_as_such(db, bader, monkeypatch):
     run = Run()
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     assert run.errors() == ["A page took too long to load (Timeout)."]
+
+
+# ── parent emails (end of the cadet scrape) ───────────────────────────────────
+
+def _nok(first, last, email, dob=None):
+    return {"service_number": "3103170024018", "first_name": first, "last_name": last,
+            "date_of_birth": dob, "relationship": "Mother", "email": email}
+
+
+def test_parent_emails_from_bader_are_added_to_the_ones_the_oc_typed(db, bader, monkeypatch):
+    db.add_all([
+        Cadet(cin=1001, first_name="Amy", last_name="Able", parent_emails="typed@x.com"),
+        Cadet(cin=1002, first_name="Bob", last_name="Baker"),
+        Cadet(cin=1003, first_name="Cat", last_name="Cole", parent_emails="kept@x.com"),
+    ])
+    db.commit()
+    _quali(monkeypatch, [_amy(), _amy(cin="1002", first_name="Bob", last_name="Baker"),
+                         _amy(cin="1003", first_name="Cat", last_name="Cole")])
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [
+        _nok("Amy", "Able", "mum@x.com"),
+        _nok("Amy", "Able", "TYPED@x.com"),            # already there, other case
+        _nok("Bob", "Baker", "dad@x.com"),
+        _nok("Bob", "Baker", "not an address"),
+        _nok("Ghost", "Nobody", "ghost@x.com"),
+    ])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.get(Cadet, 1001).parent_emails == "typed@x.com;mum@x.com"
+    assert db.get(Cadet, 1002).parent_emails == "dad@x.com"
+    assert db.get(Cadet, 1003).parent_emails == "kept@x.com"   # not in the report: untouched
+    assert run.errors() == []
+    warnings = run.warnings()
+    assert any("[NO MATCH] Ghost Nobody" in w for w in warnings)
+    # An invalid address is reported by cadet, never echoed into the run log.
+    assert any("Bob Baker is not a valid address" in w for w in warnings)
+    assert not any("not an address" in w for w in warnings)
+
+
+@pytest.mark.parametrize("report", [
+    lambda page: [],
+    lambda page: (_ for _ in ()).throw(calls.PlaywrightTimeoutError("report never drew")),
+    lambda page: (_ for _ in ()).throw(RuntimeError("Bader 500")),
+])
+def test_a_missing_or_empty_report_keeps_parent_emails_and_the_cadet_scrape(db, bader, monkeypatch, report):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able", parent_emails="typed@x.com"))
+    db.commit()
+    _quali(monkeypatch, [_amy(rank="Sgt")])
+    monkeypatch.setattr(calls, "get_parent_emails", report)
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    amy = db.get(Cadet, 1001)
+    assert (amy.parent_emails, amy.rank) == ("typed@x.com", "Sgt")
+    # A warning, not an error: the run still counts as a success.
+    assert run.errors() == []
+    assert any("parent emails left as they were" in w for w in run.warnings())
+
+
+def test_a_stopped_run_does_not_read_the_next_of_kin_report(db, bader, monkeypatch):
+    _quali(monkeypatch, [_amy()])
+    read = []
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: read.append(page) or [])
+    run = Run()
+    real_commit = db.commit
+
+    def commit_then_stop():
+        real_commit()
+        run.stop.set()
+    monkeypatch.setattr(db, "commit", commit_then_stop)
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert read == []
 
 
 # ── absences ──────────────────────────────────────────────────────────────────

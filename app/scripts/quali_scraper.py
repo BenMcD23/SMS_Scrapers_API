@@ -8,6 +8,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.attendance import get_attendance
 from scripts.profiles import CADETS, collect_profile_links, open_profile
+from scripts.reports import page_through_report
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
 from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
 
@@ -99,14 +100,6 @@ def _norm_name(name: str) -> str:
     return " ".join((name or "").split()).casefold()
 
 
-def _report_signature(page: Page):
-    try:
-        el = page.query_selector("div[id^='VisibleReportContent']")
-        return el.inner_text()[:300] if el else ""
-    except Exception:
-        return ""
-
-
 def _parse_classification_page(page: Page, result: dict, current):
     content = page.query_selector("div[id^='VisibleReportContent']")
     if not content:
@@ -127,47 +120,20 @@ def _parse_classification_page(page: Page, result: dict, current):
     return current
 
 
+CLASSIFICATIONS_URL = "https://sms.bader.mod.uk/reports/unitPersonnelClassifications.aspx"
+
+
 def get_all_classifications(page: Page):
     result = {}
+    current = None
+
+    def read_page(p):
+        nonlocal current
+        current = _parse_classification_page(p, result, current)
+
     try:
-        page.goto("https://sms.bader.mod.uk/reports/unitPersonnelClassifications.aspx")
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-
-        page.wait_for_function(
-            "() => document.querySelectorAll(\"div[id^='VisibleReportContent'] tr[valign='top']\").length > 3",
-            timeout=60000,
-        )
-
-        next_id = "ctl00_ctl00_cphBaseBody_cphBody_rptvwReport_ctl05_ctl00_Next_ctl00_ctl00"
-        current = None
-        pages = 0
-        while True:
-            current = _parse_classification_page(page, result, current)
-            pages += 1
-
-            next_btn = page.query_selector(f"#{next_id}")
-            if not next_btn:
-                break
-            if not next_btn.is_visible() or pages > 100:
-                break
-
-            before = _report_signature(page)
-            safe_click(page, next_btn)
-            try:
-                page.wait_for_function(
-                    "(before) => { const el = document.querySelector(\"div[id^='VisibleReportContent']\"); "
-                    "return !!el && el.innerText.slice(0,300) !== before && el.innerText.length > 0; }",
-                    arg=before,
-                    timeout=30000,
-                )
-            except PlaywrightTimeoutError:
-                logger.warning(f"Warning: classification report stopped advancing at page {pages}")
-                break
-            wait_for_aspx_load(page)
-
+        pages = page_through_report(page, CLASSIFICATIONS_URL, "rptvwReport", read_page)
         logger.info(f"Classification report: {pages} page(s), {len(result)} cadets matched")
-
     except Exception as e:
         logger.error(f"Warning: Could not load classification report: {e}")
     return result
