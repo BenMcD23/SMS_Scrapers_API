@@ -34,7 +34,7 @@ from scripts.event_scraper import (
     get_event_names_and_317_links,
 )
 from scripts.flying_paperwork import sync_flying_events
-from scripts.parent_email_scraper import get_parent_emails, match_cadet, merge_emails, valid_email
+from scripts.parent_email_scraper import get_parent_emails, merge_emails, valid_email
 from scripts.quali_scraper import get_cadet_info_and_qualifications, get_cadet_names
 from scripts.scraper_utils import init_scraper, login, match_email, push_to_google_apps_script
 
@@ -397,7 +397,7 @@ def sync_parent_emails(page, db_session, scraper_messages, scraper_lock):
     """Add Bader's next-of-kin addresses to Cadets.parent_emails (the OC's BCC list).
 
     Runs at the end of the cadet scrape, once the cadet list is fresh to match
-    against. Only ever adds (see merge_emails), and a failure here is a warning,
+    against. Rows are matched on CIN (the report's service number). Only ever adds (see merge_emails), and a failure here is a warning,
     not a failed run: the cadet data is already saved, and the OC can still type
     addresses in by hand. An empty report changes nothing.
     """
@@ -420,14 +420,15 @@ def sync_parent_emails(page, db_session, scraper_messages, scraper_lock):
 
     try:
         cadets = db_session.query(Cadet).all()
+        known_cins = {c.cin for c in cadets}
         scraped: dict[int, list[str]] = {}
         unmatched = set()
         invalid = 0
         for r in records:
-            name = f"{r['first_name']} {r['last_name']}"
-            cin = match_cadet(r, cadets)
-            if cin is None:
-                unmatched.add(name)
+            name = f"{r['first_name']} {r['last_name']}".strip() or "A cadet"
+            cin = r["cin"]
+            if cin not in known_cins:
+                unmatched.add(f"{name} (CIN {cin})" if cin else f"{name} (no CIN)")
                 continue
             if not r["email"]:
                 continue

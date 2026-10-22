@@ -5,8 +5,6 @@ heading row (CDT, CI, ...), with one row per next of kin. Only the CDT group
 is read: those are the cadets the OC's leaving and BCC lists are about.
 """
 
-from datetime import datetime
-
 from playwright.sync_api import Page
 
 from core.emailer import EMAIL_RE
@@ -20,14 +18,6 @@ CADET_TYPE = "CDT"
 ROW_CELLS = 8
 
 
-def _parse_dob(text):
-    # The report is rendered en-US (9/29/2011), unlike the dd/mm/yyyy pages.
-    try:
-        return datetime.strptime((text or "").strip(), "%m/%d/%Y")
-    except ValueError:
-        return None
-
-
 def _parse_nok_rows(rows, current=None):
     """(next-of-kin records under the CDT heading, the heading in force at the end).
 
@@ -38,22 +28,19 @@ def _parse_nok_rows(rows, current=None):
     for cells in rows:
         if len(cells) != ROW_CELLS:
             continue  # layout rows wrapping the table
-        personnel_type, service_no, first, last, dob, relationship, email = (c.strip() for c in cells[1:])
+        personnel_type, service_no, first, last, _dob, _relationship, email = (c.strip() for c in cells[1:])
         if personnel_type == "Personnel Type":
             continue  # column headings, repeated on every page
         if personnel_type:
             current = personnel_type
             continue
-        if current != CADET_TYPE or not (first and last):
+        if current != CADET_TYPE:
             continue
-        records.append({
-            "service_number": service_no,
-            "first_name": first,
-            "last_name": last,
-            "date_of_birth": _parse_dob(dob),
-            "relationship": relationship,
-            "email": email,
-        })
+        try:
+            cin = int(service_no)  # the service number is the cadet's CIN
+        except ValueError:
+            cin = None
+        records.append({"cin": cin, "first_name": first, "last_name": last, "email": email})
     return records, current
 
 
@@ -77,29 +64,6 @@ def get_parent_emails(page: Page):
 
 def valid_email(email: str) -> bool:
     return bool(email) and bool(EMAIL_RE.match(email))
-
-
-def _key(text):
-    return " ".join((text or "").split()).casefold()
-
-
-def match_cadet(record, cadets):
-    """CIN of the cadet a report row is about, or None.
-
-    The report's service number isn't the CIN, so it's by name. Exact forename
-    and surname first; failing that (or when two cadets share a name) the date of
-    birth picks one out of the same-surname cadets, which also catches a Bader
-    forename that differs from the one we store. Never guesses between two.
-    """
-    first, last, dob = _key(record["first_name"]), _key(record["last_name"]), record["date_of_birth"]
-    same_name = [c for c in cadets if _key(c.first_name) == first and _key(c.last_name) == last]
-    if len(same_name) == 1:
-        return same_name[0].cin
-    if dob is None:
-        return None
-    candidates = same_name or [c for c in cadets if _key(c.last_name) == last]
-    by_dob = [c for c in candidates if c.date_of_birth and c.date_of_birth.date() == dob.date()]
-    return by_dob[0].cin if len(by_dob) == 1 else None
 
 
 def merge_emails(stored: str | None, scraped: list[str]) -> str | None:

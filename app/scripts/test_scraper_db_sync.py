@@ -20,6 +20,7 @@ from database.models import (
     CadetAttendance,
     CadetDietary,
     CadetEvent,
+    CadetLeavingProcess,
     CadetMedical,
     CadetQualification,
     FlyingEvent,
@@ -279,9 +280,8 @@ def test_a_playwright_timeout_is_reported_as_such(db, bader, monkeypatch):
 
 # ── parent emails (end of the cadet scrape) ───────────────────────────────────
 
-def _nok(first, last, email, dob=None):
-    return {"service_number": "3103170024018", "first_name": first, "last_name": last,
-            "date_of_birth": dob, "relationship": "Mother", "email": email}
+def _nok(cin, first, last, email):
+    return {"cin": cin, "first_name": first, "last_name": last, "email": email}
 
 
 def test_parent_emails_from_bader_are_added_to_the_ones_the_oc_typed(db, bader, monkeypatch):
@@ -294,24 +294,52 @@ def test_parent_emails_from_bader_are_added_to_the_ones_the_oc_typed(db, bader, 
     _quali(monkeypatch, [_amy(), _amy(cin="1002", first_name="Bob", last_name="Baker"),
                          _amy(cin="1003", first_name="Cat", last_name="Cole")])
     monkeypatch.setattr(calls, "get_parent_emails", lambda page: [
-        _nok("Amy", "Able", "mum@x.com"),
-        _nok("Amy", "Able", "TYPED@x.com"),            # already there, other case
-        _nok("Bob", "Baker", "dad@x.com"),
-        _nok("Bob", "Baker", "not an address"),
-        _nok("Ghost", "Nobody", "ghost@x.com"),
+        _nok(1001, "Amy", "Able", "mum@x.com"),
+        _nok(1001, "Amy", "Able", "TYPED@x.com"),       # already there, other case
+        _nok(1002, "Robert", "Baker", "dad@x.com"),     # matched on CIN, not the name
+        _nok(1002, "Robert", "Baker", "not an address"),
+        _nok(1003, "Cat", "Cole", ""),                  # NoK without an email
+        _nok(9999, "Ghost", "Nobody", "ghost@x.com"),
+        _nok(None, "No", "Cin", "nocin@x.com"),
     ])
     run = Run()
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     db.expire_all()
     assert db.get(Cadet, 1001).parent_emails == "typed@x.com;mum@x.com"
     assert db.get(Cadet, 1002).parent_emails == "dad@x.com"
-    assert db.get(Cadet, 1003).parent_emails == "kept@x.com"   # not in the report: untouched
+    assert db.get(Cadet, 1003).parent_emails == "kept@x.com"   # nothing new: untouched
     assert run.errors() == []
     warnings = run.warnings()
-    assert any("[NO MATCH] Ghost Nobody" in w for w in warnings)
+    assert any("[NO MATCH] Ghost Nobody (CIN 9999)" in w for w in warnings)
+    assert any("[NO MATCH] No Cin (no CIN)" in w for w in warnings)
+    assert not any("ghost@x.com" in w or "nocin@x.com" in w for w in warnings)
     # An invalid address is reported by cadet, never echoed into the run log.
-    assert any("Bob Baker is not a valid address" in w for w in warnings)
+    assert any("Robert Baker is not a valid address" in w for w in warnings)
     assert not any("not an address" in w for w in warnings)
+
+
+def test_scraped_parent_emails_are_what_the_oc_leaving_page_offers(api, db, bader, monkeypatch):
+    # Amy has been off parade nine weeks, so she's on the leaving list.
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
+    db.add_all([
+        CadetAttendance(cadet_id=1001, date=datetime(2026, 7, 29), status="Present", register_type="Parade Night"),
+        CadetAttendance(cadet_id=1001, date=datetime(2026, 9, 30), status="Absent", register_type="Parade Night"),
+    ])
+    db.commit()
+    _quali(monkeypatch, [_amy()])
+    monkeypatch.setattr(calls, "get_parent_emails", lambda page: [
+        _nok(1001, "Amy", "Able", "mum@x.com"), _nok(1001, "Amy", "Able", "dad@x.com")])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+
+    oc = api.as_("oc")
+    [row] = api.get("/leaving-process", headers=oc).json()["cadets"]
+    assert (row["cin"], row["parentEmails"]) == (1001, ["mum@x.com", "dad@x.com"])
+    assert api.get("/oc/parent-emails", headers=oc).json()["bcc"] == "mum@x.com;dad@x.com"
+    # Marking the parents notified records the scraped addresses it went to.
+    assert api.post("/leaving-process/1001/notified", headers=oc).status_code == 200
+    db.expire_all()
+    assert db.query(CadetLeavingProcess).one().sent_to == "mum@x.com;dad@x.com"
 
 
 @pytest.mark.parametrize("report", [

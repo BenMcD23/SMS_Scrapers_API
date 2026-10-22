@@ -4,9 +4,6 @@ Rows are given as the cell texts read_report_cells returns: a spacer cell, then
 Personnel Type, Service Number, Forename, Surname, DOB, Relationship, Email.
 """
 
-from datetime import datetime
-from types import SimpleNamespace
-
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -31,32 +28,35 @@ def test_only_rows_under_the_cdt_heading_are_kept():
     rows = [
         HEADINGS,
         heading("CDT"),
-        person("Aiman", "Shahbaz", "shahbaz163@yahoo.com", relationship="Father"),
-        person("Alice", "Davies", "jaderusselljrr@gmail.com", dob="5/8/2008"),
+        person("Ada", "Archer", "ada.parent@example.com", relationship="Father"),
+        person("Beth", "Brown", "beth.parent@example.com", dob="5/8/2008"),
         heading("CI"),
         person("Ivor", "Instructor", "ci.parent@example.com"),
     ]
     records, current = nok._parse_nok_rows(rows)
-    assert [(r["first_name"], r["email"], r["relationship"]) for r in records] == [
-        ("Aiman", "shahbaz163@yahoo.com", "Father"),
-        ("Alice", "jaderusselljrr@gmail.com", "Mother"),
+    assert [(r["first_name"], r["email"]) for r in records] == [
+        ("Ada", "ada.parent@example.com"),
+        ("Beth", "beth.parent@example.com"),
     ]
     assert current == "CI"
 
 
-def test_the_date_of_birth_is_month_first():
-    """The report is en-US: 5/8/2008 is the 8th of May, not the 5th of August."""
-    [r] = nok._parse_nok_rows([heading("CDT"), person("Alice", "Davies", "a@x.com", dob="5/8/2008")])[0]
-    assert r["date_of_birth"] == datetime(2008, 5, 8)
-    [bad] = nok._parse_nok_rows([heading("CDT"), person("Al", "D", "a@x.com", dob="")])[0]
-    assert bad["date_of_birth"] is None
+def test_the_service_number_is_read_as_the_cin():
+    [r] = nok._parse_nok_rows([heading("CDT"), person("Amy", "Able", "a@x.com", service="3103170024018")])[0]
+    assert r["cin"] == 3103170024018
+
+
+def test_a_row_without_a_readable_service_number_has_no_cin():
+    # Kept rather than dropped, so the sync can report it instead of losing it silently.
+    [r] = nok._parse_nok_rows([heading("CDT"), person("Amy", "Able", "a@x.com", service="\xa0")])[0]
+    assert r["cin"] is None and r["first_name"] == "Amy"
 
 
 def test_a_cdt_group_carries_over_a_page_break():
     # Page 2 of the report repeats the column headings but not the CDT heading.
     _, current = nok._parse_nok_rows([HEADINGS, heading("CDT"), person("A", "B", "a@x.com")])
-    records, _ = nok._parse_nok_rows([HEADINGS, person("Macie", "Gibson", "m@x.com")], current)
-    assert [r["first_name"] for r in records] == ["Macie"]
+    records, _ = nok._parse_nok_rows([HEADINGS, person("Cara", "Cole", "m@x.com")], current)
+    assert [r["first_name"] for r in records] == ["Cara"]
 
 
 def test_rows_before_any_heading_and_layout_rows_are_ignored():
@@ -64,7 +64,6 @@ def test_rows_before_any_heading_and_layout_rows_are_ignored():
         ["", "", "Next Of Kin - Mail Merge"],    # the layout row wrapping the title
         person("Orphan", "Row", "o@x.com"),      # no heading yet, so not known to be a cadet
         heading("CDT"),
-        person("", "", "nobody@x.com"),          # a blank name is nothing to match
         person("Amy", "Able", ""),               # a cadet whose NoK has no email
     ]
     records, _ = nok._parse_nok_rows(rows)
@@ -89,40 +88,9 @@ def test_every_page_of_the_report_is_read(monkeypatch):
 
 
 def test_validating_an_address():
-    assert nok.valid_email("jopage123@hoymail.com")  # a typo'd domain is still an address
+    assert nok.valid_email("someone@hoymail.com")  # a typo'd domain is still an address
     assert not nok.valid_email("not an email")
     assert not nok.valid_email("")
-
-
-# ── matching a row to a cadet ─────────────────────────────────────────────────
-
-def cadet(cin, first, last, dob=None):
-    return SimpleNamespace(cin=cin, first_name=first, last_name=last, date_of_birth=dob)
-
-
-def row(first, last, dob=None):
-    return {"first_name": first, "last_name": last, "date_of_birth": dob}
-
-
-def test_twins_with_one_birthday_are_told_apart_by_forename():
-    twins = [cadet(1, "Aiman", "Shahbaz", datetime(2011, 9, 29)), cadet(2, "Iman", "Shahbaz", datetime(2011, 9, 29))]
-    assert nok.match_cadet(row("Iman", "Shahbaz", datetime(2011, 9, 29)), twins) == 2
-    assert nok.match_cadet(row(" aiman ", "SHAHBAZ"), twins) == 1
-
-
-def test_a_different_forename_is_matched_on_surname_and_birthday():
-    cadets = [cadet(1, "Ben", "Malik", datetime(2014, 1, 22)), cadet(2, "Fatimah", "Malik", datetime(2011, 6, 26))]
-    assert nok.match_cadet(row("Benyamin", "Malik", datetime(2014, 1, 22)), cadets) == 1
-
-
-def test_two_cadets_with_one_name_are_split_by_birthday_or_not_matched():
-    cadets = [cadet(1, "Sam", "Smith", datetime(2010, 1, 1)), cadet(2, "Sam", "Smith", datetime(2012, 1, 1))]
-    assert nok.match_cadet(row("Sam", "Smith", datetime(2012, 1, 1)), cadets) == 2
-    assert nok.match_cadet(row("Sam", "Smith"), cadets) is None  # never a guess
-
-
-def test_nobody_by_that_name_is_no_match():
-    assert nok.match_cadet(row("Ghost", "Nobody", datetime(2010, 1, 1)), [cadet(1, "Amy", "Able")]) is None
 
 
 # ── merging into what's stored ────────────────────────────────────────────────
@@ -237,6 +205,6 @@ def test_the_report_cells_are_read_once_each_in_a_real_page():
 
     records, _ = nok._parse_nok_rows(cells)
     # Once, not twice: the layout row wrapping the table must not be read as a row.
-    assert [(r["first_name"], r["last_name"], r["date_of_birth"], r["email"]) for r in records] == [
-        ("Amy", "Able", datetime(2008, 5, 8), "amy.parent@example.com"),
+    assert [(r["cin"], r["first_name"], r["email"]) for r in records] == [
+        (3103170099001, "Amy", "amy.parent@example.com"),
     ]
