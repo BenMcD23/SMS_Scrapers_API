@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from core.db import get_db
 from core.llm import generate
-from core.security import require_staff_or_snco
+from core.security import require_staff, require_staff_or_snco
 from database.models import Cadet, CadetAbsence, InspectionSheet
 
 router = APIRouter()
@@ -306,10 +306,13 @@ def cadet_timeline(db: Session, cin: int) -> list[dict]:
     return out
 
 
+# History, saved sheets, analysis and the audit are staff only: on the site they
+# live under /cadets/inspections, which SNCOs can't open. SNCOs only run the
+# sheet itself (/absences, /cadets and the POST above).
 @router.get("/inspections/history")
 async def inspection_history(
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """Per-cadet inspection history across every submitted sheet, with score and
     attendance averages plus squadron rankings.
@@ -433,7 +436,7 @@ def _flight_order(flight: str) -> tuple:
 @router.get("/inspections/sheets")
 async def list_sheets(
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """Submitted inspection sheets, newest first — for the date picker."""
     sheets = db.query(InspectionSheet).order_by(InspectionSheet.date.desc()).all()
@@ -457,7 +460,7 @@ async def list_sheets(
 async def sheet_detail(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """Full sheet grouped by flight, with cadet names and comments resolved."""
     sheet = db.query(InspectionSheet).filter(InspectionSheet.id == sheet_id).first()
@@ -477,7 +480,7 @@ async def sheet_detail(
 async def delete_sheet(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """Permanently delete a submitted inspection sheet."""
     sheet = db.query(InspectionSheet).filter(InspectionSheet.id == sheet_id).first()
@@ -492,7 +495,7 @@ async def delete_sheet(
 async def sheet_pdf(
     sheet_id: int,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """Export a whole inspection (all flights) as a printable PDF."""
     from fastapi.responses import StreamingResponse
@@ -556,7 +559,7 @@ class AnalyseRequest(BaseModel):
 def analyse_cadet(  # sync on purpose — the slow AI call runs in the threadpool
     body: AnalyseRequest,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """AI reasoning over a single cadet's inspection history, focused
     on recurring uniform faults and score trends."""

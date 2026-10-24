@@ -240,7 +240,8 @@ def squadron(db):
 
 
 @pytest.mark.parametrize("method", ["get", "post"])
-def test_staff_and_snco_only(api, squadron, method, monkeypatch):
+def test_staff_only(api, squadron, method, monkeypatch):
+    # The audit is on the site's staff-only /cadets/inspections page.
     monkeypatch.setattr(audit_mod, "generate", lambda *a, **k: ("ok", "m"))
 
     def call(headers):
@@ -249,10 +250,9 @@ def test_staff_and_snco_only(api, squadron, method, monkeypatch):
         return api.post("/inspections/audit", json={}, headers=headers)
 
     assert call({}).status_code == 401
-    for persona in ("nco", "cadet"):
+    for persona in ("snco", "nco", "cadet"):
         assert call(api.as_(persona)).status_code == 403
-    for persona in ("staff", "snco"):
-        assert call(api.as_(persona)).status_code == 200
+    assert call(api.as_("staff")).status_code == 200
 
 
 def test_get_returns_figures_without_spending_a_model_call(api, squadron, monkeypatch):

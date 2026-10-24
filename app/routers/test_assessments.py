@@ -65,8 +65,13 @@ def moi(**over):
     return {**body, **over}
 
 
-def _add(api, kind, body, headers=NCO):
-    return api.post(f"/assessments/{kind}/add-assessment", json=body, headers=headers)
+def _author(kind):
+    # MOI is staff only; the other sheets are written by NCOs.
+    return STAFF if kind == "moi" else NCO
+
+
+def _add(api, kind, body, headers=None):
+    return api.post(f"/assessments/{kind}/add-assessment", json=body, headers=_author(kind) if headers is None else headers)
 
 
 # ── pass rules ────────────────────────────────────────────────────────────────
@@ -136,6 +141,16 @@ def test_create_needs_nco_or_above(api, cadet, kind):
     assert _add(api, kind, {}, headers=api.as_("cadet")).status_code == 403
 
 
+@pytest.mark.parametrize("role", ["nco", "snco", "cadet"])
+def test_moi_sheet_is_staff_only(api, cadet, role):
+    # The site only shows the MOI sheet to staff.
+    assert _add(api, "moi", moi(), headers=api.as_(role)).status_code == 403
+
+
+def test_staff_can_create_an_moi_sheet(api, cadet):
+    assert _add(api, "moi", moi(), headers=api.as_("staff")).status_code == 200
+
+
 @pytest.mark.parametrize("method,path", [
     ("post", "/assessments/1/Blue Radio/mark-complete"),
     ("delete", "/assessments/1"),
@@ -163,8 +178,8 @@ def test_create_each_type_renders_a_pdf_and_emails_the_cadet(api, db, cadet, out
     assert sheet.assessment_type == atype
     assert sheet.fields["passed"] is passed
     assert sheet.pdf_data.startswith(b"%PDF")
-    # The assessor is the signed-in NCO, by their Google name.
-    assert sheet.fields["assessor_name"] == "Nina Corporal"
+    # The assessor is whoever signed in, by their Google name.
+    assert sheet.fields["assessor_name"] == ("Sam Staff" if kind == "moi" else "Nina Corporal")
     assert len(outbox) == 1 and outbox[0]["to"] == "amy@x"
     assert outbox[0]["attachment_filename"] == f"{atype.replace(' ', '_')}_Able_Amy.pdf"
 
@@ -291,7 +306,7 @@ def test_detail_strips_signatures(api, cadet):
 def test_assessor_can_edit_and_signatures_are_kept(api, db, cadet, kind, body, edit):
     sid = _add(api, kind, body).json()["assessment_id"]
     before = dict(db.get(AssessmentSheet, sid).fields)
-    res = api.put(f"/assessments/{sid}", json=edit, headers=NCO)
+    res = api.put(f"/assessments/{sid}", json=edit, headers=_author(kind))
     assert res.status_code == 200, res.text
     assert res.json()["passed"] is False
     sheet = db.get(AssessmentSheet, sid)
@@ -333,16 +348,16 @@ def test_legacy_types_cannot_be_edited(api, db, cadet):
 
 def test_moi_edit_lesson_plan_replace_keep_remove(api, db, cadet):
     sid = _add(api, "moi", moi(lesson_plan_pdf=PDF_URL, lesson_plan_filename="v1.pdf")).json()["assessment_id"]
-    api.put(f"/assessments/{sid}", json=moi(), headers=NCO)
+    api.put(f"/assessments/{sid}", json=moi(), headers=STAFF)
     sheet = db.get(AssessmentSheet, sid)
     db.refresh(sheet)
     assert sheet.lesson_plan_filename == "v1.pdf"
 
-    api.put(f"/assessments/{sid}", json=moi(lesson_plan_pdf=PDF_URL, lesson_plan_filename="v2.pdf"), headers=NCO)
+    api.put(f"/assessments/{sid}", json=moi(lesson_plan_pdf=PDF_URL, lesson_plan_filename="v2.pdf"), headers=STAFF)
     db.refresh(sheet)
     assert sheet.lesson_plan_filename == "v2.pdf"
 
-    api.put(f"/assessments/{sid}", json=moi(remove_lesson_plan=True), headers=NCO)
+    api.put(f"/assessments/{sid}", json=moi(remove_lesson_plan=True), headers=STAFF)
     db.refresh(sheet)
     assert sheet.lesson_plan_pdf is None and sheet.lesson_plan_filename is None
 
