@@ -80,6 +80,18 @@ class EntryIn(BaseModel):
     _description = field_validator("description")(_required)
 
 
+class SignOffBody(BaseModel):
+    initials: str
+
+    @field_validator("initials")
+    @classmethod
+    def _letters(cls, v: str) -> str:
+        v = "".join(v.split()).replace(".", "").upper()
+        if not (1 <= len(v) <= 4 and v.isalpha()):
+            raise ValueError("Initials are 1 to 4 letters")
+        return v
+
+
 class EntriesBody(BaseModel):
     entries: list[EntryIn] = Field(min_length=1, max_length=MAX_ENTRIES_PER_SAVE)
 
@@ -106,7 +118,8 @@ def _uk(d: date) -> str:
 
 def _entry_dict(e: ActivityLogEntry) -> dict:
     return {"id": e.id, "date": e.date.isoformat(), "description": e.description, "minutes": e.minutes,
-            "created_at": e.created_at.isoformat()}
+            "created_at": e.created_at.isoformat(), "signed_off_initials": e.signed_off_initials,
+            "signed_off_at": e.signed_off_at.isoformat() if e.signed_off_at else None}
 
 
 def _log_dict(log: ActivityLog, today: date) -> dict:
@@ -193,7 +206,8 @@ def _pdf_fields(log: ActivityLog, cadet: Cadet) -> dict:
         "end_date": date.fromisoformat(prog["end_date"]),
         "weeks_done": prog["weeks_done"],
         "weeks_needed": prog["weeks_needed"],
-        "entries": [{"date": e.date, "description": e.description, "minutes": e.minutes}
+        "entries": [{"date": e.date, "description": e.description, "minutes": e.minutes,
+                     "initials": e.signed_off_initials or ""}
                     for e in sorted(log.entries, key=lambda e: (e.date, e.id))],
     }
 
@@ -284,6 +298,9 @@ def _edit_entry(db: Session, cadet: Cadet, section: str, entry_id: int, body: En
     log = _log_or_404(db, cadet, section, staff=staff)
     entry = _entry_or_404(db, log, entry_id)
     _check_entry_date(log, body.date)
+    if (entry.date, entry.description, entry.minutes) != (body.date, body.description, body.minutes):
+        # The assessor signed off what it said before, not this.
+        entry.signed_off_initials = entry.signed_off_by = entry.signed_off_at = None
     entry.date, entry.description, entry.minutes = body.date, body.description, body.minutes
     _settle(db, log, cadet)
     return _overview(db, cadet)
@@ -480,6 +497,29 @@ def staff_edit_entry(cin: int, section: Section, entry_id: int, body: EntryIn, d
 def staff_delete_entry(cin: int, section: Section, entry_id: int, db: Session = Depends(get_db),
                        _: dict = Depends(require_staff)):
     return _delete_entry(db, _cadet_or_404(db, cin), section, entry_id, staff=True)
+
+
+@router.put("/activity-logs/cadets/{cin}/{section}/entries/{entry_id}/sign-off")
+def staff_sign_off_entry(cin: int, section: Section, entry_id: int, body: SignOffBody,
+                         db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """The assessor's initials against one entry, as on the paper sheet. Signing
+    again replaces them."""
+    cadet = _cadet_or_404(db, cin)
+    entry = _entry_or_404(db, _log_or_404(db, cadet, section, staff=True), entry_id)
+    entry.signed_off_initials, entry.signed_off_by, entry.signed_off_at = (
+        body.initials, idinfo.get("email"), datetime.now())
+    db.commit()
+    return _overview(db, cadet)
+
+
+@router.delete("/activity-logs/cadets/{cin}/{section}/entries/{entry_id}/sign-off")
+def staff_undo_sign_off(cin: int, section: Section, entry_id: int, db: Session = Depends(get_db),
+                        _: dict = Depends(require_staff)):
+    cadet = _cadet_or_404(db, cin)
+    entry = _entry_or_404(db, _log_or_404(db, cadet, section, staff=True), entry_id)
+    entry.signed_off_initials = entry.signed_off_by = entry.signed_off_at = None
+    db.commit()
+    return _overview(db, cadet)
 
 
 @router.get("/activity-logs/cadets/{cin}/{section}/pdf")

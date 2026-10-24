@@ -70,6 +70,8 @@ STAFF_ROUTES = [
     ("patch", "/activity-logs/cadets/1/skills/entries/1", _entry(TODAY)),
     ("delete", "/activity-logs/cadets/1/skills/entries/1", None),
     ("get", "/activity-logs/cadets/1/skills/pdf", None),
+    ("put", "/activity-logs/cadets/1/skills/entries/1/sign-off", {"initials": "BM"}),
+    ("delete", "/activity-logs/cadets/1/skills/entries/1/sign-off", None),
 ]
 
 
@@ -418,6 +420,110 @@ def test_staff_download_the_pdf_at_any_point(api, enrolled):
     assert "filename*=UTF-8''" in res.headers["content-disposition"]
     text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(res.content)).pages)
     assert "Zoë Ó Briain" in text and "Café rota" in text and "0 of 12" in text
+
+
+# ── assessor sign-off ────────────────────────────────────────────────────────
+
+SIGN = "/activity-logs/cadets/{cin}/volunteering/entries/{id}/sign-off"
+
+
+def _logged(api, who="cadet", text="Sorted donations"):
+    """Set up volunteering and log one entry; return its id."""
+    _setup(api, who=who)
+    body = api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(TODAY, text=text)]},
+                    headers=api.as_(who)).json()
+    return _section(body, "volunteering")["log"]["entries"][0]["id"]
+
+
+@pytest.mark.parametrize("persona", ["staff", "owner", "oc"])
+def test_staff_sign_an_entry_off_with_their_initials(api, enrolled, db, persona):
+    entry_id = _logged(api)
+    res = api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "bm"}, headers=api.as_(persona))
+    assert res.status_code == 200
+    entry = _section(res.json(), "volunteering")["log"]["entries"][0]
+    assert entry["signed_off_initials"] == "BM" and entry["signed_off_at"]
+    row = db.get(ActivityLogEntry, entry_id)
+    db.refresh(row)
+    assert row.signed_off_by  # who clicked, even when the initials are someone else's
+    # The cadet sees it on the portal too.
+    me = _section(api.get(ME, headers=api.as_("cadet")).json(), "volunteering")["log"]["entries"][0]
+    assert me["signed_off_initials"] == "BM"
+
+
+def test_signing_off_with_someone_elses_initials_and_undoing_it(api, enrolled):
+    entry_id = _logged(api)
+    api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "BM"}, headers=api.as_("staff"))
+    # An instructor who saw it: "K. S." is tidied to KS and replaces BM.
+    res = api.put(SIGN.format(cin=1, id=entry_id), json={"initials": " K. S. "}, headers=api.as_("staff"))
+    assert _section(res.json(), "volunteering")["log"]["entries"][0]["signed_off_initials"] == "KS"
+    res = api.delete(SIGN.format(cin=1, id=entry_id), headers=api.as_("staff"))
+    entry = _section(res.json(), "volunteering")["log"]["entries"][0]
+    assert (entry["signed_off_initials"], entry["signed_off_at"]) == (None, None)
+
+
+@pytest.mark.parametrize("initials", ["", "   ", "ABCDE", "B1", "B-M", "..."])
+def test_initials_must_be_one_to_four_letters(api, enrolled, db, initials):
+    entry_id = _logged(api)
+    res = api.put(SIGN.format(cin=1, id=entry_id), json={"initials": initials}, headers=api.as_("staff"))
+    assert res.status_code == 422
+    assert db.get(ActivityLogEntry, entry_id).signed_off_initials is None
+
+
+def test_non_ascii_initials_are_kept(api, enrolled):
+    entry_id = _logged(api)
+    res = api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "zó"}, headers=api.as_("staff"))
+    assert _section(res.json(), "volunteering")["log"]["entries"][0]["signed_off_initials"] == "ZÓ"
+
+
+def test_signing_off_an_entry_that_isnt_there_is_404(api, enrolled):
+    _logged(api)
+    assert api.put(SIGN.format(cin=1, id=999), json={"initials": "BM"},
+                   headers=api.as_("staff")).status_code == 404
+    assert api.delete(SIGN.format(cin=1, id=999), headers=api.as_("staff")).status_code == 404
+    assert api.put(SIGN.format(cin=999, id=1), json={"initials": "BM"},
+                   headers=api.as_("staff")).status_code == 404
+
+
+def test_signing_off_another_cadets_entry_through_this_cadet_is_404(api, enrolled, db):
+    theirs = _logged(api, who="cadet2")
+    _setup(api)  # cadet 1 has a volunteering log too, just not that entry
+    res = api.put(SIGN.format(cin=1, id=theirs), json={"initials": "BM"}, headers=api.as_("staff"))
+    assert res.status_code == 404
+    assert db.get(ActivityLogEntry, theirs).signed_off_initials is None
+
+
+def test_signing_off_for_a_cadet_who_isnt_switched_on_is_409(api, enrolled, db):
+    entry_id = _logged(api)
+    api.delete("/activity-logs/cadets/1/enrolment", headers=api.as_("staff"))
+    res = api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "BM"}, headers=api.as_("staff"))
+    assert res.status_code == 409
+
+
+@pytest.mark.parametrize("who,path", [("cadet", ME + "/volunteering/entries/{id}"),
+                                      ("staff", "/activity-logs/cadets/1/volunteering/entries/{id}")])
+def test_changing_a_signed_off_entry_clears_the_sign_off(api, enrolled, who, path):
+    # The assessor vouched for what it said then, not the new version.
+    entry_id = _logged(api)
+    api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "BM"}, headers=api.as_("staff"))
+    res = api.patch(path.format(id=entry_id), json=_entry(TODAY, 90), headers=api.as_(who))
+    assert _section(res.json(), "volunteering")["log"]["entries"][0]["signed_off_initials"] is None
+
+
+def test_saving_a_signed_off_entry_unchanged_keeps_the_sign_off(api, enrolled):
+    entry_id = _logged(api)
+    api.put(SIGN.format(cin=1, id=entry_id), json={"initials": "BM"}, headers=api.as_("staff"))
+    res = api.patch(f"{ME}/volunteering/entries/{entry_id}", json=_entry(TODAY), headers=api.as_("cadet"))
+    assert _section(res.json(), "volunteering")["log"]["entries"][0]["signed_off_initials"] == "BM"
+
+
+def test_the_pdf_shows_the_initials_of_signed_off_rows(api, enrolled):
+    signed = _logged(api, text="Ran the till")
+    api.post(f"{ME}/volunteering/entries", json={"entries": [_entry(TODAY - timedelta(days=1), text="Tidied")]},
+             headers=api.as_("cadet"))
+    api.put(SIGN.format(cin=1, id=signed), json={"initials": "QXZ"}, headers=api.as_("staff"))
+    res = api.get("/activity-logs/cadets/1/volunteering/pdf", headers=api.as_("staff"))
+    text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(res.content)).pages)
+    assert text.count("QXZ") == 1
 
 
 def test_the_pdf_of_a_section_not_set_up_is_404(api, enrolled):
