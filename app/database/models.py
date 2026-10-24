@@ -1436,6 +1436,11 @@ class ActivityLogEntry(Base):
     minutes     = Column(Integer, nullable=False)
     created_at  = Column(DateTime, nullable=False)
     created_by  = Column(Text, nullable=True)  # email: the cadet, or the staff member who added it
+    # The assessor's initials in the PDF's Initials column. They can be someone
+    # else's (an instructor who saw it), so who clicked is kept separately.
+    signed_off_initials = Column(Text, nullable=True)
+    signed_off_by       = Column(Text, nullable=True)  # email of the staff member who recorded it
+    signed_off_at       = Column(DateTime, nullable=True)
 
     log = relationship("ActivityLog", back_populates="entries")
 

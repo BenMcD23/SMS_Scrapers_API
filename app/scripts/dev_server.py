@@ -258,7 +258,11 @@ def seed_activity_logs(db, cadets, now: datetime) -> None:
             log.entries.append(ActivityLogEntry(
                 date=day, description=f"{activity} ({SECTIONS[section].lower()})", minutes=60 + 15 * (week % 3),
                 created_at=datetime.combine(day, datetime.min.time()) + timedelta(hours=19),
-                created_by=cadets[i].email))
+                created_by=cadets[i].email,
+                # Older weeks signed off, the last fortnight still waiting.
+                **({"signed_off_initials": "SH", "signed_off_by": "s.hughes@example.com",
+                    "signed_off_at": datetime.combine(day, datetime.min.time()) + timedelta(days=7)}
+                   if day < today - timedelta(weeks=2) else {})))
         if progress(log, today)["complete"]:
             log.completed_at = now - timedelta(days=1)
         db.add(log)

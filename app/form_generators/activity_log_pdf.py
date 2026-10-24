@@ -3,8 +3,8 @@
 exactly as the spreadsheet did: the same banner, header boxes and
 Date / What you did / Minutes / Initials table.
 
-The Initials column is left blank on purpose: it's where the assessor signs
-each row off by hand.
+The Initials column holds the initials of whoever signed a row off in SMS;
+rows nobody has signed are left blank for the assessor to initial by hand.
 """
 
 import io
@@ -92,7 +92,8 @@ def build_activity_log_pdf(log: dict) -> bytes:
     entries = log["entries"]
     table_rows = [[p("", label), p("Date", label), p("What you did", label), p("Minutes", label), p("Initials", label)]]
     for i, e in enumerate(entries, start=1):
-        table_rows.append([p(i, hint), p(_d(e["date"]), cell), p(e["description"], cell), p(e["minutes"], cell), ""])
+        table_rows.append([p(i, hint), p(_d(e["date"]), cell), p(e["description"], cell), p(e["minutes"], cell),
+                           p(e.get("initials", ""), cell)])
     for i in range(len(entries) + 1, max(len(entries), 14) + 1):
         table_rows.append([p(i, hint), "", "", "", ""])
     total = sum(e["minutes"] for e in entries)
