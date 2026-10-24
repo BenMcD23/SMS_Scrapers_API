@@ -60,6 +60,8 @@ class Cadet(Base):
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
+    appointment_application = relationship("AppointmentApplication", back_populates="cadet", uselist=False,
+                                           cascade="all, delete-orphan")
     appraisals        = relationship("NcoAppraisal",          back_populates="cadet", cascade="all, delete-orphan")
     appraisal_reminders = relationship("NcoAppraisalReminder", back_populates="cadet", cascade="all, delete-orphan")
     portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
@@ -304,6 +306,31 @@ class CadetLeavingProcess(Base):
     adj_sent_to      = Column(Text,     nullable=True)
 
     cadet = relationship("Cadet", back_populates="leaving_process")
+
+
+class AppointmentApplication(Base):
+    """A staff cadet or uniformed adult staff application being walked through
+    its checklist (``core.appointments`` defines the steps).
+
+    A staff cadet application belongs to a cadet on the roster (one each). An
+    adult applicant isn't on SMS until HQ appoints them, so theirs is just a
+    name. ``steps`` maps each ticked step's key to ``{"at", "by"}``; an unticked
+    step has no key. Completion is derived from it, never stored.
+    """
+    __tablename__ = "Appointment_Applications"
+
+    id             = Column(Integer,    primary_key=True, autoincrement=True)
+    kind           = Column(Text,       nullable=False)   # "staff_cadet" | "uniformed"
+    cadet_id       = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
+                            nullable=True, unique=True)
+    applicant_name = Column(Text,       nullable=True)    # uniformed only
+    route          = Column(Text,       nullable=True)    # uniformed only: "snco" | "cfc"
+    notes          = Column(Text,       nullable=True)
+    steps          = Column(JSON,       nullable=False, default=dict)
+    started_at     = Column(DateTime,   nullable=False)
+    started_by     = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="appointment_application")
 
 
 class StaffAttendance(Base):
