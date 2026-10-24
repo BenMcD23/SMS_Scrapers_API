@@ -1,8 +1,8 @@
 """The appointment applications migration builds the table the model
-describes, comes back out cleanly, and leaves Alembic with a single head."""
+describes and comes back out cleanly. The single head is pinned in
+test_migration_graph.py."""
 
 import importlib.util
-import re
 from pathlib import Path
 
 import sqlalchemy as sa
@@ -11,8 +11,7 @@ from alembic.operations import Operations
 
 from database.models import AppointmentApplication
 
-VERSIONS = Path(__file__).parent / "alembic/versions"
-MIGRATION = VERSIONS / "a2p3p4l5i6c7_appointment_applications.py"
+MIGRATION = Path(__file__).parent / "alembic/versions" / "a2p3p4l5i6c7_appointment_applications.py"
 
 
 def _run(engine, step):
@@ -35,13 +34,3 @@ def test_upgrade_matches_the_model_and_downgrade_removes_it():
     _run(engine, "downgrade")
     assert not sa.inspect(engine).has_table(table.name)
 
-
-def test_the_migration_history_has_one_head():
-    # Two heads make the deploy's `alembic upgrade head` fail outright.
-    revisions, parents = set(), set()
-    for path in VERSIONS.glob("*.py"):
-        text = path.read_text()
-        revisions.add(re.search(r"^revision[^=]*=\s*'([^']+)'", text, re.M).group(1))
-        down = re.search(r"^down_revision[^=]*=\s*(.+)$", text, re.M).group(1)
-        parents.update(re.findall(r"'([^']+)'", down))
-    assert revisions - parents == {"a2p3p4l5i6c7"}

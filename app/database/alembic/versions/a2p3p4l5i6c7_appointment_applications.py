@@ -1,10 +1,7 @@
 """appointment applications (staff cadet and uniformed adult staff checklists)
 
-Also merges the two heads (activity logs and dashboard layouts) that both
-branched from m1s2s3n4g5c6, so `upgrade head` has one target again.
-
 Revision ID: a2p3p4l5i6c7
-Revises: a1c2t3l4o5g6, d4s5h6l7a8y9
+Revises: m2e3r4g5e6h7
 Create Date: 2026-10-24 00:00:00.000000
 
 """
@@ -15,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'a2p3p4l5i6c7'
-down_revision: Union[str, Sequence[str], None] = ('a1c2t3l4o5g6', 'd4s5h6l7a8y9')
+down_revision: Union[str, Sequence[str], None] = 'm2e3r4g5e6h7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
