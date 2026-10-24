@@ -1,0 +1,4 @@
+# Changes to CI, deploys and ops need a review from Ben (enforced by the main ruleset).
+/.github/ @BenMcD23
+/deploy/ @BenMcD23
+/ops/ @BenMcD23

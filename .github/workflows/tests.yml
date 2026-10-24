@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push to the same PR makes the older run pointless.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
@@ -38,3 +43,22 @@ jobs:
 
       - name: Run tests
         run: pytest
+
+  # deploy.yml only builds the image after a merge, so a broken Dockerfile or
+  # an uninstallable pin would otherwise first fail on main, with prod stuck on
+  # the old image. amd64 only and not pushed; it reads deploy's layer cache.
+  docker-build:
+    # On main, deploy.yml builds it for real.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
