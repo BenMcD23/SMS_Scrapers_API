@@ -1,6 +1,6 @@
 """add audit events table
 
-Revision ID: s1t2u3v4w5x6
+Revision ID: a2u3d4i5t6e7
 Revises: m1s2s3n4g5c6
 Create Date: 2026-10-22
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 's1t2u3v4w5x6'
+revision: str = 'a2u3d4i5t6e7'
 down_revision: Union[str, Sequence[str], None] = 'm1s2s3n4g5c6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
