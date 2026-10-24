@@ -1,7 +1,7 @@
 """activity log entry sign-off
 
 Revision ID: s2i3g4n5o6f7
-Revises: m2e3r4g5e6h7
+Revises: a2p3p4l5i6c7
 Create Date: 2026-10-24
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 's2i3g4n5o6f7'
-down_revision: Union[str, Sequence[str], None] = 'm2e3r4g5e6h7'
+down_revision: Union[str, Sequence[str], None] = 'a2p3p4l5i6c7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
