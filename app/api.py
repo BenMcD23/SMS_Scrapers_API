@@ -28,6 +28,7 @@ from core.security import require_user
 from database.database import engine
 from routers import (
     activity_logs,
+    appointments,
     assessments,
     attendance,
     backups,
@@ -223,6 +224,7 @@ app.include_router(nco_appraisals.router)
 app.include_router(nco_comments.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
+app.include_router(appointments.router)
 app.include_router(classification_day.router)
 app.include_router(recruits.router)
 app.include_router(reference.router)

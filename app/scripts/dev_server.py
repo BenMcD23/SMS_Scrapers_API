@@ -617,6 +617,34 @@ def seed_recruits(client, headers: dict, db) -> None:
     db.commit()
 
 
+def seed_applications(client, headers: dict, db) -> None:
+    """Applications through the real endpoints: the oldest cadet part-way
+    through the staff cadet checklist (the rest 17½ and over stay on the
+    nearing-18 list), an SNCO applicant at the Wing board and an officer
+    applicant just starting, with a note on one."""
+    from database.models import Cadet
+
+    def tick(app_id, *keys):
+        for key in keys:
+            res = client.put(f"/applications/{app_id}/steps/{key}", headers=headers, json={"done": True})
+            assert res.status_code == 200, f"tick {key}: {res.status_code} {res.text}"
+
+    oldest = (db.query(Cadet).filter(Cadet.date_of_birth.isnot(None), Cadet.cin >= FIRST_CIN + 3)
+              .order_by(Cadet.date_of_birth).first())
+    res = client.post("/applications/staff-cadets", headers=headers, json={"cin": oldest.cin})
+    assert res.status_code == 201, f"/applications/staff-cadets: {res.status_code} {res.text}"
+    app_id = res.json()["id"]
+    tick(app_id, "bpss", "dbs_requested", "dbs_id", "form_5_01_p2", "code_of_conduct")
+    client.patch(f"/applications/{app_id}", headers=headers, json={"notes": "MOI assessment booked for next month."})
+
+    for name, route, done in (("Daniel Okafor", "snco", ("pers_1_10", "hmrc", "oc_narrative", "emailed",
+                                                         "wing_arranged")),
+                              ("Rachel Kowalski", "cfc", ("pers_1_10",))):
+        res = client.post("/applications/uniformed", headers=headers, json={"name": name, "route": route})
+        assert res.status_code == 201, f"/applications/uniformed: {res.status_code} {res.text}"
+        tick(res.json()["id"], *done)
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if an existing table lacks a column the models now have."""
     from sqlalchemy import inspect
@@ -670,6 +698,8 @@ def main() -> None:
         seed_inspections(client, headers)
         with SessionLocal() as db:
             seed_recruits(client, headers, db)
+        with SessionLocal() as db:
+            seed_applications(client, headers, db)
         seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
         with SessionLocal() as db:
             seed_audit(client, headers, db)

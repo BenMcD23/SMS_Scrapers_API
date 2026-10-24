@@ -30,6 +30,7 @@ from scripts.dev_server import (
     ensure_dev_cadet,
     schema_is_stale,
     seed,
+    seed_applications,
     seed_audit,
     seed_inspections,
     seed_oc_dashboard,
@@ -363,8 +364,20 @@ def _seed_everything(api, db):
     seed_stores_history(api, staff, db, now=NOW)
     seed_inspections(api, staff, now=NOW)
     seed_recruits(api, staff, db)
+    seed_applications(api, staff, db)
     seed_oc_dashboard(api, api.as_("oc"))
     seed_audit(api, staff, db, now=NOW)
+
+
+def test_the_applications_show_one_of_each_state(api, db):
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_applications(api, staff, db)
+    cadets = api.get("/applications/staff-cadets", headers=staff).json()
+    assert len(cadets["applications"]) == 1 and cadets["applications"][0]["done"] == 5
+    assert cadets["applications"][0]["notes"]
+    adults = api.get("/applications/uniformed", headers=staff).json()["applications"]
+    assert {a["route"] for a in adults} == {"snco", "cfc"}
 
 
 def test_the_audit_trail_has_a_read_through_the_api_and_a_send(api, db):
