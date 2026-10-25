@@ -7,6 +7,10 @@ Staff cadets: the page lists every cadet 17½ or over who has no application
 yet, with their 18th birthday (the deadline: unfinished by then means
 suspended), and staff start one when they choose. Adult applicants aren't on
 SMS until they're appointed, so staff add them by name and route (SNCO / CFC).
+
+An application is complete once every step is ticked, or when staff mark it
+complete: one that finished before SMS tracked it can go straight on the
+Complete list, and the Wing sometimes waives a step.
 """
 
 from datetime import date, datetime
@@ -44,12 +48,14 @@ Route = Literal["snco", "cfc"]
 class StartStaffCadet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cin: int
+    complete: bool = False
 
 
 class StartUniformed(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Name
     route: Route
+    complete: bool = False
 
 
 class UpdateApplication(BaseModel):
@@ -58,6 +64,7 @@ class UpdateApplication(BaseModel):
     notes: Notes | None = None
     name: Name | None = None
     route: Route | None = None
+    complete: bool | None = None
 
 
 class TickStep(BaseModel):
@@ -93,8 +100,19 @@ def _cadet_fields(cadet: Cadet, today: date) -> dict:
     }
 
 
+def _mark_complete(app: AppointmentApplication, done: bool, by: str | None) -> None:
+    """Marking an already-marked application again keeps the first mark, as a
+    second tick of a step does."""
+    if not done:
+        app.completed_at = app.completed_by = None
+    elif app.completed_at is None:
+        app.completed_at, app.completed_by = london_now(), by
+
+
 def _application(app: AppointmentApplication, today: date) -> dict:
     steps = app.steps or {}
+    marked = ({"at": app.completed_at.isoformat(timespec="seconds"), "by": app.completed_by}
+              if app.completed_at else None)
     body = {
         "id": app.id,
         "kind": app.kind,
@@ -103,7 +121,11 @@ def _application(app: AppointmentApplication, today: date) -> dict:
         "startedAt": app.started_at.isoformat(),
         "startedBy": app.started_by,
         **progress(app.kind, app.route, steps),
+        # Done and nextStep still describe the ticks, so the checklist shows
+        # what was skipped; complete is what puts it on the Complete list.
+        "markedComplete": marked,
     }
+    body["complete"] = body["complete"] or marked is not None
     if app.kind == STAFF_CADET:
         body["cadet"] = _cadet_fields(app.cadet, today)
     else:
@@ -155,7 +177,8 @@ def start_staff_cadet_application(
     body: StartStaffCadet, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff),
 ):
     """Start tracking a cadet. Any age is allowed: 17½ is when the Wing says to
-    start, not a rule, and a late start is still better than none."""
+    start, not a rule, and a late start is still better than none. With
+    ``complete`` it goes straight on the Complete list (done before SMS tracked it)."""
     cadet = db.get(Cadet, body.cin)
     if not cadet:
         raise HTTPException(status_code=404, detail=f"Cadet with CIN {body.cin} not found.")
@@ -163,6 +186,7 @@ def start_staff_cadet_application(
         raise HTTPException(status_code=409, detail=f"{_name(cadet)} already has an application in progress.")
     app = AppointmentApplication(kind=STAFF_CADET, cadet_id=cadet.cin, steps={},
                                  started_at=london_now(), started_by=idinfo.get("email"))
+    _mark_complete(app, body.complete, idinfo.get("email"))
     db.add(app)
     db.commit()
     return _application(app, london_now().date())
@@ -185,6 +209,7 @@ def start_uniformed_application(
 ):
     app = AppointmentApplication(kind=UNIFORMED, applicant_name=body.name, route=body.route, steps={},
                                  started_at=london_now(), started_by=idinfo.get("email"))
+    _mark_complete(app, body.complete, idinfo.get("email"))
     db.add(app)
     db.commit()
     return _application(app, london_now().date())
@@ -196,8 +221,10 @@ def start_uniformed_application(
 def update_application(
     app_id: int, body: UpdateApplication, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff),
 ):
-    """Notes on either kind; the name and route of an adult applicant. A route
-    change keeps the Region ticks, so switching back loses nothing."""
+    """Notes on either kind; the name and route of an adult applicant; marking
+    it complete (or back in progress) whatever is ticked. A route change keeps
+    the Region ticks, so switching back loses nothing. Unmarking leaves an
+    application whose every step is ticked complete: that comes from the ticks."""
     app = _get(db, app_id)
     sent = body.model_fields_set
     if sent & {"name", "route"} and app.kind != UNIFORMED:
@@ -208,6 +235,8 @@ def update_application(
         app.applicant_name = body.name
     if body.route is not None:
         app.route = body.route
+    if body.complete is not None:
+        _mark_complete(app, body.complete, idinfo.get("email"))
     db.commit()
     return _application(app, london_now().date())
 
