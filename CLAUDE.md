@@ -93,3 +93,15 @@ too, or the preview stops looking like production.
 Roster data is written directly, because only the scrapers create
 it. Stores data goes through the real endpoints, so it always passes
 validation.
+
+## Branches and pull requests
+
+- Branch off `main` and open a pull request into it. `main` takes nothing else:
+  no direct pushes, force-pushes or deletion.
+- CI must pass to merge: `pytest` (ruff + pytest) and `docker-build`.
+  `pip-audit` doesn't block, but fix a red one. Changes under `.github/`,
+  `deploy/` or `ops/` also need @BenMcD23's review (`.github/CODEOWNERS`).
+- Never branch off `development`. It carries the dev overlay's image tag, so a
+  pull request from it points prod at a dev image.
+- Fill in the pull request template: what changed, why, and how you checked it.
+- Before pushing: `ruff check app && pytest`.

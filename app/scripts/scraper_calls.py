@@ -36,9 +36,7 @@ from scripts.event_scraper import (
 from scripts.flying_paperwork import sync_flying_events
 from scripts.parent_email_scraper import get_parent_emails, merge_emails, valid_email
 from scripts.quali_scraper import get_cadet_info_and_qualifications, get_cadet_names
-from scripts.scraper_utils import init_scraper, login, match_email, push_to_google_apps_script
-
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxgzF3slazWjdodJZiAdtous_KOGOTKnIXqoXmsRMaX7QM5AvCzP6tHiuListDrBm9P/exec"
+from scripts.scraper_utils import init_scraper, login, match_email
 
 
 def mark_missing_cadets(db_session, scraped_cins):
@@ -269,18 +267,6 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         if stop_event.is_set():
             return
         sync_parent_emails(page, db_session, scraper_messages, scraper_lock)
-
-        apps_script_payload = [
-            {
-                "cadet_name": f"{entry.get('first_name', '')} {entry.get('last_name', '')}".strip(),
-                "qualifications": [
-                    q if isinstance(q, str) else q.get("qual_type", "")
-                    for q in entry.get("qualifications") or []
-                ]
-            }
-            for entry in cadet_data
-        ]
-        push_to_google_apps_script({"cadet_quali": apps_script_payload}, APPS_SCRIPT_URL, scraper_messages, scraper_lock)
 
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "Scraper completed successfully!"}))
@@ -836,12 +822,6 @@ def medical_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_ev
                 "value": f"DB update complete — {saved} cadets saved, {skipped} skipped."
             }))
 
-        push_to_google_apps_script(
-            cadet_allergies_data,
-            "https://script.google.com/macros/s/AKfycbxl94R1lBUwx4R2yu3Bzi82GEvPk6tpDVNE1EW065STdDUBYEDrC2ItdpfidcuRPwBg/exec",
-            scraper_messages,
-            scraper_lock,
-        )
         with scraper_lock:
             scraper_messages.append(json.dumps({"type": "status", "value": "done"}))
 

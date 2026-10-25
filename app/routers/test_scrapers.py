@@ -64,14 +64,22 @@ def test_staff_only(api, method, path, persona):
 
 
 @pytest.mark.parametrize("path", ["/scraper-stream/medical", "/upload-stream/x"])
-def test_streams_check_the_token_from_header_or_query(api, path):
+def test_streams_check_the_authorization_header(api, path):
     assert api.get(path).status_code == 401
-    assert api.get(path + "?token=nco").status_code == 403
+    assert api.get(path, headers=api.as_("nco")).status_code == 403
     assert api.get(path, headers=api.as_("cadet")).status_code == 403
 
 
+@pytest.mark.parametrize("path", ["/scraper-stream/medical", "/upload-stream/x"])
+@pytest.mark.parametrize("persona", ["staff", "nco"])
+def test_streams_no_longer_accept_the_id_token_in_the_query(api, path, persona):
+    # A raw ID token in a URL ends up in proxy logs, history and Referer, so the
+    # sites send it as a header; a query token must not authenticate anyone.
+    assert api.get(f"{path}?token={persona}").status_code == 401
+
+
 def test_stream_unknown_names(api):
-    assert api.get("/scraper-stream/nope?token=staff").status_code == 404
+    assert api.get("/scraper-stream/nope", headers=STAFF).status_code == 404
     assert api.get("/upload-stream/nope", headers=STAFF).status_code == 404
 
 

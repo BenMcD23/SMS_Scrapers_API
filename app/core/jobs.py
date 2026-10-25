@@ -13,11 +13,11 @@ from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func
 
-from core.config import DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
+from core.config import AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
-from database.models import AssessmentSheet, Cadet, CadetQualification, StatsSnapshot
+from database.models import AssessmentSheet, AuditEvent, Cadet, CadetQualification, StatsSnapshot
 from routers import scrapers, usage
 from routers.stats import save_snapshot
 from scripts.db_backup import run_db_backup
@@ -48,6 +48,25 @@ def cleanup_old_completed_assessments() -> None:
     except Exception:
         db.rollback()
         logger.exception("assessment-sheet cleanup failed")
+    finally:
+        db.close()
+
+
+def cleanup_old_audit_events() -> None:
+    """Drop audit rows past the retention window.
+
+    Kept far longer than the 182-day assessment cleanup: this is a safeguarding
+    trail, so it should outlive the records it describes rather than expire
+    alongside them.
+    """
+    cutoff = datetime.now() - timedelta(days=AUDIT_RETENTION_DAYS)
+    db = SessionLocal()
+    try:
+        db.query(AuditEvent).filter(AuditEvent.occurred_at < cutoff).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("audit-event cleanup failed")
     finally:
         db.close()
 
@@ -124,6 +143,7 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     scheduler.add_job(usage.cleanup_old_usage, "interval", hours=24)
+    scheduler.add_job(cleanup_old_audit_events, "interval", hours=24)
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
     # Sunday evening: after any weekend scrape, before the week's trend closes.
     scheduler.add_job(weekly_stats_snapshot, CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=LONDON))

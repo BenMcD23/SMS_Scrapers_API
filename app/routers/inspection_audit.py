@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from core.db import get_db
 from core.llm import generate
-from core.security import require_staff_or_snco
+from core.security import require_staff
 from database.models import Cadet, InspectionSheet
 from routers.inspections import _flight_order, _parse_date, _split_comments
 
@@ -515,7 +515,7 @@ def _audit(req: AuditRequest, db: Session) -> dict:
 def audit_figures(
     req: Annotated[AuditRequest, Query()],
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """The audit's figures without the AI write-up, so the page shows the
     evidence straight away and only spends a model call when asked."""
@@ -526,7 +526,7 @@ def audit_figures(
 def audit_with_ai(  # sync on purpose — the slow AI call runs in the threadpool
     req: AuditRequest,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_snco),
+    idinfo: dict = Depends(require_staff),
 ):
     """The audit's figures plus the AI's top priorities and actions."""
     audit = _audit(req, db)

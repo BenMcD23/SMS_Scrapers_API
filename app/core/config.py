@@ -6,6 +6,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Which deployment this is. Only an explicit ENV=dev unlocks the dev-only
+# surfaces (the interactive API docs); an unset, misspelt or unexpected value
+# is treated as production, so a config slip can never publish them.
+ENV = os.getenv("ENV", "prod").lower()
+IS_DEV = ENV == "dev"
+IS_PROD = not IS_DEV
+
+# The fake-token bypass in core.security accepts the literal string
+# "Bearer dev-fake-token" as the owner account. On a Funnel-published API that
+# is a full authentication bypass for anyone who reads the source, so refuse to
+# start rather than serve with it live. Raised at import so it catches every
+# entrypoint — uvicorn, alembic and the standalone scripts alike.
+if IS_PROD and os.getenv("DEV_FAKE_AUTH") == "1":
+    raise RuntimeError(
+        f"DEV_FAKE_AUTH=1 with ENV={ENV}. The dev auth bypass must never be "
+        "enabled outside ENV=dev. Refusing to start."
+    )
+
 # Google OAuth client used by both the SMS site and the cadet portal. ID tokens
 # are only accepted if they were issued to this client.
 GOOGLE_CLIENT_ID = os.getenv(
@@ -66,6 +84,11 @@ DB_BACKUP_DRIVE_FOLDER_ID = os.getenv(
 )
 DB_BACKUP_RETENTION = int(os.getenv("DB_BACKUP_RETENTION", "14"))
 
+# How long audit rows are kept. Deliberately much longer than the 182-day
+# order/assessment cleanups — a safeguarding trail should outlive the records it
+# describes. Squadron policy call, so it's overridable.
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365"))
+
 # Shared "NCO Holidays" Google Calendar — booked NCO holidays are written here
 # as all-day events so staff can overlay them on the squadron's other calendars.
 # Share the calendar with the service account (or with IMPERSONATE_EMAIL, who it
@@ -93,6 +116,8 @@ BAN_ALERT_EMAIL = os.getenv("BAN_ALERT_EMAIL", NOTIFY_GROUP)
 # member can then review it, so this defaults to the shared notifications group
 # rather than one person.
 SESSION_PLAN_ALERT_EMAIL = os.getenv("SESSION_PLAN_ALERT_EMAIL", NOTIFY_GROUP)
+# Who gets a cadet's DofE activity log PDF when they finish a section.
+ACTIVITY_LOG_ALERT_EMAIL = os.getenv("ACTIVITY_LOG_ALERT_EMAIL", NOTIFY_GROUP)
 # The adjutant, who removes a cadet from the squadron. The OC dashboard's
 # "Request removal" button emails this address. Unset = the button refuses
 # rather than silently dropping the request.

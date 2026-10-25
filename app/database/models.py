@@ -60,11 +60,16 @@ class Cadet(Base):
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
+    appointment_application = relationship("AppointmentApplication", back_populates="cadet", uselist=False,
+                                           cascade="all, delete-orphan")
     appraisals        = relationship("NcoAppraisal",          back_populates="cadet", cascade="all, delete-orphan")
     appraisal_reminders = relationship("NcoAppraisalReminder", back_populates="cadet", cascade="all, delete-orphan")
     portal_data       = relationship("CadetPortalData",       back_populates="cadet", cascade="all, delete-orphan")
     flights           = relationship("CadetFlight",           back_populates="cadet", cascade="all, delete-orphan",
                                      order_by="CadetFlight.date.desc()")
+    activity_log_enrolment = relationship("ActivityLogEnrolment", back_populates="cadet", uselist=False,
+                                          cascade="all, delete-orphan")
+    activity_logs     = relationship("ActivityLog", back_populates="cadet", cascade="all, delete-orphan")
 
 class RemovedCadet(Base):
     """A cadet staff removed after they left SMS. The quali scraper skips these
@@ -301,6 +306,31 @@ class CadetLeavingProcess(Base):
     adj_sent_to      = Column(Text,     nullable=True)
 
     cadet = relationship("Cadet", back_populates="leaving_process")
+
+
+class AppointmentApplication(Base):
+    """A staff cadet or uniformed adult staff application being walked through
+    its checklist (``core.appointments`` defines the steps).
+
+    A staff cadet application belongs to a cadet on the roster (one each). An
+    adult applicant isn't on SMS until HQ appoints them, so theirs is just a
+    name. ``steps`` maps each ticked step's key to ``{"at", "by"}``; an unticked
+    step has no key. Completion is derived from it, never stored.
+    """
+    __tablename__ = "Appointment_Applications"
+
+    id             = Column(Integer,    primary_key=True, autoincrement=True)
+    kind           = Column(Text,       nullable=False)   # "staff_cadet" | "uniformed"
+    cadet_id       = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"),
+                            nullable=True, unique=True)
+    applicant_name = Column(Text,       nullable=True)    # uniformed only
+    route          = Column(Text,       nullable=True)    # uniformed only: "snco" | "cfc"
+    notes          = Column(Text,       nullable=True)
+    steps          = Column(JSON,       nullable=False, default=dict)
+    started_at     = Column(DateTime,   nullable=False)
+    started_by     = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="appointment_application")
 
 
 class StaffAttendance(Base):
@@ -1377,6 +1407,71 @@ class RecruitApplication(Base):
     created_at       = Column(DateTime, nullable=False)
 
 
+# ─── Activity logs (DofE) ─────────────────────────────────────────────────────
+
+class ActivityLogEnrolment(Base):
+    """Staff switching a cadet's activity log on. The portal only shows the
+    Activity Log page to a cadet with one of these, so it never appears for
+    someone who isn't doing their DofE. Turning it off deletes this row and
+    keeps the logs, so switching it back on loses nothing."""
+    __tablename__ = "Activity_Log_Enrolments"
+
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), primary_key=True)
+    level      = Column(Text, nullable=False, default="Bronze")  # Bronze | Silver | Gold
+    enabled_at = Column(DateTime, nullable=False)
+    enabled_by = Column(Text, nullable=True)
+
+    cadet = relationship("Cadet", back_populates="activity_log_enrolment")
+
+
+class ActivityLog(Base):
+    """One section of a cadet's award (Skills, Volunteering or Physical) at one
+    level: what they're doing, for how long, and who signs it off. The paper
+    "Activity Log" sheet's header, with its rows in ActivityLogEntry."""
+    __tablename__ = "Activity_Logs"
+    __table_args__ = (UniqueConstraint("cadet_id", "section", "level", name="uq_activity_log_section"),)
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    cadet_id        = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    section         = Column(Text, nullable=False)  # skills | volunteering | physical
+    level           = Column(Text, nullable=False)
+    activity        = Column(Text, nullable=False, default="")
+    goal            = Column(Text, nullable=False, default="")
+    assessor_name   = Column(Text, nullable=False, default="")
+    assessor_role   = Column(Text, nullable=False, default="")
+    duration_months = Column(Integer, nullable=False)  # 3, 6, 12 or 18
+    start_date      = Column(Date, nullable=False)
+    # Set when the last week needed is logged and staff have been emailed the
+    # PDF; cleared if edits take it back under, so finishing again re-sends it.
+    completed_at    = Column(DateTime, nullable=True)
+    created_at      = Column(DateTime, nullable=False)
+    updated_at      = Column(DateTime, nullable=False)
+
+    cadet   = relationship("Cadet", back_populates="activity_logs")
+    entries = relationship("ActivityLogEntry", back_populates="log", cascade="all, delete-orphan",
+                           order_by="ActivityLogEntry.date")
+
+
+class ActivityLogEntry(Base):
+    """One thing the cadet did on one day, and for how long."""
+    __tablename__ = "Activity_Log_Entries"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    log_id      = Column(Integer, ForeignKey("Activity_Logs.id", ondelete="CASCADE"), nullable=False, index=True)
+    date        = Column(Date, nullable=False)
+    description = Column(Text, nullable=False)
+    minutes     = Column(Integer, nullable=False)
+    created_at  = Column(DateTime, nullable=False)
+    created_by  = Column(Text, nullable=True)  # email: the cadet, or the staff member who added it
+    # The assessor's initials in the PDF's Initials column. They can be someone
+    # else's (an instructor who saw it), so who clicked is kept separately.
+    signed_off_initials = Column(Text, nullable=True)
+    signed_off_by       = Column(Text, nullable=True)  # email of the staff member who recorded it
+    signed_off_at       = Column(DateTime, nullable=True)
+
+    log = relationship("ActivityLog", back_populates="entries")
+
+
 # ─── Usage ────────────────────────────────────────────────────────────────────
 
 class UsageDaily(Base):
@@ -1392,3 +1487,29 @@ class UsageDaily(Base):
     email   = Column(Text, nullable=False, default="")     # "" for unauthenticated calls
     calls   = Column(Integer, nullable=False, default=0)
     last_at = Column(DateTime, nullable=False)
+
+
+# ─── Audit Trail ──────────────────────────────────────────────────────────────
+
+class AuditEvent(Base):
+    """Who did what, for actions the domain tables don't already stamp.
+
+    The squadron holds records on minors, including medical details, so reads
+    of that data have to be answerable after the fact — an actor column on the
+    record itself can't show who merely *looked*. This covers those reads plus
+    deletions and anything that leaves the system (SMS sends, DB restores).
+
+    Deliberately not a full request log: it records the handful of actions
+    worth answering for, so it stays small enough to keep for a long retention
+    and readable when someone actually has to audit it.
+    """
+    __tablename__ = "Audit_Events"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    occurred_at = Column(DateTime, nullable=False, index=True)  # indexed for the retention sweep
+    actor_email = Column(Text, nullable=False)
+    actor_role  = Column(Text, nullable=True)   # staff/snco/nco at the time of the action
+    action      = Column(Text, nullable=False)  # e.g. "read", "delete", "send", "restore"
+    resource    = Column(Text, nullable=False)  # e.g. "cadet_medical", "stores_order"
+    resource_id = Column(Text, nullable=True)   # text so ints and composite keys both fit
+    detail      = Column(JSON, nullable=True)   # small extras, e.g. {"count": 12}

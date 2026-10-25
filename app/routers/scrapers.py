@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -380,18 +380,12 @@ def _format_run_logs(messages: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _staff_from_header_or_query(authorization: str, token: str):
-    auth = authorization or (f"Bearer {token}" if token else None)
-    return require_staff(auth)
-
-
 @router.get("/scraper-stream/{name}")
 async def named_scraper_stream(
     name: str,
     authorization: str = Header(None),
-    token: str = Query(None),
 ):
-    _staff_from_header_or_query(authorization, token)
+    require_staff(authorization)
 
     if name not in named_scraper_states:
         raise HTTPException(status_code=404, detail="Unknown scraper")
@@ -428,9 +422,8 @@ async def named_scraper_stream(
 async def upload_stream(
     job_id: str,
     authorization: str = Header(None),
-    token: str = Query(None),
 ):
-    _staff_from_header_or_query(authorization, token)
+    require_staff(authorization)
 
     with upload_jobs_lock:
         state = upload_jobs.get(job_id)

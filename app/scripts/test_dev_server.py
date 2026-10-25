@@ -10,16 +10,28 @@ from sqlalchemy.pool import StaticPool
 import core.security as security
 from core.qualifications import BADGE_TYPES
 from database.database import Base
-from database.models import Cadet, CadetAttendance, CadetFlight, CadetQualification, CadetTheoryProgress, Staff
+from database.models import (
+    ActivityLogEnrolment,
+    Cadet,
+    CadetAttendance,
+    CadetFlight,
+    CadetQualification,
+    CadetTheoryProgress,
+    Staff,
+)
 from scripts.dev_server import (
     CADET_COUNT,
+    DEV_ENV,
     INSPECTION_NIGHTS,
     LAPSED_CADETS,
     LAPSED_WEEKS,
     PARADE_NIGHTS,
     _parade_nights,
+    ensure_dev_cadet,
     schema_is_stale,
     seed,
+    seed_applications,
+    seed_audit,
     seed_inspections,
     seed_oc_dashboard,
     seed_recruits,
@@ -28,6 +40,12 @@ from scripts.dev_server import (
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
+
+
+def test_the_preview_server_declares_itself_dev():
+    # core.config refuses to start with the fake-auth bypass unless ENV=dev, so
+    # DEV_ENV must carry both or the preview crashes on import.
+    assert DEV_ENV["DEV_FAKE_AUTH"] == "1" and DEV_ENV["ENV"] == "dev"
 
 
 def fresh_session():
@@ -61,8 +79,33 @@ def test_the_dev_logins_are_on_the_roster(db):
     emails = {c.email: c.rank for c in db.query(Cadet)}
     assert emails[security._dev_fake_email("snco")] == "Sgt"
     assert emails[security._dev_fake_email("nco")] == "Cpl"
+    assert emails[security._dev_fake_email("cadet")] == "Cadet"
     # The dev staff login is the owner; Settings needs a staff record to link to.
     assert db.query(Staff).filter(Staff.email == security.OWNER_EMAIL).count() == 1
+
+
+def test_the_dev_cadet_has_dofe_switched_on(db):
+    # The portal's cadet login is for testing DofE, so it must land enrolled.
+    seed(db, now=NOW)
+    cadet = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("cadet")).one()
+    assert (cadet.first_name, cadet.last_name) == ("Kian", "Ashworth")
+    assert cadet.activity_log_enrolment.level == "Bronze"
+    # A freshly seeded database already has them, so a restart adds nobody.
+    assert ensure_dev_cadet(db, now=NOW) is False
+    assert db.query(Cadet).count() == CADET_COUNT
+
+
+def test_a_database_seeded_before_the_dev_cadet_gets_one_added(db):
+    # Someone's preview database from before the login existed: the cadet is
+    # added alongside what's there, enrolled for DofE, and only once.
+    db.add(Cadet(cin=5, first_name="Kept", last_name="Mine"))
+    db.commit()
+    assert ensure_dev_cadet(db, now=NOW) is True
+    assert ensure_dev_cadet(db, now=NOW) is False
+    cadet = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("cadet")).one()
+    assert cadet.cin == 6 and cadet.rank == "Cadet"
+    assert db.query(ActivityLogEnrolment).filter_by(cadet_id=6, level="Bronze").count() == 1
+    assert db.get(Cadet, 5).first_name == "Kept"
 
 
 def test_every_seeded_qualification_counts_toward_a_dashboard_badge(db):
@@ -261,6 +304,25 @@ def test_recruits_cover_every_stage_of_the_joining_form(api, db):
         assert res.status_code == 200
 
 
+def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, monkeypatch):
+    import routers.activity_logs
+    from database.models import ActivityLog, ActivityLogEnrolment
+
+    monkeypatch.setattr(routers.activity_logs, "_today", lambda: NOW.date())
+    seed(db, now=NOW)
+    nco = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("nco")).one()
+    snco = db.query(Cadet).filter(Cadet.email == security._dev_fake_email("snco")).one()
+    # The NCO login sees the page; the SNCO login is the "not switched on" path.
+    assert db.get(ActivityLogEnrolment, nco.cin) and not db.get(ActivityLogEnrolment, snco.cin)
+    assert db.query(ActivityLog).filter(ActivityLog.completed_at.isnot(None)).count() >= 1
+
+    body = api.get("/activity-logs/grid", headers=api.as_("staff")).json()
+    states = {cell["state"] for c in body["cadets"] for w in c["weeks"] for cell in w["cells"].values()}
+    assert {"done", "missed", "due", "off"} <= states
+    assert any(s["complete"] for c in body["cadets"] for s in c["sections"])
+    assert any(c["behind"] for c in body["cadets"]) and not all(c["behind"] for c in body["cadets"])
+
+
 # What the preview seed doesn't fill yet. Only ever shrink these: a new table or
 # column must be seeded with a value that shows it in the UI, not added here.
 # (Add one here only when there is genuinely nothing to show, e.g. a secret, and
@@ -302,7 +364,32 @@ def _seed_everything(api, db):
     seed_stores_history(api, staff, db, now=NOW)
     seed_inspections(api, staff, now=NOW)
     seed_recruits(api, staff, db)
+    seed_applications(api, staff, db)
     seed_oc_dashboard(api, api.as_("oc"))
+    seed_audit(api, staff, db, now=NOW)
+
+
+def test_the_applications_show_one_of_each_state(api, db):
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_applications(api, staff, db)
+    cadets = api.get("/applications/staff-cadets", headers=staff).json()
+    assert len(cadets["applications"]) == 1 and cadets["applications"][0]["done"] == 5
+    assert cadets["applications"][0]["notes"]
+    adults = api.get("/applications/uniformed", headers=staff).json()["applications"]
+    assert {a["route"] for a in adults} == {"snco", "cfc"}
+
+
+def test_the_audit_trail_has_a_read_through_the_api_and_a_send(api, db):
+    from database.models import AuditEvent
+
+    seed(db, now=NOW)
+    seed_audit(api, api.as_("staff"), db, now=NOW)
+    rows = {(e.action, e.resource): e for e in db.query(AuditEvent)}
+    # The medical read was recorded by the endpoint itself, as the real one is.
+    read = rows[("read", "cadet_medical")]
+    assert read.actor_role == "staff" and read.detail["cadet_count"] > 0
+    assert rows[("send", "parade_message")].resource_id == "1"
 
 
 def test_the_oc_custom_dashboard_has_panels_that_all_answer(api, db):
