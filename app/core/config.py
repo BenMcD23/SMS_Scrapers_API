@@ -124,6 +124,16 @@ ACTIVITY_LOG_ALERT_EMAIL = os.getenv("ACTIVITY_LOG_ALERT_EMAIL", NOTIFY_GROUP)
 # rather than silently dropping the request.
 ADJUTANT_EMAIL = os.getenv("ADJUTANT_EMAIL", "")
 
+# Web Push (notifications on phones and the installed app). A VAPID key pair
+# identifies this server to the browsers' push services; generate one with
+# `python scripts/gen_vapid_keys.py`. The public half goes to the site, which
+# hands it to the browser when someone turns notifications on. Unset = push is
+# off: the settings page says so and nothing tries to send.
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+# Push services contact this address if our notifications misbehave.
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", f"mailto:{OWNER_EMAIL}")
+
 # Browser origins allowed to call the API directly (the SMS site does, and the
 # squadron website's joining form; the cadet portal proxies through its own
 # server). Comma-separated; localhost is added for local development when

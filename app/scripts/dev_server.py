@@ -568,6 +568,27 @@ def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
     db.commit()
 
 
+def seed_push(db, now: datetime | None = None) -> None:
+    """Two colleagues' devices signed up for notifications, so the table isn't
+    empty: a phone that has had a message and a laptop that hasn't. Written
+    directly, because a real sign-up needs a browser's PushManager keys. The
+    endpoints are .invalid, so a send from the preview fails in DNS and is
+    logged, never delivered. The dev login has none: its settings page shows
+    the "turn on" state, which is the one worth looking at."""
+    from database.models import PushSubscription
+
+    now = now or datetime.now()
+    db.add_all([
+        PushSubscription(email="s.hughes@example.com", endpoint="https://push.example.invalid/phone-1",
+                         p256dh="dev-p256dh-1", auth="dev-auth-1", topics=["orders", "session_plans"],
+                         user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+                         created_at=now - timedelta(days=20), last_sent_at=now - timedelta(days=2)),
+        PushSubscription(email="s.hughes@example.com", endpoint="https://push.example.invalid/laptop-1",
+                         p256dh="dev-p256dh-2", auth="dev-auth-2", topics=[], created_at=now - timedelta(days=3)),
+    ])
+    db.commit()
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -676,6 +697,12 @@ def main() -> None:
     os.environ.update(DEV_ENV)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     sys.path.insert(0, str(ROOT / "app"))
+    # Push on with a throwaway key pair, so the settings page shows its toggles.
+    # A new pair each run: a device signed up last time just turns it on again.
+    if not os.environ.get("VAPID_PRIVATE_KEY"):
+        from scripts.gen_vapid_keys import generate
+
+        os.environ["VAPID_PUBLIC_KEY"], os.environ["VAPID_PRIVATE_KEY"] = generate()
 
     import uvicorn
     from fastapi.testclient import TestClient
@@ -707,6 +734,8 @@ def main() -> None:
         seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
         with SessionLocal() as db:
             seed_audit(client, headers, db)
+        with SessionLocal() as db:
+            seed_push(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

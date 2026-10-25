@@ -51,6 +51,7 @@ from routers import (
     oc,
     portal,
     programme,
+    push,
     recruits,
     reference,
     scrapers,
@@ -230,3 +231,4 @@ app.include_router(recruits.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
 app.include_router(usage_router.router)
+app.include_router(push.router)

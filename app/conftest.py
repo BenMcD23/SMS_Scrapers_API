@@ -11,6 +11,9 @@ Use them like:
         db.add(Cadet(cin=1, first_name="A", last_name="B")); db.commit()
         res = api.get("/cadets", headers=api.as_("staff"))
         assert res.status_code == 200
+
+Push tests take ``pushes`` (below), which turns push on and records each
+notification instead of sending it.
 """
 
 import os
@@ -294,4 +297,47 @@ class FakeGitHub:
 def github(http):
     fake = FakeGitHub()
     http.handler = fake
+    return fake
+
+
+class FakePush:
+    """Stands in for the push services. ``sent`` holds every message delivered
+    as {endpoint, payload}; ``fail[endpoint]`` makes that device fail, with an
+    HTTP status (410 = gone) or an exception to raise."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.fail: dict[str, int | Exception] = {}
+
+    def __call__(self, subscription_info, data=None, **kwargs):
+        import json as _json
+
+        from pywebpush import WebPushException
+
+        endpoint = subscription_info["endpoint"]
+        failure = self.fail.get(endpoint)
+        if isinstance(failure, Exception):
+            raise failure
+        if failure:
+            raise WebPushException("push service said no", response=httpx.Response(failure))
+        self.sent.append({"endpoint": endpoint, "payload": _json.loads(data), **kwargs})
+
+    def to(self, endpoint: str) -> list[dict]:
+        return [m["payload"] for m in self.sent if m["endpoint"] == endpoint]
+
+
+@pytest.fixture
+def pushes(monkeypatch):
+    """Push notifications switched on with a real key pair, sending into a
+    FakePush instead of Google/Apple/Mozilla."""
+    import core.push as push
+    import routers.push as push_router
+    from scripts.gen_vapid_keys import generate
+
+    public, private = generate()
+    monkeypatch.setattr(push, "VAPID_PUBLIC_KEY", public)
+    monkeypatch.setattr(push, "VAPID_PRIVATE_KEY", private)
+    monkeypatch.setattr(push_router, "VAPID_PUBLIC_KEY", public)
+    fake = FakePush()
+    monkeypatch.setattr(push, "webpush", fake)
     return fake
