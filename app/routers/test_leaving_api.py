@@ -242,3 +242,49 @@ def test_non_ascii_names_survive(api, db):
     db.commit()
     names = [c["name"] for c in api.get("/oc/parent-emails", headers=OC).json()["cadets"]]
     assert names == ["Zoë Ó Briain"]
+
+
+# ---- the saved leaver email -------------------------------------------------
+
+def test_leaving_email_is_empty_until_saved_then_round_trips_and_resets(api):
+    assert api.get("/oc/leaving-email", headers=OC).json() == {"subject": None, "body": None}
+
+    mail = {"subject": "Is {{ cadet_name }} still with us?", "body": "Dear parent,\n\n{{ cadet_name }} ..."}
+    assert api.put("/oc/leaving-email", json=mail, headers=OC).json() == mail
+    assert api.get("/oc/leaving-email", headers=OC).json() == mail
+
+    mail2 = {"subject": "", "body": "Second save replaces the first"}
+    api.put("/oc/leaving-email", json=mail2, headers=OC)
+    assert api.get("/oc/leaving-email", headers=OC).json() == mail2
+
+    assert api.delete("/oc/leaving-email", headers=OC).json() == {"subject": None, "body": None}
+    assert api.get("/oc/leaving-email", headers=OC).json() == {"subject": None, "body": None}
+    # Resetting when nothing is saved is fine.
+    assert api.delete("/oc/leaving-email", headers=OC).status_code == 200
+
+
+@pytest.mark.parametrize("payload", [
+    {"subject": "s", "body": ""},
+    {"subject": "s", "body": "x" * 5001},
+    {"subject": "x" * 201, "body": "b"},
+    {"body": "no subject"},
+])
+def test_leaving_email_rejects_bad_input(api, payload):
+    assert api.put("/oc/leaving-email", json=payload, headers=OC).status_code == 422
+    assert api.get("/oc/leaving-email", headers=OC).json()["body"] is None
+
+
+def test_leaving_email_is_oc_only(api):
+    assert api.get("/oc/leaving-email").status_code == 401
+    h = api.as_("staff")
+    assert api.get("/oc/leaving-email", headers=h).status_code == 403
+    assert api.put("/oc/leaving-email", json={"subject": "", "body": "x"}, headers=h).status_code == 403
+    assert api.delete("/oc/leaving-email", headers=h).status_code == 403
+
+
+def test_a_damaged_saved_email_reads_as_nothing_saved(api, db):
+    api.put("/oc/leaving-email", json={"subject": "", "body": "x"}, headers=OC)
+    from database.models import DashboardLayout
+    db.query(DashboardLayout).filter_by(dashboard="oc-leaving-email").one().sections = "{not json"
+    db.commit()
+    assert api.get("/oc/leaving-email", headers=OC).json() == {"subject": None, "body": None}
