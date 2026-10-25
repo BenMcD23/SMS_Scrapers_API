@@ -5,6 +5,7 @@ realistic data, e.g. from a cloud Claude session that can't reach the cluster.
     python app/scripts/dev_server.py            # http://localhost:8000
     python app/scripts/dev_server.py --reset    # throw the database away first
     python app/scripts/dev_server.py --port 8001 --db /tmp/other.db
+    python app/scripts/dev_server.py --host 0.0.0.0   # in a container (the cluster's previews)
 
 The database (data/dev.db by default, gitignored) is seeded on first run and
 kept after that, so anything clicked into the UI survives a restart. Sign in
@@ -662,12 +663,20 @@ def schema_is_stale(engine, base) -> bool:
     return False
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # Loopback by default: the bypass signs anyone in as the owner. The
+    # cluster's preview stacks pass 0.0.0.0, where the pod is reachable only
+    # from the tailnet (k3s-homelab, ADR 0010).
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite file (default: data/dev.db)")
     ap.add_argument("--reset", action="store_true", help="delete the database first")
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main() -> None:
+    args = parse_args()
 
     db_path = args.db.resolve()
     if args.reset:
@@ -714,7 +723,7 @@ def main() -> None:
             if ensure_dev_cadet(db):
                 print("added the portal's dev cadet, Cdt Kian Ashworth")
 
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
