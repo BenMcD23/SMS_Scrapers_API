@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from core.audit import record_audit
 from core.config import COMMITTEE_EMAIL, OC_EMAIL
 from core.crypto import decrypt_password
 from core.db import get_db, get_or_create_user
@@ -171,9 +172,9 @@ async def create_request(
         raise HTTPException(status_code=500, detail="Could not allocate a request number, please retry")
     db.refresh(cr)
 
-    if OC_EMAIL:
+    if oc_inbox := OC_EMAIL.split(",")[0].strip():
         send_email(
-            OC_EMAIL,
+            oc_inbox,
             f"New committee request {cr.reference}: {title}",
             committee_request_submitted_html(cr.reference, title, total, requester_name),
             attachment=cr.pdf_data, attachment_filename=f"{cr.reference}.pdf",
@@ -353,6 +354,13 @@ async def get_receipt(
     )
     if not rec:
         raise HTTPException(status_code=404, detail="Receipt not found")
+    # Receipts are any-staff readable rather than requester-scoped, so record
+    # who pulled someone else's.
+    record_audit(
+        db, idinfo,
+        action="read", resource="committee_receipt", resource_id=receipt_id,
+        detail={"request_id": request_id},
+    )
     return StreamingResponse(
         io.BytesIO(rec.data),
         media_type=rec.mime_type,
@@ -469,9 +477,9 @@ async def withdraw_request(
     r.withdrawn_by = user.email
     db.commit()
 
-    if OC_EMAIL:
+    if oc_inbox := OC_EMAIL.split(",")[0].strip():
         send_email(
-            OC_EMAIL,
+            oc_inbox,
             f"Committee request {r.reference} withdrawn",
             committee_request_withdrawn_html(r.reference, r.title, _user_name(user)),
         )

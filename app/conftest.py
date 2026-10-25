@@ -105,6 +105,17 @@ def session_factory(engine, monkeypatch):
     return factory
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    """The limiter keeps its counters in process memory and every persona token
+    is shared across tests, so without this the 5/minute send limit would trip
+    on whichever test happens to be the sixth to send."""
+    from core.ratelimit import limiter
+
+    limiter.reset()
+    yield
+
+
 @pytest.fixture
 def db(session_factory):
     session = session_factory()

@@ -30,6 +30,11 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # main's ruleset only lets PRs in, so the prod tag bump pushes with a deploy
+    # key that bypasses it. Its secret lives in this environment, which only main
+    # can use, so a workflow on any other branch can't read it. Dev deploys get
+    # no environment and push with GITHUB_TOKEN.
+    environment: ${{ (inputs.ref || github.ref_name) == 'main' && 'production' || '' }}
     permissions:
       contents: write
       packages: write
@@ -50,6 +55,8 @@ jobs:
           ref: ${{ env.BRANCH }}
           # Full history, for the commit count in the version.
           fetch-depth: 0
+          # Empty off main, which falls back to GITHUB_TOKEN.
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
 
       # v<major.minor from VERSION>.<commits on the branch>, e.g. v1.0.412.
       # The count only goes up, and a rebuild of the same commit gets the same
@@ -86,8 +93,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Pushed with GITHUB_TOKEN, which doesn't trigger workflows, so this
-      # can't loop. Retries rebase over anything pushed meanwhile.
+      # [skip ci] stops this push re-triggering workflows: a deploy-key push
+      # would otherwise start them, unlike GITHUB_TOKEN. Retries rebase over anything pushed meanwhile.
       - name: Point the overlay at the new image
         run: |
           git config user.name "github-actions[bot]"

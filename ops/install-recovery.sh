@@ -98,8 +98,8 @@ Installed. Remaining manual steps — the watchdog cannot do these for you:
            "users":  ["autogroup:nonroot", "$SUDO_USER"] }
        ]
 
-  2. Set up a second, non-Tailscale way in (Cloudflare Tunnel) — see the
-     "Never getting locked out again" section of the README. The watchdog
+  2. Set up a second, non-Tailscale way in (Cloudflare Tunnel) — see
+     docs/host-recovery.md. The watchdog
      protects against this failing accidentally; it does not help if the
      Tailscale control plane itself is the problem.
 

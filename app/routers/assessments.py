@@ -307,7 +307,8 @@ def generate_space_assessment(
 def generate_moi_assessment(
     data: dict,
     db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff_or_nco),
+    # The site only shows the MOI sheet to staff, so the API matches it.
+    idinfo: dict = Depends(require_staff),
 ):
     user = get_or_create_user(db, idinfo)
     cadet = _resolve_cadet(db, data, allow_name_fallback=False)

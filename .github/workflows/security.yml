@@ -1,0 +1,32 @@
+# Dependency vulnerability scan: pip-audit checks everything pinned in
+# requirements.txt (what the Docker image installs) against the PyPI advisory
+# database. Runs weekly as well as on PRs, because advisories are published
+# against code that hasn't changed. Fixes arrive as Dependabot security PRs (see
+# dependabot.yml), which ignore the quarterly schedule.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - run: pip install pip-audit
+
+      - name: Audit pinned dependencies
+        run: pip-audit -r requirements.txt --strict

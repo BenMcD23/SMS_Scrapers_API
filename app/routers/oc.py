@@ -4,15 +4,17 @@ Real data where it exists (squadron strength, parade turnout, qualification
 coverage and expiries); the committee-request section lives on the frontend.
 """
 
+import json
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from core import cache
+from core import cache, dashboard_query
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
-from core.db import get_db
+from core.db import get_db, get_or_create_user
 from core.leaving import parse_emails
 from core.qualifications import quali_expiry_cutoff
 from core.security import require_oc
@@ -20,6 +22,7 @@ from database.models import (
     Cadet,
     CadetAttendance,
     CadetQualification,
+    DashboardLayout,
     Staff,
     StaffAttendance,
 )
@@ -181,6 +184,263 @@ async def oc_dashboard(
         "qual_summary": _qual_summary(db, today, exclude_juniors),
         "expiring_quals": expiring_quals,
     }
+
+
+# ── Layout ────────────────────────────────────────────────────────────────────
+#
+# The OC drags the dashboard's sections into the order they want; it's saved
+# per user so it follows them between devices and the printed copy matches.
+
+OC_LAYOUT = "oc"
+# The sections, in the order a new OC sees them. The site holds the same ids.
+OC_SECTIONS = ("committee", "strength", "qualifications", "pipeline")
+
+
+def _normalise_sections(saved: list) -> list[str]:
+    """The saved order with sections the page no longer has dropped and any it
+    has gained since added at the bottom, so a layout saved before a section
+    was added or removed still covers exactly what's on the page."""
+    kept = [s for s in dict.fromkeys(saved) if s in OC_SECTIONS]
+    return kept + [s for s in OC_SECTIONS if s not in kept]
+
+
+def _layout_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_LAYOUT)
+        .first()
+    )
+    return user, row
+
+
+def _layout_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else []
+    except ValueError:
+        saved = []  # A damaged row reads as the default rather than breaking the page.
+    return {
+        "sections": _normalise_sections(saved if isinstance(saved, list) else []),
+        "customised": row is not None,
+    }
+
+
+class DashboardLayoutBody(BaseModel):
+    sections: list[str]
+
+
+@router.get("/oc/dashboard/layout")
+def get_dashboard_layout(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    return _layout_response(_layout_row(db, idinfo)[1])
+
+
+@router.put("/oc/dashboard/layout")
+def save_dashboard_layout(
+    body: DashboardLayoutBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    unknown = [s for s in body.sections if s not in OC_SECTIONS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {', '.join(unknown)}")
+    if len(set(body.sections)) != len(body.sections):
+        raise HTTPException(status_code=400, detail="Each section can only appear once")
+    user, row = _layout_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_LAYOUT)
+        db.add(row)
+    row.sections = json.dumps(_normalise_sections(body.sections))
+    row.updated_at = datetime.now()
+    db.commit()
+    return _layout_response(row)
+
+
+@router.delete("/oc/dashboard/layout")
+def reset_dashboard_layout(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """Back to the default order."""
+    _, row = _layout_row(db, idinfo)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return _layout_response(None)
+
+
+# ── Custom dashboard ──────────────────────────────────────────────────────────
+#
+# A second, build-your-own dashboard: the OC adds panels, each a query from
+# core.dashboard_query, and drags and resizes them on a 12-column grid. Saved
+# per user in the same table as the section order, under its own name.
+
+OC_CUSTOM = "oc-custom"
+MAX_PANELS = 40
+GRID_COLS = 12
+
+
+class PanelQueryBody(BaseModel):
+    query: dashboard_query.QuerySpec
+    range_days: int | None = Field(default=None, ge=1, le=3660)
+
+
+class Panel(BaseModel):
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    title: str = Field(min_length=1, max_length=80)
+    viz: Literal["bar", "line", "stat", "table"]
+    query: dashboard_query.QuerySpec
+    x: int = Field(ge=0, lt=GRID_COLS)
+    y: int = Field(ge=0, le=1000)
+    w: int = Field(ge=1, le=GRID_COLS)
+    h: int = Field(ge=1, le=20)
+
+
+class CustomDashboardBody(BaseModel):
+    range_days: int | None = Field(default=90, ge=1, le=3660)
+    panels: list[Panel] = Field(default_factory=list, max_length=MAX_PANELS)
+
+
+def _custom_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_CUSTOM)
+        .first()
+    )
+    return user, row
+
+
+def _custom_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else {}
+    except ValueError:
+        saved = {}  # A damaged row reads as an empty dashboard rather than breaking the page.
+    if not isinstance(saved, dict):
+        saved = {}
+    panels = saved.get("panels")
+    return {
+        "range_days": saved.get("range_days", 90),
+        # Passed back as saved, even a panel whose field has since left the
+        # allowlist: its query answers 400 and the panel says why, rather than
+        # vanishing from the OC's dashboard without a word.
+        "panels": panels if isinstance(panels, list) else [],
+        "customised": row is not None,
+    }
+
+
+@router.get("/oc/custom-dashboard/datasets")
+def custom_dashboard_datasets(idinfo: dict = Depends(require_oc)):
+    """What a panel can be built from: datasets, their fields and measures."""
+    return dashboard_query.catalogue()
+
+
+@router.post("/oc/custom-dashboard/query")
+def custom_dashboard_query(
+    body: PanelQueryBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    try:
+        return dashboard_query.run(db, body.query, body.range_days)
+    except dashboard_query.QueryError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/oc/custom-dashboard")
+def get_custom_dashboard(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    return _custom_response(_custom_row(db, idinfo)[1])
+
+
+@router.put("/oc/custom-dashboard")
+def save_custom_dashboard(
+    body: CustomDashboardBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    ids = [p.id for p in body.panels]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="Each panel needs its own id")
+    for p in body.panels:
+        if p.x + p.w > GRID_COLS:
+            raise HTTPException(status_code=400, detail=f"'{p.title}' runs off the side of the grid")
+        try:
+            dashboard_query.validate(p.query)
+        except dashboard_query.QueryError as e:
+            raise HTTPException(status_code=400, detail=f"{p.title}: {e}")
+    user, row = _custom_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_CUSTOM)
+        db.add(row)
+    row.sections = json.dumps(body.model_dump())
+    row.updated_at = datetime.now()
+    db.commit()
+    return _custom_response(row)
+
+
+# ── Leaver email template ─────────────────────────────────────────────────────
+#
+# The email the OC sends to a leaver's parents from their own account. Saved per
+# user in DashboardLayout (like the custom dashboard) so it needs no migration.
+# {{ cadet_name }} and {{ weeks_absent }} are filled in by the site per cadet.
+
+OC_LEAVING_EMAIL = "oc-leaving-email"
+
+
+class LeavingEmailBody(BaseModel):
+    subject: str = Field(max_length=200)
+    body: str = Field(min_length=1, max_length=5000)
+
+
+def _leaving_email_response(row: DashboardLayout | None) -> dict:
+    try:
+        saved = json.loads(row.sections) if row else {}
+    except ValueError:
+        saved = {}  # A damaged row reads as "nothing saved" so the site falls back to its default.
+    if not isinstance(saved, dict):
+        saved = {}
+    subject, body = saved.get("subject"), saved.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        return {"subject": None, "body": None}
+    return {"subject": subject, "body": body}
+
+
+def _leaving_email_row(db: Session, idinfo: dict) -> tuple:
+    user = get_or_create_user(db, idinfo)
+    row = (
+        db.query(DashboardLayout)
+        .filter(DashboardLayout.user_id == user.id, DashboardLayout.dashboard == OC_LEAVING_EMAIL)
+        .first()
+    )
+    return user, row
+
+
+@router.get("/oc/leaving-email")
+def get_leaving_email(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """The saved template, or ``null`` subject and body when none is saved."""
+    return _leaving_email_response(_leaving_email_row(db, idinfo)[1])
+
+
+@router.put("/oc/leaving-email")
+def save_leaving_email(
+    body: LeavingEmailBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    user, row = _leaving_email_row(db, idinfo)
+    if row is None:
+        row = DashboardLayout(user_id=user.id, dashboard=OC_LEAVING_EMAIL)
+        db.add(row)
+    row.sections = json.dumps({"subject": body.subject, "body": body.body})
+    row.updated_at = datetime.now()
+    db.commit()
+    return _leaving_email_response(row)
+
+
+@router.delete("/oc/leaving-email")
+def reset_leaving_email(db: Session = Depends(get_db), idinfo: dict = Depends(require_oc)):
+    """Back to the site's default wording."""
+    _, row = _leaving_email_row(db, idinfo)
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return _leaving_email_response(None)
 
 
 class ParentEmails(BaseModel):

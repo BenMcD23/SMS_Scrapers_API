@@ -4,7 +4,7 @@ Browsers and installed apps that take push notifications, with the topics each
 one wants.
 
 Revision ID: p1u2s3h4s5b6
-Revises: m1s2s3n4g5c6
+Revises: s2i3g4n5o6f7
 Create Date: 2026-10-22 00:00:00.000000
 
 """
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'p1u2s3h4s5b6'
-down_revision: Union[str, Sequence[str], None] = 'm1s2s3n4g5c6'
+down_revision: Union[str, Sequence[str], None] = 's2i3g4n5o6f7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

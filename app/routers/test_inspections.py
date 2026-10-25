@@ -33,22 +33,33 @@ def _submit(api, marks, date="2026-03-04", headers=STAFF, **extra):
 
 # ── access ────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("method,path", [
-    ("get", "/absences"), ("post", "/inspections"), ("get", "/inspections/history"),
-    ("get", "/inspections/sheets"), ("get", "/inspections/sheets/1"), ("delete", "/inspections/sheets/1"),
-    ("get", "/inspections/sheets/1/pdf"), ("post", "/inspections/analyse"),
-])
-def test_staff_and_snco_only(api, method, path):
-    def call(headers):
-        if method in ("get", "delete"):
-            return getattr(api, method)(path, headers=headers)
-        return api.post(path, json={}, headers=headers)
+def _call(api, method, path, headers):
+    if method in ("get", "delete"):
+        return getattr(api, method)(path, headers=headers)
+    return api.post(path, json={}, headers=headers)
 
-    assert call({}).status_code == 401
+
+# What the inspection sheet itself needs: SNCOs run inspections.
+@pytest.mark.parametrize("method,path", [("get", "/absences"), ("post", "/inspections")])
+def test_staff_and_snco_only(api, method, path):
+    assert _call(api, method, path, {}).status_code == 401
     for persona in ("nco", "cadet"):
-        assert call(api.as_(persona)).status_code == 403
+        assert _call(api, method, path, api.as_(persona)).status_code == 403
     for persona in ("staff", "snco"):
-        assert call(api.as_(persona)).status_code not in (401, 403)
+        assert _call(api, method, path, api.as_(persona)).status_code not in (401, 403)
+
+
+# History, saved sheets and analysis are on the site's staff-only
+# /cadets/inspections page, so SNCOs are kept out here too.
+@pytest.mark.parametrize("method,path", [
+    ("get", "/inspections/history"), ("get", "/inspections/sheets"), ("get", "/inspections/sheets/1"),
+    ("delete", "/inspections/sheets/1"), ("get", "/inspections/sheets/1/pdf"), ("post", "/inspections/analyse"),
+])
+def test_staff_only(api, method, path):
+    assert _call(api, method, path, {}).status_code == 401
+    for persona in ("snco", "nco", "cadet"):
+        assert _call(api, method, path, api.as_(persona)).status_code == 403
+    assert _call(api, method, path, api.as_("staff")).status_code not in (401, 403)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

@@ -470,3 +470,25 @@ def nco_appraisal_email_html(nco_name: str, appraisal_date: str, next_review: st
       {tail}
     </div>
     """
+
+
+def activity_log_complete_email_html(cadet_name: str, section: str, level: str, weeks: int,
+                                     assessor_name: str, activity: str) -> str:
+    """To staff when a cadet logs the last week a DofE section needs, carrying
+    the activity log PDF for the assessor to sign off."""
+    assessor = (f"<li>Assessor: {_esc(assessor_name)}</li>" if assessor_name
+                else "<li>Assessor: <em>not filled in yet</em></li>")
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">DofE {_esc(section)} section finished</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p><strong>{_esc(cadet_name)}</strong> has logged at least an hour a week for
+         {weeks} weeks and finished their {_esc(level)} DofE {_esc(section)} section.</p>
+      <ul>
+        <li>Activity: {_esc(activity)}</li>
+        {assessor}
+      </ul>
+      <p>Their DofE activity log is attached as a PDF, ready for the assessor to check and initial.</p>
+      {FOOTER}
+    </div>
+    """

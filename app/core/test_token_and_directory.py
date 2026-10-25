@@ -111,6 +111,13 @@ def test_is_oc_needs_a_configured_address(monkeypatch):
     assert security.is_oc("") is False
 
 
+def test_is_oc_accepts_a_comma_separated_list(monkeypatch):
+    monkeypatch.setattr(security, "OC_EMAIL", "oc@x, Second@X")
+    assert security.is_oc("oc@x") is True
+    assert security.is_oc("second@x") is True
+    assert security.is_oc("other@x") is False
+
+
 def test_roles_for_many_emails_refreshes_once_for_unknowns(monkeypatch):
     calls = []
 

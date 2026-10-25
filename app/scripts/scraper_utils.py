@@ -2,7 +2,6 @@ import json
 import threading
 
 import psutil
-import requests
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from core.crypto import decrypt_password
@@ -125,26 +124,3 @@ def match_email(first_key, last_key, email_map):
     if len(last_matches) == 1:
         return last_matches[0]
     return None
-
-
-def push_to_google_apps_script(data, url, scraper_messages, scraper_lock):
-    """Mirror scraped data into the squadron's Google Sheet.
-
-    Runs after the database is already saved, so a failure here is a warning,
-    not a failed scrape — and it has a timeout, since a hung Apps Script would
-    otherwise hold the run open until the watchdog killed it."""
-    def note(level, value):
-        with scraper_lock:
-            scraper_messages.append(json.dumps({"type": level, "value": value}))
-
-    note("info", "Pushing data to sheets")
-    try:
-        response = requests.post(url, json=data, headers={"Content-Type": "application/json"}, timeout=60)
-    except requests.RequestException as e:
-        note("warning", f"Could not push data to sheets: {e}")
-        return
-
-    if response.status_code == 200:
-        note("info", f"Data pushed successfully: {response.text}")
-    else:
-        note("warning", f"Failed to push data: {response.status_code}, {response.text}")

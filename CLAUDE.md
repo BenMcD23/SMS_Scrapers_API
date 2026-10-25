@@ -82,8 +82,29 @@ The site's `scripts/preview.sh` starts this and the frontend together; see the
 site's CLAUDE.md.
 
 The seed lives in the same file and is tested (`scripts/test_dev_server.py`).
-When a model or a stored format changes (rank spellings, qualification names,
-flight letters), update the seed too, or the preview stops looking like
-production. Roster data is written directly, because only the scrapers create
+
+**A schema change updates the seed in the same change.** A new table or column
+(model + Alembic migration) gets a seeded value in `dev_server.py` that shows
+it in the UI: a mix of set and empty where the page treats them differently.
+Otherwise every preview and screenshot shows nothing for it.
+`test_every_table_and_column_the_models_have_is_seeded` fails until you do. Its
+`UNSEEDED_TABLES` / `UNSEEDED_COLUMNS` lists are old gaps that only ever
+shrink: don't add new work to them. The same goes for a stored format that
+changes (rank spellings, qualification names, flight letters): update the seed
+too, or the preview stops looking like production.
+
+Roster data is written directly, because only the scrapers create
 it. Stores data goes through the real endpoints, so it always passes
 validation.
+
+## Branches and pull requests
+
+- Branch off `main` and open a pull request into it. `main` takes nothing else:
+  no direct pushes, force-pushes or deletion.
+- CI must pass to merge: `pytest` (ruff + pytest) and `docker-build`.
+  `pip-audit` doesn't block, but fix a red one. Changes under `.github/`,
+  `deploy/` or `ops/` also need @BenMcD23's review (`.github/CODEOWNERS`).
+- Never branch off `development`. It carries the dev overlay's image tag, so a
+  pull request from it points prod at a dev image.
+- Fill in the pull request template: what changed, why, and how you checked it.
+- Before pushing: `ruff check app && pytest`.
