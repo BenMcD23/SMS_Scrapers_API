@@ -90,6 +90,12 @@ def test_no_oc_configured_means_no_email(api, outbox, monkeypatch):
     assert outbox == []
 
 
+def test_only_the_first_oc_is_emailed(api, outbox, monkeypatch):
+    monkeypatch.setattr(committee, "OC_EMAIL", "oc@317atc.co.uk, extra@317atc.co.uk")
+    assert _create(api).status_code == 200
+    assert [m["to"] for m in outbox] == ["oc@317atc.co.uk"]
+
+
 @pytest.mark.parametrize("body,detail", [
     ({"title": "   "}, "title"),
     ({"items": []}, "at least one item"),

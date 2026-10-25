@@ -172,9 +172,9 @@ async def create_request(
         raise HTTPException(status_code=500, detail="Could not allocate a request number, please retry")
     db.refresh(cr)
 
-    if OC_EMAIL:
+    if oc_inbox := OC_EMAIL.split(",")[0].strip():
         send_email(
-            OC_EMAIL,
+            oc_inbox,
             f"New committee request {cr.reference}: {title}",
             committee_request_submitted_html(cr.reference, title, total, requester_name),
             attachment=cr.pdf_data, attachment_filename=f"{cr.reference}.pdf",
@@ -477,9 +477,9 @@ async def withdraw_request(
     r.withdrawn_by = user.email
     db.commit()
 
-    if OC_EMAIL:
+    if oc_inbox := OC_EMAIL.split(",")[0].strip():
         send_email(
-            OC_EMAIL,
+            oc_inbox,
             f"Committee request {r.reference} withdrawn",
             committee_request_withdrawn_html(r.reference, r.title, _user_name(user)),
         )
