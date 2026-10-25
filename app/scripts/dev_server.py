@@ -645,8 +645,9 @@ def seed_recruits(client, headers: dict, db) -> None:
 def seed_applications(client, headers: dict, db) -> None:
     """Applications through the real endpoints: the oldest cadet part-way
     through the staff cadet checklist (the rest 17½ and over stay on the
-    nearing-18 list), an SNCO applicant at the Wing board and an officer
-    applicant just starting, with a note on one."""
+    nearing-18 list), an SNCO applicant at the Wing board, an officer
+    applicant just starting, with a note on one, and an SNCO appointed before
+    SMS tracked it, marked complete straight away."""
     from database.models import Cadet
 
     def tick(app_id, *keys):
@@ -668,6 +669,12 @@ def seed_applications(client, headers: dict, db) -> None:
         res = client.post("/applications/uniformed", headers=headers, json={"name": name, "route": route})
         assert res.status_code == 201, f"/applications/uniformed: {res.status_code} {res.text}"
         tick(res.json()["id"], *done)
+
+    res = client.post("/applications/uniformed", headers=headers,
+                      json={"name": "Grace Mensah", "route": "snco", "complete": True})
+    assert res.status_code == 201, f"/applications/uniformed: {res.status_code} {res.text}"
+    client.patch(f"/applications/{res.json()['id']}", headers=headers,
+                 json={"notes": "Appointed in 2024, before applications were tracked here."})
 
 
 def schema_is_stale(engine, base) -> bool:

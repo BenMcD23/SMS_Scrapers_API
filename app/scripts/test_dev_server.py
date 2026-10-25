@@ -380,6 +380,8 @@ def test_the_applications_show_one_of_each_state(api, db):
     assert cadets["applications"][0]["notes"]
     adults = api.get("/applications/uniformed", headers=staff).json()["applications"]
     assert {a["route"] for a in adults} == {"snco", "cfc"}
+    # One on the Complete tab by hand, with nothing ticked.
+    assert [(a["name"], a["done"]) for a in adults if a["complete"]] == [("Grace Mensah", 0)]
 
 
 def test_the_audit_trail_has_a_read_through_the_api_and_a_send(api, db):

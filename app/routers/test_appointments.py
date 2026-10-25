@@ -259,3 +259,103 @@ def test_the_two_lists_are_kept_apart(api, squadron):
     _start_adult(api)
     assert len(api.get("/applications/uniformed", headers=api.as_("staff")).json()["applications"]) == 1
     assert len(_staff_cadets(api)["applications"]) == 1
+
+
+# ---- marking complete by hand ----------------------------------------------
+
+def _patch(api, app_id, persona="staff", **body):
+    return api.patch(f"/applications/{app_id}", headers=api.as_(persona), json=body)
+
+
+def test_marking_complete_with_steps_unticked_moves_it_to_complete(api, db, squadron):
+    app = api.post("/applications/staff-cadets", headers=api.as_("staff"), json={"cin": 1}).json()
+    _tick(api, app["id"], "bpss")
+    res = _patch(api, app["id"], complete=True)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["complete"] is True
+    assert body["markedComplete"] == {"at": "2026-10-24T19:30:00", "by": "staff@317atc.co.uk"}
+    # The ticks still say what was skipped.
+    assert (body["done"], body["nextStep"]) == (1, "dbs_requested")
+    assert _staff_cadets(api)["applications"][0]["complete"] is True
+
+    db.expire_all()
+    stored = db.get(AppointmentApplication, app["id"])
+    assert (stored.completed_at, stored.completed_by) == (NOW, "staff@317atc.co.uk")
+
+
+def test_marking_complete_again_keeps_the_first_mark(api, squadron, monkeypatch):
+    app = api.post("/applications/staff-cadets", headers=api.as_("staff"), json={"cin": 1}).json()
+    _patch(api, app["id"], complete=True)
+    monkeypatch.setattr(appointments, "london_now", lambda: datetime(2026, 11, 1))
+    res = _patch(api, app["id"], persona="staff2", complete=True)
+    assert res.json()["markedComplete"] == {"at": "2026-10-24T19:30:00", "by": "staff@317atc.co.uk"}
+
+
+def test_unmarking_puts_it_back_in_progress_with_its_ticks(api, squadron):
+    app = _start_adult(api, route=SNCO)
+    _tick(api, app["id"], "pers_1_10")
+    _patch(api, app["id"], complete=True)
+    res = _patch(api, app["id"], complete=False).json()
+    assert (res["complete"], res["markedComplete"], res["done"]) == (False, None, 1)
+
+
+def test_unmarking_a_fully_ticked_application_leaves_it_complete(api, squadron):
+    # Complete because of the ticks, not the mark: unmarking doesn't untick anything.
+    app = _start_adult(api, route=SNCO)
+    for key in step_keys(UNIFORMED, SNCO):
+        _tick(api, app["id"], key)
+    _patch(api, app["id"], complete=True)
+    res = _patch(api, app["id"], complete=False).json()
+    assert (res["complete"], res["markedComplete"]) == (True, None)
+
+
+def test_editing_notes_leaves_the_mark_alone(api, squadron):
+    app = _start_adult(api)
+    _patch(api, app["id"], complete=True)
+    assert _patch(api, app["id"], notes="Appointed 2019").json()["complete"] is True
+    assert _patch(api, app["id"], complete=None).json()["complete"] is True
+
+
+def test_a_cadet_can_go_straight_on_the_complete_list(api, squadron):
+    res = api.post("/applications/staff-cadets", headers=api.as_("staff"), json={"cin": 7, "complete": True})
+    assert res.status_code == 201
+    assert res.json()["complete"] is True and res.json()["done"] == 0
+    body = _staff_cadets(api)
+    assert 7 not in [c["cin"] for c in body["nearing18"]]
+    assert [a["cadet"]["cin"] for a in body["applications"] if a["complete"]] == [7]
+
+
+def test_an_adult_can_go_straight_on_the_complete_list(api):
+    res = api.post("/applications/uniformed", headers=api.as_("staff"),
+                   json={"name": "Seán Ó Briain", "route": CFC, "complete": True})
+    assert res.status_code == 201
+    assert res.json()["complete"] is True and res.json()["markedComplete"]["by"] == "staff@317atc.co.uk"
+
+
+def test_starting_without_complete_is_in_progress(api, squadron):
+    app = api.post("/applications/staff-cadets", headers=api.as_("staff"), json={"cin": 1}).json()
+    assert (app["complete"], app["markedComplete"]) == (False, None)
+
+
+@pytest.mark.parametrize("value", ["maybe", 2, [True]])
+def test_complete_must_be_true_or_false(api, squadron, value):
+    app = _start_adult(api)
+    assert _patch(api, app["id"], complete=value).status_code == 422
+    assert api.post("/applications/staff-cadets", headers=api.as_("staff"),
+                    json={"cin": 1, "complete": value}).status_code == 422
+
+
+def test_marking_a_missing_application_is_404(api):
+    assert _patch(api, 999, complete=True).status_code == 404
+
+
+@pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
+def test_only_staff_can_mark_complete(api, db, persona):
+    db.add(AppointmentApplication(id=9, kind=UNIFORMED, applicant_name="X", route=SNCO, steps={},
+                                  started_at=NOW))
+    db.commit()
+    assert _patch(api, 9, persona=persona, complete=True).status_code == 403
+    assert api.patch("/applications/9", json={"complete": True}).status_code == 401
+    db.expire_all()
+    assert db.get(AppointmentApplication, 9).completed_at is None

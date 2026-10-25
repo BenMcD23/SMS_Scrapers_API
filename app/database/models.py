@@ -315,7 +315,9 @@ class AppointmentApplication(Base):
     A staff cadet application belongs to a cadet on the roster (one each). An
     adult applicant isn't on SMS until HQ appoints them, so theirs is just a
     name. ``steps`` maps each ticked step's key to ``{"at", "by"}``; an unticked
-    step has no key. Completion is derived from it, never stored.
+    step has no key. Completion is derived from it unless staff marked the
+    application complete by hand (``completed_at``/``completed_by``): one that
+    finished before SMS tracked it, or a step the Wing waived.
     """
     __tablename__ = "Appointment_Applications"
 
@@ -329,6 +331,8 @@ class AppointmentApplication(Base):
     steps          = Column(JSON,       nullable=False, default=dict)
     started_at     = Column(DateTime,   nullable=False)
     started_by     = Column(Text,       nullable=True)
+    completed_at   = Column(DateTime,   nullable=True)    # marked complete by hand
+    completed_by   = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="appointment_application")
 
