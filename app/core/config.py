@@ -46,7 +46,8 @@ OWNER_EMAIL = os.getenv("OWNER_EMAIL", f"ci.mcdonald@{GOOGLE_DOMAIN}")
 
 # Officer Commanding — gates the OC dashboard and the committee-request approval
 # actions (send-to-committee / approve / reject / mark-paid). Identified by email
-# rather than a Google group since there is only ever one OC.
+# rather than a Google group. Comma-separated: the first address is the OC proper
+# and receives committee notifications; any others just get OC access.
 OC_EMAIL = os.getenv("OC_EMAIL", "")
 # Where committee purchase requests and payment requests are emailed.
 COMMITTEE_EMAIL = os.getenv("COMMITTEE_EMAIL", "")
