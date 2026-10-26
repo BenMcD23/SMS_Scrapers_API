@@ -126,8 +126,9 @@ hold it.
 Label a pull request `preview` (here, in the SMS site or in the portal) and the
 cluster runs that branch, with the SMS site and the cadet portal, on the seed
 from `app/scripts/dev_server.py`, on the tailnet only. It never touches either
-database. `.github/workflows/preview-image.yml` builds every branch for it, and
-how it works is in the homelab repo's ADR 0010.
+database. `.github/workflows/preview-image.yml` builds labelled pull requests (and
+main, which a repo without the label runs) for it, and how it works is in
+the homelab repo's ADR 0010.
 
 ### Versions
 
