@@ -35,7 +35,7 @@ def _absent_cins_on(db: Session, date: datetime) -> set[int]:
 
 
 @router.get("/absences")
-async def absences_on_date(
+def absences_on_date(
     date: str | None = None,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
@@ -105,7 +105,7 @@ def _flight_scores(marks: list[dict], awol: set[int],
 
 
 @router.post("/inspections")
-async def submit_inspection(
+def submit_inspection(
     body: InspectionSubmit,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
@@ -310,7 +310,7 @@ def cadet_timeline(db: Session, cin: int) -> list[dict]:
 # live under /cadets/inspections, which SNCOs can't open. SNCOs only run the
 # sheet itself (/absences, /cadets and the POST above).
 @router.get("/inspections/history")
-async def inspection_history(
+def inspection_history(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -434,7 +434,7 @@ def _flight_order(flight: str) -> tuple:
 
 
 @router.get("/inspections/sheets")
-async def list_sheets(
+def list_sheets(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -457,7 +457,7 @@ async def list_sheets(
 
 
 @router.get("/inspections/sheets/{sheet_id}")
-async def sheet_detail(
+def sheet_detail(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -477,7 +477,7 @@ async def sheet_detail(
 
 
 @router.delete("/inspections/sheets/{sheet_id}")
-async def delete_sheet(
+def delete_sheet(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -492,7 +492,7 @@ async def delete_sheet(
 
 
 @router.get("/inspections/sheets/{sheet_id}/pdf")
-async def sheet_pdf(
+def sheet_pdf(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),

@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 from sqlalchemy.orm import Session, selectinload
@@ -186,7 +187,9 @@ async def vp_sync(
         raise RequestValidationError(e.errors(include_url=False))
 
     now = datetime.now()
-    counts = apply_sync(db, payload, now)
+    # A whole squadron's worth of writes: run them in a worker thread so the
+    # event loop (and every other request) isn't held while they commit.
+    counts = await run_in_threadpool(apply_sync, db, payload, now)
     summary = ", ".join(f"{k} {v}" for k, v in counts.items())
     db.add(ScraperRun(scraper_id=SCRAPER_ID, ran_at=now, success=True, ran_by=idinfo["email"],
                       logs=f"Volunteer Portal sync: {summary}"))

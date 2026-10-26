@@ -80,7 +80,7 @@ def save_credentials(
 
 
 @router.post("/save-signature")
-async def save_signature(
+def save_signature(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -90,7 +90,7 @@ async def save_signature(
     if file.content_type not in ("image/png", "image/jpeg"):
         raise HTTPException(status_code=400, detail="Only PNG or JPEG images are accepted")
 
-    image_bytes = await file.read()
+    image_bytes = file.file.read()
     if len(image_bytes) > 2 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Signature image must be under 2 MB")
 
