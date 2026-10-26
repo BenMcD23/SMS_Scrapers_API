@@ -316,9 +316,11 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
         if not reached:
             continue
 
-        # Blue aviation comes with First Class training.
-        db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
-                                  date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
+        # Blue aviation comes with First Class training (unless the main seed
+        # already gave it them: one row per qualification).
+        if not db.query(CadetQualification.id).filter_by(cadet_id=c.cin, qual_type="Blue ATP Ground School").first():
+            db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
+                                      date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
         mix = rng.choice(FLYING_MIX)
         if mix in ("ptt", "both"):
             db.add(CadetFlight(cadet_id=c.cin, date=today - timedelta(days=rng.randint(30, 600)),
@@ -566,6 +568,11 @@ def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
                       actor_role="staff", action="send", resource="parade_message", resource_id="1",
                       detail={"sent": 41, "failed": 2}))
     db.commit()
+    # Every seeding call so far was counted in memory; write the counts now so
+    # the usage page has rows before the background flush first runs.
+    from core import usage
+
+    usage.flush()
 
 
 def seed_push(db, now: datetime | None = None) -> None:

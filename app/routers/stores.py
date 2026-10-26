@@ -15,7 +15,7 @@ from core import given_events, push, stock_events, stock_insights
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
-from core.emailer import ready_to_collect_email_html, send_email
+from core.order_items import get_order_item, mark_ready, undo_given
 from core.security import require_staff
 from database.models import (
     ISSUANCE_ITEM_TYPE_MAP,
@@ -797,33 +797,17 @@ def stores_delete_order(
 def stores_mark_item_ready(
     order_id: int,
     item_id: int,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(StoresOrderItem).filter(
-        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
 
-    item.ready_to_collect = datetime.utcnow()
-    db.commit()
+    emailed = mark_ready(db, order, item, background, subject="Your uniform item is ready to collect",
+                         item_name=item.item_type, item_kind="uniform", size=item.size or "")
     logger.info("order %s item %s (%s) marked ready by %s",
                 order_id, item_id, item.item_type, idinfo.get("email"))
-
-    if order.cadet and order.cadet.email:
-        greeting_name = f"{order.cadet.rank} {order.cadet.last_name}" if order.cadet.rank else order.cadet.last_name
-        send_email(
-            to=order.cadet.email,
-            subject="Your uniform item is ready to collect",
-            html_body=ready_to_collect_email_html(
-                cadet_name=greeting_name, item_name=item.item_type, item_kind="uniform", size=item.size or "",
-            ),
-        )
-    else:
+    if not emailed:
         logger.info("order %s: no cadet email, ready-to-collect email not sent", order_id)
 
     db.refresh(order)
@@ -847,14 +831,7 @@ def stores_order_item_stock(
     if action not in ("remove", "return"):
         raise HTTPException(status_code=400, detail="action must be 'remove' or 'return'")
 
-    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(StoresOrderItem).filter(
-        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
 
     events = stock_events.events_list(item.stock_events)
     by = body.get("by") or idinfo.get("email")
@@ -941,28 +918,11 @@ def stores_undo_given(
     the item's history. An item given before the history existed is cleared the
     same way, but the issuance record is left as it is (there is nothing to
     restore it from)."""
-    order = db.query(StoresOrder).filter(StoresOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(StoresOrderItem).filter(
-        StoresOrderItem.id == item_id, StoresOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    if order.completed:
-        raise HTTPException(status_code=409, detail="Reopen the order before undoing an item")
-    if not item.given_at:
-        raise HTTPException(status_code=409, detail="This item hasn't been marked as given")
-
-    events = given_events.events_list(item.given_events)
-    given = given_events.last_given(events)
+    order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
+    by = (body or {}).get("by") or idinfo.get("email")
+    given = undo_given(order, item, by, noun="an item")
     if given:
         _restore_issuance(db, order, given)
-    by = (body or {}).get("by") or idinfo.get("email")
-    events.append(given_events.new_event(given_events.UNDONE, by))
-    item.given_events = given_events.dump(events)
-    item.given_at = None
-    item.given_by = None
     db.commit()
     logger.info("order %s item %s: given undone by %s", order_id, item_id, by)
     db.refresh(order)
@@ -987,9 +947,9 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
         size = item.get("sizeGiven") or item.get("size") or None
         raw_date = item.get("lastGiven")
         try:
-            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.now()
         except (ValueError, TypeError):
-            given_at = datetime.utcnow()
+            given_at = datetime.now()
 
         query = db.query(StoresItemIssuance).filter(StoresItemIssuance.item_category == category)
         if cadet_cin is not None:

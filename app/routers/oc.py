@@ -126,7 +126,7 @@ def _qual_summary(db: Session, today: datetime, exclude_juniors: bool) -> dict:
 
 
 @router.get("/oc/dashboard")
-async def oc_dashboard(
+def oc_dashboard(
     exclude_juniors: bool = False,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),

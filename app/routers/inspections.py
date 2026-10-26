@@ -4,9 +4,9 @@ per-cadet inspection history with score/attendance trends plus an optional
 AI analysis of recurring uniform faults."""
 
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -35,7 +35,7 @@ def _absent_cins_on(db: Session, date: datetime) -> set[int]:
 
 
 @router.get("/absences")
-async def absences_on_date(
+def absences_on_date(
     date: str | None = None,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
@@ -105,7 +105,7 @@ def _flight_scores(marks: list[dict], awol: set[int],
 
 
 @router.post("/inspections")
-async def submit_inspection(
+def submit_inspection(
     body: InspectionSubmit,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
@@ -310,7 +310,11 @@ def cadet_timeline(db: Session, cin: int) -> list[dict]:
 # live under /cadets/inspections, which SNCOs can't open. SNCOs only run the
 # sheet itself (/absences, /cadets and the POST above).
 @router.get("/inspections/history")
-async def inspection_history(
+def inspection_history(
+    # A window in days, so the leaderboard can rank "the last year" instead of
+    # carrying every sheet ever (the sheets, and this payload, grow weekly).
+    # Omitted means all of them.
+    days: int | None = Query(None, ge=1, le=3660),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -320,8 +324,14 @@ async def inspection_history(
     Attendance average is the nights a cadet was present over the nights their
     flight was actually inspected (absent — excused or AWOL — counts against it);
     overall = attendance fraction × score average (the squadron's own metric).
-    All three columns are competition-ranked highest-first."""
-    sheets = db.query(InspectionSheet).order_by(InspectionSheet.date).all()
+    All three columns are competition-ranked highest-first, within the window
+    when ``days`` is given."""
+    query = db.query(InspectionSheet)
+    since = None
+    if days is not None:
+        since = (datetime.now() - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        query = query.filter(InspectionSheet.date >= since)
+    sheets = query.order_by(InspectionSheet.date).all()
     cadets = (
         db.query(Cadet)
         .filter(Cadet.banned.is_(False))
@@ -369,7 +379,8 @@ async def inspection_history(
         r["overall_rank"] = orank
         r["overall_rank_label"] = _ordinal(orank)
 
-    return {"inspection_count": total, "dates": dates, "cadets": rows}
+    return {"inspection_count": total, "dates": dates, "cadets": rows,
+            "since": since.date().isoformat() if since else None}
 
 
 # ── Per-date sheet browsing & PDF export ──────────────────────────────────────
@@ -434,7 +445,7 @@ def _flight_order(flight: str) -> tuple:
 
 
 @router.get("/inspections/sheets")
-async def list_sheets(
+def list_sheets(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -457,7 +468,7 @@ async def list_sheets(
 
 
 @router.get("/inspections/sheets/{sheet_id}")
-async def sheet_detail(
+def sheet_detail(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -477,7 +488,7 @@ async def sheet_detail(
 
 
 @router.delete("/inspections/sheets/{sheet_id}")
-async def delete_sheet(
+def delete_sheet(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -492,7 +503,7 @@ async def delete_sheet(
 
 
 @router.get("/inspections/sheets/{sheet_id}/pdf")
-async def sheet_pdf(
+def sheet_pdf(
     sheet_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),

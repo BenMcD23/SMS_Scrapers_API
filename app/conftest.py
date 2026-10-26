@@ -189,13 +189,15 @@ def outbox(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_cache():
-    """core.cache is process-global; a list cached by one test must not leak
-    into the next one's fresh database."""
-    from core import cache
+    """core.cache and the pending usage counts are process-global; nothing
+    one test left behind may leak into the next one's fresh database."""
+    from core import cache, usage
 
     cache._store.clear()
+    usage._pending.clear()
     yield
     cache._store.clear()
+    usage._pending.clear()
 
 
 class FakeHttp:

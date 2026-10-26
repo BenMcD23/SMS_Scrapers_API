@@ -178,7 +178,7 @@ def _get_or_404(db: Session, holiday_id: int) -> NcoHoliday:
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 @router.get("/nco-holidays")
-async def list_holidays(
+def list_holidays(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -217,7 +217,7 @@ async def list_holidays(
 
 
 @router.post("/nco-holidays")
-async def create_holiday(
+def create_holiday(
     body: HolidayBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -302,7 +302,7 @@ def _extend(db: Session, existing: NcoHoliday, date_from: datetime, date_to: dat
 
 
 @router.patch("/nco-holidays/{holiday_id}")
-async def edit_holiday(
+def edit_holiday(
     holiday_id: int,
     body: HolidayBody,
     db: Session = Depends(get_db),
@@ -351,7 +351,7 @@ async def edit_holiday(
 
 
 @router.post("/nco-holidays/{holiday_id}/cancel")
-async def cancel_holiday(
+def cancel_holiday(
     holiday_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -383,7 +383,7 @@ async def cancel_holiday(
 
 
 @router.post("/nco-holidays/{holiday_id}/sync")
-async def sync_holiday(
+def sync_holiday(
     holiday_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
