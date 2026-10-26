@@ -1,7 +1,7 @@
 """Inspection sheets: submission/merging, AWOL detection, scoring, history
 rankings, per-date browsing, PDF export and the AI analysis."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -217,6 +217,34 @@ def test_history_ranks_and_averages(api, squadron):
     assert rows[1]["overall_rank"] == 2
     # Amy and Dee both attended every night: shared attendance rank.
     assert rows[1]["attendance_rank"] == rows[4]["attendance_rank"] == 1
+
+
+def test_history_window_ranks_only_the_recent_sheets(api, db, squadron):
+    today = datetime.now().replace(hour=19, minute=0, second=0, microsecond=0)
+    for when, score in ((today - timedelta(days=400), 2), (today - timedelta(days=10), 9)):
+        db.add(InspectionSheet(date=when, submitted_at=when, data={"marks": [{"cin": 1, "score": score}]}))
+    db.commit()
+
+    everything = api.get("/inspections/history", headers=STAFF).json()
+    assert everything["inspection_count"] == 2 and everything["since"] is None
+    recent = api.get("/inspections/history?days=365", headers=STAFF).json()
+    assert recent["inspection_count"] == 1
+    assert recent["since"] == (today - timedelta(days=365)).date().isoformat()
+    amy = next(r for r in recent["cadets"] if r["cin"] == 1)
+    assert amy["score_avg"] == 9.0 and len(amy["timeline"]) == 1
+
+
+def test_a_sheet_on_the_window_s_first_day_counts(api, db, squadron):
+    # The window starts at midnight, so that day's evening inspection is in.
+    first_day = (datetime.now() - timedelta(days=7)).replace(hour=19, minute=30, second=0, microsecond=0)
+    db.add(InspectionSheet(date=first_day, submitted_at=first_day, data={"marks": [{"cin": 1, "score": 5}]}))
+    db.commit()
+    assert api.get("/inspections/history?days=7", headers=STAFF).json()["inspection_count"] == 1
+
+
+@pytest.mark.parametrize("days", [0, -1, 5000, "year"])
+def test_history_window_is_validated(api, days):
+    assert api.get(f"/inspections/history?days={days}", headers=STAFF).status_code == 422
 
 
 def test_history_with_no_sheets(api, squadron):
