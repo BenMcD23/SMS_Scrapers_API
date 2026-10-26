@@ -7,11 +7,12 @@ get the /users/me equivalents, scoped to their own User row.
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from core import push
 from core.db import get_current_cadet, get_current_user, get_db
 from core.security import get_roles_for_emails, is_oc, require_staff
 from database.models import (
@@ -133,6 +134,21 @@ def _replace_pending_items(db: Session, order, wanted: list, key, build):
     db.refresh(order)
 
 
+def _cadet_name(cadet: Cadet) -> str:
+    return " ".join(n for n in (cadet.rank, cadet.first_name, cadet.last_name) if n)
+
+
+def _notify_new_order(kind: str, who: str, count: int) -> None:
+    """Tell stores staff a new order is waiting (after the response is sent)."""
+    things = ("item" if kind == "uniform" else "badge") + ("" if count == 1 else "s")
+    push.notify(
+        "orders",
+        f"New {kind} order",
+        f"{who} ordered {count} {things}",
+        "/stores/uniform/orders" if kind == "uniform" else "/stores/badges/orders",
+    )
+
+
 def _delete_order(db: Session, order):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -202,6 +218,7 @@ def cadet_get_orders(
 @router.post("/cadets/me/orders", status_code=201)
 def cadet_create_order(
     body: OrderBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     cadet: Cadet = Depends(get_current_cadet),
 ):
@@ -215,6 +232,7 @@ def cadet_create_order(
 
     db.commit()
     db.refresh(order)
+    background.add_task(_notify_new_order, "uniform", _cadet_name(cadet), len(order.order_items))
     return order_to_dict(order)
 
 
@@ -308,6 +326,7 @@ def cadet_get_badge_orders(
 @router.post("/cadets/me/badge-orders", status_code=201)
 def cadet_create_badge_order(
     body: BadgeOrderBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     cadet: Cadet = Depends(get_current_cadet),
 ):
@@ -324,6 +343,7 @@ def cadet_create_badge_order(
 
     db.commit()
     db.refresh(order)
+    background.add_task(_notify_new_order, "badge", _cadet_name(cadet), len(order.order_items))
     return badge_order_to_dict(order)
 
 
@@ -379,6 +399,7 @@ def user_get_orders(
 @router.post("/users/me/orders", status_code=201)
 def user_create_order(
     body: OrderBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -392,6 +413,8 @@ def user_create_order(
 
     db.commit()
     db.refresh(order)
+    name = " ".join(n for n in (user.first_name, user.last_name) if n) or user.email
+    background.add_task(_notify_new_order, "uniform", name, len(order.order_items))
     return order_to_dict(order)
 
 

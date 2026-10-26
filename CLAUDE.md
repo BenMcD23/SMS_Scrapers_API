@@ -53,6 +53,9 @@ whose file already holds unit tests go in `test_<thing>_api.py`.
 - `http` / `github` — fake outbound `httpx` calls and a fake GitHub
   contents/git-data API for the publishing endpoints.
 - `real_send_email` — the genuine `send_email`, for testing the emailer itself.
+- `pushes` — push notifications switched on with a real key pair, recording
+  each message instead of sending it. `pushes.to(endpoint)` lists what a device
+  got; `pushes.fail[endpoint] = 410` (or an exception) makes it fail.
 
 **Rules.**
 

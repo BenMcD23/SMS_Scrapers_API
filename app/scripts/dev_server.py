@@ -317,9 +317,11 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
         if not reached:
             continue
 
-        # Blue aviation comes with First Class training.
-        db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
-                                  date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
+        # Blue aviation comes with First Class training (unless the main seed
+        # already gave it them: one row per qualification).
+        if not db.query(CadetQualification.id).filter_by(cadet_id=c.cin, qual_type="Blue ATP Ground School").first():
+            db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
+                                      date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
         mix = rng.choice(FLYING_MIX)
         if mix in ("ptt", "both"):
             db.add(CadetFlight(cadet_id=c.cin, date=today - timedelta(days=rng.randint(30, 600)),
@@ -567,6 +569,32 @@ def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
                       actor_role="staff", action="send", resource="parade_message", resource_id="1",
                       detail={"sent": 41, "failed": 2}))
     db.commit()
+    # Every seeding call so far was counted in memory; write the counts now so
+    # the usage page has rows before the background flush first runs.
+    from core import usage
+
+    usage.flush()
+
+
+def seed_push(db, now: datetime | None = None) -> None:
+    """Two colleagues' devices signed up for notifications, so the table isn't
+    empty: a phone that has had a message and a laptop that hasn't. Written
+    directly, because a real sign-up needs a browser's PushManager keys. The
+    endpoints are .invalid, so a send from the preview fails in DNS and is
+    logged, never delivered. The dev login has none: its settings page shows
+    the "turn on" state, which is the one worth looking at."""
+    from database.models import PushSubscription
+
+    now = now or datetime.now()
+    db.add_all([
+        PushSubscription(email="s.hughes@example.com", endpoint="https://push.example.invalid/phone-1",
+                         p256dh="dev-p256dh-1", auth="dev-auth-1", topics=["orders", "session_plans"],
+                         user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+                         created_at=now - timedelta(days=20), last_sent_at=now - timedelta(days=2)),
+        PushSubscription(email="s.hughes@example.com", endpoint="https://push.example.invalid/laptop-1",
+                         p256dh="dev-p256dh-2", auth="dev-auth-2", topics=[], created_at=now - timedelta(days=3)),
+    ])
+    db.commit()
 
 
 def seed_oc_dashboard(client, headers: dict) -> None:
@@ -625,8 +653,9 @@ def seed_recruits(client, headers: dict, db) -> None:
 def seed_applications(client, headers: dict, db) -> None:
     """Applications through the real endpoints: the oldest cadet part-way
     through the staff cadet checklist (the rest 17½ and over stay on the
-    nearing-18 list), an SNCO applicant at the Wing board and an officer
-    applicant just starting, with a note on one."""
+    nearing-18 list), an SNCO applicant at the Wing board, an officer
+    applicant just starting, with a note on one, and an SNCO appointed before
+    SMS tracked it, marked complete straight away."""
     from database.models import Cadet
 
     def tick(app_id, *keys):
@@ -648,6 +677,12 @@ def seed_applications(client, headers: dict, db) -> None:
         res = client.post("/applications/uniformed", headers=headers, json={"name": name, "route": route})
         assert res.status_code == 201, f"/applications/uniformed: {res.status_code} {res.text}"
         tick(res.json()["id"], *done)
+
+    res = client.post("/applications/uniformed", headers=headers,
+                      json={"name": "Grace Mensah", "route": "snco", "complete": True})
+    assert res.status_code == 201, f"/applications/uniformed: {res.status_code} {res.text}"
+    client.patch(f"/applications/{res.json()['id']}", headers=headers,
+                 json={"notes": "Appointed in 2024, before applications were tracked here."})
 
 
 def schema_is_stale(engine, base) -> bool:
@@ -685,6 +720,12 @@ def main() -> None:
     os.environ.update(DEV_ENV)
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
     sys.path.insert(0, str(ROOT / "app"))
+    # Push on with a throwaway key pair, so the settings page shows its toggles.
+    # A new pair each run: a device signed up last time just turns it on again.
+    if not os.environ.get("VAPID_PRIVATE_KEY"):
+        from scripts.gen_vapid_keys import generate
+
+        os.environ["VAPID_PUBLIC_KEY"], os.environ["VAPID_PRIVATE_KEY"] = generate()
 
     import uvicorn
     from fastapi.testclient import TestClient
@@ -716,6 +757,8 @@ def main() -> None:
         seed_oc_dashboard(client, headers)  # the dev staff login is the OC too (DEV_ENV)
         with SessionLocal() as db:
             seed_audit(client, headers, db)
+        with SessionLocal() as db:
+            seed_push(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

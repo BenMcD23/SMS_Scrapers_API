@@ -159,6 +159,12 @@ There is no `.env` on any server.
 - **`DATABASE_URL`** is written by CloudNativePG (secret `sms-db-app`) and
   never set by hand.
 
+**Push notifications** need a VAPID key pair per environment:
+`python app/scripts/gen_vapid_keys.py` prints both. `VAPID_PUBLIC_KEY` can go
+in `config.env`; seal `VAPID_PRIVATE_KEY` as above. Without them push is off,
+and the site's settings page says so. A new pair signs every device out of
+notifications, so generate it once and keep it.
+
 `NEXT_PUBLIC_*` vars like `NEXT_PUBLIC_OC_EMAIL` live with the frontend host
 and are baked in at build time. Set them there and redeploy the UI.
 

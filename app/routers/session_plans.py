@@ -12,12 +12,13 @@ can read the plan and leave comments on it. Only staff can approve or send back.
 import io
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, object_session
 
+from core import push
 from core.config import SESSION_PLAN_ALERT_EMAIL
 from core.db import get_db, get_or_create_user
 from core.emailer import (
@@ -238,7 +239,7 @@ def _notify_staff_of_submission(plan: SessionPlan, resubmission: bool) -> None:
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("/session-plans")
-async def create_plan(
+def create_plan(
     body: SessionPlanBody,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -262,7 +263,7 @@ async def create_plan(
 
 
 @router.get("/session-plans")
-async def list_plans(
+def list_plans(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -279,7 +280,7 @@ async def list_plans(
 
 
 @router.get("/session-plans/{plan_id}")
-async def get_plan(
+def get_plan(
     plan_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -291,7 +292,7 @@ async def get_plan(
 
 
 @router.get("/session-plans/{plan_id}/pdf")
-async def export_plan_pdf(
+def export_plan_pdf(
     plan_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -328,7 +329,7 @@ async def export_plan_pdf(
 
 
 @router.put("/session-plans/{plan_id}")
-async def update_plan(
+def update_plan(
     plan_id: int,
     body: SessionPlanBody,
     db: Session = Depends(get_db),
@@ -352,8 +353,9 @@ async def update_plan(
 
 
 @router.post("/session-plans/{plan_id}/submit")
-async def submit_plan(
+def submit_plan(
     plan_id: int,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -395,13 +397,19 @@ async def submit_plan(
     db.refresh(plan)
 
     _notify_staff_of_submission(plan, resubmission)
+    background.add_task(
+        push.notify, "session_plans",
+        "Session plan resubmitted" if resubmission else "Session plan to review",
+        f"{plan.session_name} by {_user_name(plan.author)}", f"/session-plans/{plan.id}",
+    )
     return _detail(plan, user, is_staff)
 
 
 @router.post("/session-plans/{plan_id}/approve")
-async def approve_plan(
+def approve_plan(
     plan_id: int,
     body: ReviewBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -429,13 +437,16 @@ async def approve_plan(
                 _user_name(user), plan.amendment_note,
             ),
         )
+        background.add_task(push.notify, "my_session_plans", "Session plan approved",
+                            plan.session_name, f"/session-plans/{plan.id}", emails=[plan.author.email])
     return _detail(plan, user, is_staff=True)
 
 
 @router.post("/session-plans/{plan_id}/request-amendments")
-async def request_amendments(
+def request_amendments(
     plan_id: int,
     body: ReviewBody,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -474,11 +485,13 @@ async def request_amendments(
                 [(SECTION_LABELS[k], feedback[k]) for k in SESSION_PLAN_SECTIONS if k in feedback],
             ),
         )
+        background.add_task(push.notify, "my_session_plans", "Amendments needed",
+                            plan.session_name, f"/session-plans/{plan.id}", emails=[plan.author.email])
     return _detail(plan, user, is_staff=True)
 
 
 @router.delete("/session-plans/{plan_id}")
-async def delete_plan(
+def delete_plan(
     plan_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
@@ -498,7 +511,7 @@ async def delete_plan(
 # ── comments ─────────────────────────────────────────────────────────────────
 
 @router.post("/session-plans/{plan_id}/comments")
-async def add_comment(
+def add_comment(
     plan_id: int,
     body: CommentBody,
     db: Session = Depends(get_db),
@@ -520,7 +533,7 @@ async def add_comment(
 
 
 @router.delete("/session-plans/{plan_id}/comments/{comment_id}")
-async def delete_comment(
+def delete_comment(
     plan_id: int,
     comment_id: int,
     db: Session = Depends(get_db),
@@ -548,7 +561,7 @@ async def delete_comment(
 # ── attachments (the sheet's "Map (if applicable)" box) ──────────────────────
 
 @router.post("/session-plans/{plan_id}/attachments")
-async def upload_attachments(
+def upload_attachments(
     plan_id: int,
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
@@ -569,7 +582,7 @@ async def upload_attachments(
                 status_code=400,
                 detail=f"{f.filename}: only PNG, JPEG, WebP or PDF files are accepted",
             )
-        content = await f.read()
+        content = f.file.read()
         if len(content) > MAX_ATTACHMENT_BYTES:
             raise HTTPException(status_code=400, detail=f"{f.filename}: each file must be under 5 MB")
         db.add(SessionPlanAttachment(
@@ -583,7 +596,7 @@ async def upload_attachments(
 
 
 @router.get("/session-plans/{plan_id}/attachments/{attachment_id}")
-async def get_attachment(
+def get_attachment(
     plan_id: int,
     attachment_id: int,
     db: Session = Depends(get_db),
@@ -608,7 +621,7 @@ async def get_attachment(
 
 
 @router.delete("/session-plans/{plan_id}/attachments/{attachment_id}")
-async def delete_attachment(
+def delete_attachment(
     plan_id: int,
     attachment_id: int,
     db: Session = Depends(get_db),

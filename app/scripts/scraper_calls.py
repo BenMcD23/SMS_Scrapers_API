@@ -560,6 +560,8 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
             for c in all_cadets
         }
 
+        saved_pairs = set()  # (event, cadet): Bader can list one cadet twice
+
         def _save_cadet_events(event_db_id, attendees, matched_ref, unmatched_ref, cins):
             for row in attendees:
                 if not isinstance(row, list) or len(row) < 3:
@@ -574,7 +576,9 @@ def cadet_event_scraper(scraper_messages, scraper_lock, user_id, db_session, sto
                         None,
                     )
                 if cin:
-                    db_session.add(CadetEvent(event_id=event_db_id, cadet_id=cin))
+                    if (event_db_id, cin) not in saved_pairs:
+                        saved_pairs.add((event_db_id, cin))
+                        db_session.add(CadetEvent(event_id=event_db_id, cadet_id=cin))
                     cins.add(cin)
                     matched_ref[0] += 1
                 else:
@@ -1017,7 +1021,7 @@ def upload_qualifications_scraper(
                             os.remove(renamed)
 
             # ── Mark all sheets in this group as uploaded ─────────────────────
-            _uploaded_now = datetime.utcnow()
+            _uploaded_now = datetime.now()
             for s in group_sheets:
                 s.uploaded = True
                 s.uploaded_at = _uploaded_now

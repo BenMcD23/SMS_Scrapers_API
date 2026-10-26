@@ -37,11 +37,16 @@ def get_or_create_user(db: Session, idinfo: dict) -> User:
         db.commit()
         db.refresh(user)
     else:
+        changed = False
         if first_name is not None and user.first_name != first_name:
             user.first_name = first_name
+            changed = True
         if last_name is not None and user.last_name != last_name:
             user.last_name = last_name
-        db.commit()
+            changed = True
+        # Called on most requests: only pay for a commit when a name changed.
+        if changed:
+            db.commit()
     return user
 
 

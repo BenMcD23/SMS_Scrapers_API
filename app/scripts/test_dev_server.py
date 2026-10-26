@@ -35,6 +35,7 @@ from scripts.dev_server import (
     seed_audit,
     seed_inspections,
     seed_oc_dashboard,
+    seed_push,
     seed_recruits,
     seed_stores,
     seed_stores_history,
@@ -368,6 +369,7 @@ def _seed_everything(api, db):
     seed_applications(api, staff, db)
     seed_oc_dashboard(api, api.as_("oc"))
     seed_audit(api, staff, db, now=NOW)
+    seed_push(db, now=NOW)
 
 
 def test_the_applications_show_one_of_each_state(api, db):
@@ -379,6 +381,8 @@ def test_the_applications_show_one_of_each_state(api, db):
     assert cadets["applications"][0]["notes"]
     adults = api.get("/applications/uniformed", headers=staff).json()["applications"]
     assert {a["route"] for a in adults} == {"snco", "cfc"}
+    # One on the Complete tab by hand, with nothing ticked.
+    assert [(a["name"], a["done"]) for a in adults if a["complete"]] == [("Grace Mensah", 0)]
 
 
 def test_the_audit_trail_has_a_read_through_the_api_and_a_send(api, db):
@@ -436,3 +440,14 @@ def test_listens_on_loopback_unless_told_otherwise():
     assert parse_args([]).host == "127.0.0.1"
     # The cluster's preview stacks run it in a pod, behind the tailnet.
     assert parse_args(["--host", "0.0.0.0", "--db", "/data/dev.db"]).host == "0.0.0.0"
+
+
+def test_the_seeded_push_devices_never_reach_a_real_push_service(db):
+    # A preview send goes to whatever endpoint is stored; .invalid never resolves.
+    from database.models import PushSubscription
+
+    seed_push(db, now=NOW)
+    subs = db.query(PushSubscription).all()
+    assert len(subs) == 2
+    assert all(".invalid/" in s.endpoint for s in subs)
+    assert {bool(s.last_sent_at) for s in subs} == {True, False}

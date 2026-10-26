@@ -119,7 +119,7 @@ def _get_or_404(db: Session, request_id: int) -> CommitteeRequest:
 # ── endpoints ──────────────────────────────────────────────────────────────
 
 @router.post("/committee-requests")
-async def create_request(
+def create_request(
     data: CommitteeRequestCreate,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -184,7 +184,7 @@ async def create_request(
 
 
 @router.get("/committee-requests")
-async def list_requests(
+def list_requests(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
@@ -200,7 +200,7 @@ async def list_requests(
 
 
 @router.get("/committee-requests/{request_id}")
-async def get_request(
+def get_request(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -211,7 +211,7 @@ async def get_request(
 
 
 @router.get("/committee-requests/{request_id}/pdf")
-async def download_request_pdf(
+def download_request_pdf(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -227,7 +227,7 @@ async def download_request_pdf(
 
 
 @router.post("/committee-requests/{request_id}/send-to-committee")
-async def send_to_committee(
+def send_to_committee(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),
@@ -254,7 +254,7 @@ async def send_to_committee(
 
 
 @router.post("/committee-requests/{request_id}/approve")
-async def approve_request(
+def approve_request(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),
@@ -279,7 +279,7 @@ async def approve_request(
 
 
 @router.post("/committee-requests/{request_id}/reject")
-async def reject_request(
+def reject_request(
     request_id: int,
     body: RejectBody,
     db: Session = Depends(get_db),
@@ -309,7 +309,7 @@ async def reject_request(
 
 
 @router.post("/committee-requests/{request_id}/receipts")
-async def upload_receipts(
+def upload_receipts(
     request_id: int,
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
@@ -326,7 +326,7 @@ async def upload_receipts(
     for f in files:
         if f.content_type not in RECEIPT_TYPES:
             raise HTTPException(status_code=400, detail=f"{f.filename}: only PNG, JPEG or PDF receipts are accepted")
-        content = await f.read()
+        content = f.file.read()
         if len(content) > MAX_RECEIPT_BYTES:
             raise HTTPException(status_code=400, detail=f"{f.filename}: each receipt must be under 5 MB")
         db.add(CommitteeRequestReceipt(
@@ -340,7 +340,7 @@ async def upload_receipts(
 
 
 @router.get("/committee-requests/{request_id}/receipts/{receipt_id}")
-async def get_receipt(
+def get_receipt(
     request_id: int,
     receipt_id: int,
     db: Session = Depends(get_db),
@@ -371,7 +371,7 @@ async def get_receipt(
 
 
 @router.delete("/committee-requests/{request_id}/receipts/{receipt_id}")
-async def delete_receipt(
+def delete_receipt(
     request_id: int,
     receipt_id: int,
     db: Session = Depends(get_db),
@@ -398,7 +398,7 @@ async def delete_receipt(
 
 
 @router.post("/committee-requests/{request_id}/send-for-payment")
-async def send_for_payment(
+def send_for_payment(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
@@ -441,7 +441,7 @@ async def send_for_payment(
 
 
 @router.post("/committee-requests/{request_id}/mark-paid")
-async def mark_paid(
+def mark_paid(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_oc),
@@ -458,7 +458,7 @@ async def mark_paid(
 
 
 @router.post("/committee-requests/{request_id}/withdraw")
-async def withdraw_request(
+def withdraw_request(
     request_id: int,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),

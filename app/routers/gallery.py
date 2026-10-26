@@ -13,6 +13,7 @@ import unicodedata
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.config import GITHUB_BRANCH, GITHUB_REPO
@@ -93,7 +94,8 @@ async def add_photos(
         raise HTTPException(status_code=400, detail="Every photo needs a description (it's read out to blind visitors).")
 
     # Convert everything before touching GitHub, so one bad file adds nothing.
-    converted = [to_webp(await f.read()) for f in files]
+    # Pillow is CPU-bound: off the event loop, or every other request waits.
+    converted = [await run_in_threadpool(to_webp, await f.read()) for f in files]
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         photos = await fetch_gallery(client)

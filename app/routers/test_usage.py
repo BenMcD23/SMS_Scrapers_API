@@ -12,6 +12,7 @@ OWNER_H = {"Authorization": "Bearer owner"}
 
 
 def counters(db):
+    usage.flush()
     db.expire_all()
     return {(r.method, r.route, r.email): r.calls for r in db.query(UsageDaily).all()}
 
@@ -70,43 +71,54 @@ def test_probes_health_and_the_usage_page_itself_are_not_counted(api, db):
     assert counters(db) == {}
 
 
-def test_a_broken_counter_never_fails_the_request(api, db, monkeypatch):
+def test_a_request_adds_no_database_write_until_the_flush(api, db):
+    # Counting is in memory: the request itself never waits on a usage write.
+    assert api.get("/reference", headers=api.as_("staff")).status_code == 200
+    assert db.query(UsageDaily).count() == 0
+    assert usage.flush() == 1
+    assert db.query(UsageDaily).count() == 1
+
+
+def test_a_broken_database_never_fails_the_request_and_keeps_the_count(api, db, monkeypatch):
     def down():
         raise OperationalError("SELECT 1", {}, Exception("database is gone"))
 
+    test_db = usage.SessionLocal
     monkeypatch.setattr(usage, "SessionLocal", down)
     assert api.get("/reference", headers=api.as_("staff")).status_code == 200
+    assert usage.flush() == 0
+    # Back up again: the count from the outage is written, not lost.
+    monkeypatch.setattr(usage, "SessionLocal", test_db)
+    assert counters(db) == {("GET", "/reference", PERSONAS["staff"]["email"]): 1}
 
 
-def test_a_racing_insert_increments_the_existing_row(db, session_factory, monkeypatch):
-    now = datetime(2026, 10, 6, 12)
-    usage.record("GET", "/reference", "a@x", now=now)
+def test_flushes_add_to_the_existing_row(db):
+    # Two processes (or two flushes) writing the same key must add up, not
+    # overwrite each other: the upsert increments in the database.
+    early, late = datetime(2026, 10, 6, 9), datetime(2026, 10, 6, 12)
+    usage.record("GET", "/reference", "a@x", now=late)
+    usage.flush()
+    usage.record("GET", "/reference", "a@x", now=early)
+    usage.record("GET", "/reference", "a@x", now=early)
+    usage.flush()
+    row = db.query(UsageDaily).one()
+    assert (row.calls, row.last_at) == (3, late)  # last_at never goes backwards
 
-    # The first session misses the row (as if another request inserted it
-    # after our read), so its insert hits the unique constraint; the retry
-    # must find the row and increment it rather than dropping the count.
-    sessions = []
 
-    def factory():
-        s = session_factory()
-        if not sessions:
-            real_query = s.query
+def test_a_new_day_is_its_own_row(db):
+    usage.record("GET", "/reference", "a@x", now=datetime(2026, 10, 6, 23, 59))
+    usage.record("GET", "/reference", "a@x", now=datetime(2026, 10, 7, 0, 1))
+    usage.flush()
+    assert sorted((r.day.isoformat(), r.calls) for r in db.query(UsageDaily)) == [
+        ("2026-10-06", 1), ("2026-10-07", 1),
+    ]
 
-            class Miss:
-                def filter_by(self, **kw):
-                    return self
 
-                def first(self):
-                    return None
-
-            s.query = lambda *a, **kw: Miss() if a == (UsageDaily,) else real_query(*a, **kw)
-        sessions.append(s)
-        return s
-
-    monkeypatch.setattr(usage, "SessionLocal", factory)
-    usage.record("GET", "/reference", "a@x", now=now)
-    assert len(sessions) == 2
-    assert counters(db) == {("GET", "/reference", "a@x"): 2}
+def test_stopping_writes_what_is_left(db):
+    usage.start_flusher()
+    usage.record("GET", "/reference", "a@x")
+    usage.stop_flusher()
+    assert db.query(UsageDaily).one().calls == 1
 
 
 def test_emails_are_lowercased_so_one_person_is_one_user():

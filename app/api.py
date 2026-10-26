@@ -10,7 +10,6 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request, Response
-from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -51,6 +50,7 @@ from routers import (
     oc,
     portal,
     programme,
+    push,
     recruits,
     reference,
     scrapers,
@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Schema is managed exclusively by Alembic migrations, run before the app
     # starts (deploy job / compose step), never by create_all here.
+    usage.start_flusher()
     if SCHEDULER_ENABLED:
         register_jobs(scheduler)
         # Jobs run only in the process holding the leader lock, so a rolling
@@ -81,6 +82,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("background scheduler disabled on this replica")
     yield
+    usage.stop_flusher()
     leader.stop()
     if scheduler.running:
         scheduler.shutdown()
@@ -127,7 +129,8 @@ async def count_usage(request: Request, call_next):
     route = getattr(request.scope.get("route"), "path", None)
     # Unmatched paths (scanners, typos) and failed calls aren't feature use.
     if route and route not in usage.SKIP_ROUTES and request.method != "OPTIONS" and response.status_code < 400:
-        await run_in_threadpool(usage.record, request.method, route, caller.get("email", ""))
+        # In memory only; usage.flush() writes the counts in the background.
+        usage.record(request.method, route, caller.get("email", ""))
     return response
 
 
@@ -230,3 +233,4 @@ app.include_router(recruits.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
 app.include_router(usage_router.router)
+app.include_router(push.router)

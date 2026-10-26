@@ -441,6 +441,20 @@ def test_events_and_sub_apps_are_rebuilt_with_matched_cadets(db, bader, monkeypa
     assert run.parsed()[-1] == {"type": "status", "value": "done"}
 
 
+def test_a_cadet_listed_twice_on_an_event_is_saved_once(db, bader, monkeypatch):
+    # Bader can list the same cadet twice (or "A Able" and "Amy Able" both
+    # match). One place per cadet per event is a database rule now, so a
+    # second insert would fail the whole events scrape.
+    db.add(Cadet(cin=1, first_name="Amy", last_name="Able"))
+    db.commit()
+    _events(monkeypatch, [{"event_name": "Camp", "attendees": [["x", "Amy", "Able"], ["x", "A", "Able"]],
+                           "sub_apps": []}])
+    run = Run()
+    calls.cadet_event_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert run.parsed()[-1] == {"type": "status", "value": "done"}
+    assert [(ce.event.title, ce.cadet_id) for ce in db.query(CadetEvent).all()] == [("Camp", 1)]
+
+
 def test_a_failed_event_save_keeps_the_previous_events(db, bader, monkeypatch):
     db.add(Cadet(cin=1, first_name="Amy", last_name="Able"))
     db.add(AllEvent(id=1, title="Existing"))

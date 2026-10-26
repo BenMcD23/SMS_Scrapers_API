@@ -7,6 +7,7 @@ from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pdf2image import convert_from_bytes
 
 from core.config import GITHUB_BRANCH, GITHUB_REPO, PROGRAMME_APPS_SCRIPT_URL
@@ -63,7 +64,9 @@ async def update_programme(
 
     # Convert PDF pages to webp
     try:
-        pages = convert_from_bytes(pdf_bytes, dpi=200, fmt="webp")
+        # Rendering at 200 dpi takes seconds: off the event loop so the rest of
+        # the API keeps answering meanwhile.
+        pages = await run_in_threadpool(convert_from_bytes, pdf_bytes, dpi=200, fmt="webp")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF conversion failed: {str(e)}")
 
