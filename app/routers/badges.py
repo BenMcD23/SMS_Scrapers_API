@@ -517,7 +517,7 @@ def badge_orders_mark_item_ready(
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    item.ready_to_collect = datetime.utcnow()
+    item.ready_to_collect = datetime.now()
     db.commit()
 
     if order.cadet and order.cadet.email:
@@ -748,7 +748,7 @@ def badge_orders_mark_item_given(
     if item.given_at:
         raise HTTPException(status_code=409, detail="This badge has already been marked as given")
     by = (body or {}).get("by") or idinfo.get("email")
-    now = datetime.utcnow()
+    now = datetime.now()
     item.given_at = now
     item.given_by = by
     events = given_events.events_list(item.given_events)

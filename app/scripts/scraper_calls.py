@@ -1021,7 +1021,7 @@ def upload_qualifications_scraper(
                             os.remove(renamed)
 
             # ── Mark all sheets in this group as uploaded ─────────────────────
-            _uploaded_now = datetime.utcnow()
+            _uploaded_now = datetime.now()
             for s in group_sheets:
                 s.uploaded = True
                 s.uploaded_at = _uploaded_now

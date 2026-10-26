@@ -88,7 +88,7 @@ def _save_sheet_and_notify(
         pdf_data=pdf_bytes,
         uploaded=False,
         pdf_mime_type="application/pdf",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(),
         cadet_id=cadet.cin,
         assessor_id=user.id,
         lesson_plan_pdf=lesson_plan_pdf,
@@ -539,7 +539,7 @@ def mark_assessment_complete(
     if not sheets:
         raise HTTPException(status_code=404, detail=f"No {assessment_type} assessments found for cadet {cin}.")
 
-    now = datetime.utcnow()
+    now = datetime.now()
     for sheet in sheets:
         sheet.uploaded = body.completed
         sheet.uploaded_at = now if body.completed else None

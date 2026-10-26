@@ -5,12 +5,16 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
+    # Timestamps are stored without a zone and the sites read them as UK time,
+    # so datetime.now() must be UK time too (UTC would show an hour early all
+    # summer and give yesterday's date just after midnight).
+    TZ=Europe/London \
     # Browsers install to a shared path so the non-root runtime user can use them.
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
-# Chromium's runtime libraries for the Bader scrapers, poppler for PDF
+# Chromium's runtime libraries for the Bader scrapers, tzdata for TZ, poppler for PDF
 # rendering, and the PostgreSQL 16 client (pg_dump/psql) for backups. The slim
 # base ships an older client that can't dump a v16 server, so pull the matching
 # one from PGDG; the codename is read from the base image so it tracks
@@ -21,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxtst6 \
       libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libpango-1.0-0 libpangocairo-1.0-0 \
       libxrandr2 libxkbcommon0 \
-      poppler-utils \
+      poppler-utils tzdata \
     && install -d /usr/share/postgresql-common/pgdg \
     && wget -qO /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
          https://www.postgresql.org/media/keys/ACCC4CF8.asc \

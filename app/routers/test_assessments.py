@@ -341,7 +341,7 @@ def test_legacy_types_cannot_be_edited(api, db, cadet):
     api.get("/assessments/overview", headers=NCO)
     user = db.query(User).filter(User.email == "nco@317atc.co.uk").one()
     db.add(AssessmentSheet(id=50, assessment_type="First Aid", fields={}, cadet_id=1, assessor_id=user.id,
-                           created_at=a.datetime.utcnow()))
+                           created_at=a.datetime.now()))
     db.commit()
     assert api.put("/assessments/50", json={}, headers=NCO).status_code == 400
 

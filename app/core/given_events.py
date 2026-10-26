@@ -29,5 +29,5 @@ def new_event(action: str, by: str | None, **extra) -> dict:
     """A log entry stamped on the same clock as `given_at` (naive UTC), not the
     server's local time, so the history line and the "Given …" stamp it
     explains always agree. Pass `timestamp=` to use an exact instant."""
-    extra.setdefault("timestamp", datetime.utcnow().isoformat())
+    extra.setdefault("timestamp", datetime.now().isoformat())
     return stock_events.new_event(action, by, **extra)

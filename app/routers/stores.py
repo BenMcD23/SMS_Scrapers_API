@@ -809,7 +809,7 @@ def stores_mark_item_ready(
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    item.ready_to_collect = datetime.utcnow()
+    item.ready_to_collect = datetime.now()
     db.commit()
     logger.info("order %s item %s (%s) marked ready by %s",
                 order_id, item_id, item.item_type, idinfo.get("email"))
@@ -987,9 +987,9 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
         size = item.get("sizeGiven") or item.get("size") or None
         raw_date = item.get("lastGiven")
         try:
-            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.utcnow()
+            given_at = datetime.fromisoformat(raw_date) if raw_date else datetime.now()
         except (ValueError, TypeError):
-            given_at = datetime.utcnow()
+            given_at = datetime.now()
 
         query = db.query(StoresItemIssuance).filter(StoresItemIssuance.item_category == category)
         if cadet_cin is not None:
