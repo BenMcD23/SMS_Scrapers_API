@@ -566,6 +566,11 @@ def seed_audit(client, headers: dict, db, now: datetime | None = None) -> None:
                       actor_role="staff", action="send", resource="parade_message", resource_id="1",
                       detail={"sent": 41, "failed": 2}))
     db.commit()
+    # Every seeding call so far was counted in memory; write the counts now so
+    # the usage page has rows before the background flush first runs.
+    from core import usage
+
+    usage.flush()
 
 
 def seed_push(db, now: datetime | None = None) -> None:
