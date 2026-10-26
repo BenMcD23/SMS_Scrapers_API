@@ -114,7 +114,7 @@ class CadetQualification(Base):
     __tablename__ = "Cadet_Qualifications"
 
     id      = Column(Integer, primary_key=True, autoincrement=True)
-    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
     qual_type = Column(Text, nullable=False)  # one of QUALIFICATION_TYPES
     status   = Column(Text, nullable=False)   # "blue" | "bronze..." | "false, basic, intermediate... - for swimming" | "true/false"
     date_achieved = Column(DateTime, nullable=True)
@@ -127,6 +127,10 @@ class CadetQualification(Base):
     expiry_alert_sent_at = Column(DateTime, nullable=True)
 
     cadet = relationship("Cadet", back_populates="qualifications")
+
+    # One row per qualification: the scraper updates it in place. The unique
+    # index also serves every "this cadet's qualifications" lookup.
+    __table_args__ = (UniqueConstraint("cadet_id", "qual_type", name="uq_cadet_qualification"),)
 
 
 class AttachmentCheckQual(Base):
@@ -142,7 +146,7 @@ class CadetMedical(Base):
     __tablename__ = "Cadet_Medical"
 
     id            = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
     allergy_name  = Column(Text,       nullable=False)
     auto_injector = Column(Text,       nullable=False, default="No", server_default="No")
     severity      = Column(Text,       nullable=True)
@@ -155,7 +159,7 @@ class CadetDietary(Base):
     __tablename__ = "Cadet_Dietary"
 
     id       = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
     name     = Column(Text,       nullable=False)
     details  = Column(Text,       nullable=True)
 
@@ -219,7 +223,7 @@ class CadetAbsence(Base):
     __tablename__ = "Cadet_Absences"
 
     id         = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
     date_from  = Column(DateTime,   nullable=False)
     date_to    = Column(DateTime,   nullable=False)
     reason     = Column(Text,       nullable=True)
@@ -374,7 +378,7 @@ class Event317(Base):
     contact_number = Column(BigInteger, nullable=False)
     date_from      = Column(DateTime, nullable=False)
     date_to        = Column(DateTime, nullable=False)
-    location_id    = Column(Integer, ForeignKey("Location.id"), nullable=False)
+    location_id    = Column(Integer, ForeignKey("Location.id"), nullable=False, index=True)
     cost           = Column(Float, nullable=False)
     dress          = Column(Text, nullable=False)
     description    = Column(Text, nullable=False)
@@ -398,7 +402,7 @@ class AllEvent(Base):
 
     id        = Column(Integer, primary_key=True, autoincrement=True)
     title     = Column(Text, nullable=False)
-    parent_id = Column(Integer, ForeignKey("All_Events.id", ondelete="CASCADE"), nullable=True)
+    parent_id = Column(Integer, ForeignKey("All_Events.id", ondelete="CASCADE"), nullable=True, index=True)
     # Off the event's detail page, so only set on parent events; None when the
     # page couldn't be read this run.
     bader_event_id = Column(Text, nullable=True)
@@ -416,11 +420,13 @@ class CadetEvent(Base):
     __tablename__ = "Cadet_Events"
 
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    event_id  = Column(Integer, ForeignKey("All_Events.id"), nullable=False)
-    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    event_id  = Column(Integer, ForeignKey("All_Events.id", ondelete="CASCADE"), nullable=False, index=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
 
     cadet = relationship("Cadet", back_populates="cadet_events")
     event = relationship("AllEvent", back_populates="cadet_events")
+
+    __table_args__ = (UniqueConstraint("cadet_id", "event_id", name="uq_cadet_event"),)
 
 
 class FlyingEvent(Base):
@@ -450,7 +456,7 @@ class FlyingPaperwork(Base):
 
     id              = Column(Integer,    primary_key=True, autoincrement=True)
     flying_event_id = Column(Integer,    ForeignKey("Flying_Events.id", ondelete="CASCADE"), nullable=False, index=True)
-    cadet_id        = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False)
+    cadet_id        = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
     on_event        = Column(Boolean,    nullable=False, default=True)  # False once Bader drops them from it
     tg21            = Column(Boolean,    nullable=False, default=False)
     tg23            = Column(Boolean,    nullable=False, default=False)
@@ -512,8 +518,8 @@ class AssessmentSheet(Base):
     lesson_plan_pdf      = Column(LargeBinary, nullable=True)
     lesson_plan_filename = Column(Text, nullable=True)
 
-    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
-    assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False)  # the user who did it
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    assessor_id = Column(Integer, ForeignKey("Users.id"), nullable=False, index=True)  # the user who did it
 
     cadet    = relationship("Cadet", back_populates="assessment_sheets")
     assessor = relationship("User",  back_populates="assessment_sheets")
@@ -655,7 +661,7 @@ class CommitteeRequest(Base):
     # Generated once at submission and reused for every email + download.
     pdf_data      = Column(LargeBinary, nullable=True)
 
-    requester_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    requester_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Audit trail — who did what, when (emails, since the actor may not be a User row).
     created_at           = Column(DateTime, nullable=False)
@@ -685,7 +691,7 @@ class CommitteeRequestReceipt(Base):
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     request_id  = Column(Integer, ForeignKey("Committee_Requests.id", ondelete="CASCADE"),
-                         nullable=False)
+                         nullable=False, index=True)
     filename    = Column(Text, nullable=False)
     mime_type   = Column(Text, nullable=False)
     data        = Column(LargeBinary, nullable=False)
@@ -748,7 +754,7 @@ class SessionPlan(Base):
     feedback       = Column(JSON, nullable=False, default=dict)
     amendment_note = Column(Text, nullable=True)
 
-    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     created_at   = Column(DateTime, nullable=False)
     updated_at   = Column(DateTime, nullable=False)
@@ -773,7 +779,7 @@ class SessionPlanAttachment(Base):
     __tablename__ = "Session_Plan_Attachments"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
-    plan_id     = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False)
+    plan_id     = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False, index=True)
     filename    = Column(Text,       nullable=False)
     mime_type   = Column(Text,       nullable=False)
     data        = Column(LargeBinary, nullable=False)
@@ -795,7 +801,7 @@ class NcoHoliday(Base):
     __tablename__ = "NCO_Holidays"
 
     id      = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Inclusive whole-day range — a one-day holiday has date_from == date_to.
     date_from = Column(DateTime, nullable=False)
@@ -825,8 +831,8 @@ class SessionPlanComment(Base):
     __tablename__ = "Session_Plan_Comments"
 
     id         = Column(Integer, primary_key=True, autoincrement=True)
-    plan_id    = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False)
-    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    plan_id    = Column(Integer, ForeignKey("Session_Plans.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
     body       = Column(Text,     nullable=False)
     created_at = Column(DateTime, nullable=False)
 
@@ -866,7 +872,7 @@ class NcoAppraisal(Base):
                        nullable=False, index=True)
     # Nulled rather than cascaded if the staff account goes — the appraisal
     # itself outlives whoever typed it.
-    author_id = Column(Integer,    ForeignKey("Users.id", ondelete="SET NULL"), nullable=True)
+    author_id = Column(Integer,    ForeignKey("Users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     appraisal_date = Column(DateTime, nullable=False)
 
@@ -945,14 +951,14 @@ class NcoComment(Base):
     __tablename__ = "NCO_Comments"
 
     id        = Column(Integer, primary_key=True, autoincrement=True)
-    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    author_id = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
 
     subject      = Column(Text,     nullable=False)
     body         = Column(Text,     nullable=False)
     comment_date = Column(DateTime, nullable=False)  # the day it's about, prefilled with today
 
     # Null on a general comment — that's what makes it general.
-    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="SET NULL"), nullable=True)
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="SET NULL"), nullable=True, index=True)
     cadet_name = Column(Text, nullable=False, default="", server_default="")
 
     created_at = Column(DateTime, nullable=False)
@@ -970,8 +976,8 @@ class NcoCommentReply(Base):
     __tablename__ = "NCO_Comment_Replies"
 
     id         = Column(Integer, primary_key=True, autoincrement=True)
-    comment_id = Column(Integer, ForeignKey("NCO_Comments.id", ondelete="CASCADE"), nullable=False)
-    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False)
+    comment_id = Column(Integer, ForeignKey("NCO_Comments.id", ondelete="CASCADE"), nullable=False, index=True)
+    author_id  = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
     body       = Column(Text,     nullable=False)
     created_at = Column(DateTime, nullable=False)
 
@@ -1007,7 +1013,7 @@ class ScraperSchedule(Base):
     days_of_week = Column(Text, nullable=False, default="", server_default="")  # csv: "mon,wed,fri"
     hour         = Column(Integer, nullable=False, default=22, server_default="22")
     minute       = Column(Integer, nullable=False, default=0, server_default="0")
-    user_id      = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True)
+    user_id      = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True, index=True)
     updated_by   = Column(Text, nullable=True)
     updated_at   = Column(DateTime, nullable=True)
 
@@ -1103,7 +1109,7 @@ class StoresSection(Base):
     __tablename__ = "Stores_Sections"
 
     id       = Column(Integer, primary_key=True, autoincrement=True)
-    box_id   = Column(Integer, ForeignKey("Stores_Boxes.id", ondelete="CASCADE"), nullable=False)
+    box_id   = Column(Integer, ForeignKey("Stores_Boxes.id", ondelete="CASCADE"), nullable=False, index=True)
     label         = Column(Text,    nullable=False)
     position      = Column(Integer, nullable=True, default=0,   server_default='0')
     section_row   = Column(Integer, nullable=True, default=0,   server_default='0')
@@ -1121,8 +1127,8 @@ class StoresItem(Base):
     size       = Column(Text,    nullable=False)
     quantity   = Column(Integer, nullable=False, default=0)
     gender     = Column(Text,    nullable=False)  # "male" | "female" | "unisex"
-    box_id     = Column(Integer, ForeignKey("Stores_Boxes.id",    ondelete="CASCADE"), nullable=False)
-    section_id = Column(Integer, ForeignKey("Stores_Sections.id", ondelete="CASCADE"), nullable=False)
+    box_id     = Column(Integer, ForeignKey("Stores_Boxes.id",    ondelete="CASCADE"), nullable=False, index=True)
+    section_id = Column(Integer, ForeignKey("Stores_Sections.id", ondelete="CASCADE"), nullable=False, index=True)
 
     box     = relationship("StoresBox",    back_populates="items")
     section = relationship("StoresSection", back_populates="items")
@@ -1132,8 +1138,8 @@ class StoresOrder(Base):
     __tablename__ = "Stores_Orders"
 
     id         = Column(Integer,  primary_key=True, autoincrement=True)
-    cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin"), nullable=True)
-    user_id    = Column(Integer,  ForeignKey("Users.id"),     nullable=True)
+    cadet_id   = Column(BigInteger,  ForeignKey("Cadets.cin", ondelete="SET NULL"), nullable=True, index=True)
+    user_id    = Column(Integer,  ForeignKey("Users.id"),     nullable=True, index=True)
     created_at = Column(DateTime, nullable=False)
     completed  = Column(Boolean,  nullable=False, default=False, server_default="0")
     kitting    = Column(Boolean,  nullable=False, default=False, server_default="0")
@@ -1147,7 +1153,7 @@ class StoresOrderItem(Base):
     __tablename__ = "Stores_Order_Items"
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
-    order_id        = Column(Integer, ForeignKey("Stores_Orders.id", ondelete="CASCADE"), nullable=False)
+    order_id        = Column(Integer, ForeignKey("Stores_Orders.id", ondelete="CASCADE"), nullable=False, index=True)
     item_type       = Column(Text,    nullable=False)
     size            = Column(Text,    nullable=False, default="")
     need_sizing     = Column(Boolean, nullable=False, default=False)
@@ -1197,8 +1203,8 @@ class StoresItemIssuance(Base):
     __tablename__ = "Stores_Item_Issuances"
 
     id            = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=True)
-    user_id       = Column(Integer,    ForeignKey("Users.id",   ondelete="CASCADE"), nullable=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=True, index=True)
+    user_id       = Column(Integer,    ForeignKey("Users.id",   ondelete="CASCADE"), nullable=True, index=True)
     item_category = Column(Text,       nullable=False)
     last_given    = Column(DateTime,   nullable=False)
     size_given    = Column(Text,       nullable=True)
@@ -1213,7 +1219,7 @@ class BadgeOrder(Base):
     __tablename__ = "Badge_Orders"
 
     id         = Column(Integer,    primary_key=True, autoincrement=True)
-    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin"), nullable=False)
+    cadet_id   = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime,   nullable=False)
     completed  = Column(Boolean,    nullable=False, default=False, server_default="0")
 
@@ -1225,7 +1231,7 @@ class BadgeOrderItem(Base):
     __tablename__ = "Badge_Order_Items"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
-    order_id    = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False)
+    order_id    = Column(Integer, ForeignKey("Badge_Orders.id", ondelete="CASCADE"), nullable=False, index=True)
     badge_name  = Column(Text,    nullable=False)
     replacement = Column(Boolean, nullable=False, default=False, server_default="0")  # replacements carry a £2 fee
     qm_notes    = Column(Text,    nullable=False, default="[]")  # JSON [{id, content, timestamp, addedBy}]
@@ -1263,7 +1269,7 @@ class LogsFormEntry(Base):
     __tablename__ = "Logs_Form_Entries"
 
     id            = Column(Integer,    primary_key=True, autoincrement=True)
-    form_id       = Column(Integer,    ForeignKey("Logs_Forms.id", ondelete="CASCADE"), nullable=False)
+    form_id       = Column(Integer,    ForeignKey("Logs_Forms.id", ondelete="CASCADE"), nullable=False, index=True)
     order_item_id = Column(Integer,    ForeignKey("Stores_Order_Items.id", ondelete="SET NULL"), nullable=True, unique=True)
     item_type     = Column(Text,       nullable=False)
     size          = Column(Text,       nullable=False, default="")  # Tie: "Short"/"Standard"
@@ -1374,7 +1380,7 @@ class BadgeItem(Base):
     __tablename__ = "Badge_Items"
 
     id       = Column(Integer, primary_key=True, autoincrement=True)
-    cell_id  = Column(Integer, ForeignKey("Badge_Grid_Cells.id", ondelete="CASCADE"), nullable=False)
+    cell_id  = Column(Integer, ForeignKey("Badge_Grid_Cells.id", ondelete="CASCADE"), nullable=False, index=True)
     name     = Column(Text, nullable=False)
     quantity = Column(Integer, nullable=False, default=1, server_default="1")
 

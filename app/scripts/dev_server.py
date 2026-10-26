@@ -316,9 +316,11 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
         if not reached:
             continue
 
-        # Blue aviation comes with First Class training.
-        db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
-                                  date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
+        # Blue aviation comes with First Class training (unless the main seed
+        # already gave it them: one row per qualification).
+        if not db.query(CadetQualification.id).filter_by(cadet_id=c.cin, qual_type="Blue ATP Ground School").first():
+            db.add(CadetQualification(cadet_id=c.cin, qual_type="Blue ATP Ground School", status="true",
+                                      date_achieved=datetime.fromisoformat(dates["First Class Cadet"])))
         mix = rng.choice(FLYING_MIX)
         if mix in ("ptt", "both"):
             db.add(CadetFlight(cadet_id=c.cin, date=today - timedelta(days=rng.randint(30, 600)),
