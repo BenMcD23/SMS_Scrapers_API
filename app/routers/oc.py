@@ -17,7 +17,7 @@ from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.db import get_db, get_or_create_user
 from core.leaving import parse_emails
 from core.qualifications import quali_expiry_cutoff
-from core.security import require_oc
+from core.security import is_oc, require_oc, require_user
 from database.models import (
     Cadet,
     CadetAttendance,
@@ -123,6 +123,13 @@ def _qual_summary(db: Session, today: datetime, exclude_juniors: bool) -> dict:
     )
     total = _quals_query(db, exclude_juniors).count()
     return {"total": total, "expired": expired, "expiring_30": in_30, "expiring_90": in_90}
+
+
+@router.get("/oc/me")
+def oc_me(idinfo: dict = Depends(require_user)):
+    """Whether the caller is an OC, so the site can show its OC pages without
+    keeping its own copy of OC_EMAIL. Any signed-in user may ask."""
+    return {"is_oc": is_oc(idinfo.get("email", ""))}
 
 
 @router.get("/oc/dashboard")
