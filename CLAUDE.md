@@ -107,4 +107,11 @@ validation.
 - Never branch off `development`. It carries the dev overlay's image tag, so a
   pull request from it points prod at a dev image.
 - Fill in the pull request template: what changed, why, and how you checked it.
+- After opening a pull request, ask whether to deploy a preview of it. Only on
+  a yes, `gh pr edit <number> --add-label preview`: that builds the branch's
+  image, and the cluster then runs it with the other two apps on seeded data,
+  on the tailnet, within a few minutes (k3s-homelab ADR 0010). A change across
+  repos needs the label on each repo's pull request, or those run main.
+  Removing the label, merging or closing tears it down. Never add the label
+  unasked: at most three stacks run at once.
 - Before pushing: `ruff check app && pytest`.

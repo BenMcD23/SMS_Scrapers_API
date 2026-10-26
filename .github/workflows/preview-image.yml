@@ -1,0 +1,79 @@
+name: Preview image
+
+# Builds ghcr.io/benmcd23/sms_scrapers_api:preview-<branch> for the cluster's
+# preview stacks (k3s-homelab, ADR 0010): the seeded dev server
+# (app/scripts/dev_server.py), never a real database. Only pull requests
+# labelled `preview` are built, on the label and on each push after it, so an
+# unlabelled branch costs nothing. main becomes preview-main, the fallback for
+# a stack whose branch has no image here. The tag moves with the branch; the
+# stack pins the digest it resolved, so a new push rolls the preview.
+#
+# Nothing here talks to the cluster: the label is what the cluster looks for.
+# A change spanning repos needs the label on each repo's pull request, or the
+# repos without it run main (the SMS site and the portal).
+
+on:
+  # main becomes preview-main, the fallback for every stack.
+  push:
+    branches: [main]
+  # A pull request is built when it gets the label and on each push after.
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+
+# Only the newest push of a branch is worth finishing.
+concurrency:
+  group: preview-image-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Labelled pull requests from this repo only (a fork's token can't push
+    # packages, and the cluster ignores forks). On `labeled`, only the preview
+    # label itself counts, so tagging a PR with something else doesn't rebuild.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       (github.event.action == 'labeled' && github.event.label.name == 'preview' ||
+        github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'preview')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The branch itself, not the merge commit GitHub makes for a PR.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Must match slug() in k3s-homelab's previews/system/resolver.py, which
+      # looks the tag up by branch name.
+      - name: Tag
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          slug=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40 | sed -E 's/-+$//')
+          echo "TAG=preview-$slug" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # amd64 only: previews run on home. Reads deploy.yml's layer cache but
+      # writes its own scope, so branch builds don't evict prod's.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/benmcd23/sms_scrapers_api:${{ env.TAG }}
+          labels: org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+          cache-from: |
+            type=gha
+            type=gha,scope=preview
+          cache-to: type=gha,mode=max,scope=preview

@@ -28,6 +28,7 @@ from scripts.dev_server import (
     PARADE_NIGHTS,
     _parade_nights,
     ensure_dev_cadet,
+    parse_args,
     schema_is_stale,
     seed,
     seed_applications,
@@ -431,6 +432,14 @@ def test_every_table_and_column_the_models_have_is_seeded(api, db):
     assert unset - UNSEEDED_COLUMNS == set(), "new columns the preview seed never sets: seed them"
     assert UNSEEDED_TABLES - empty == set(), "seeded now: take these off UNSEEDED_TABLES"
     assert UNSEEDED_COLUMNS - unset == set(), "seeded now: take these off UNSEEDED_COLUMNS"
+
+
+def test_listens_on_loopback_unless_told_otherwise():
+    # The fake sign-in makes anyone who reaches it the owner, so a laptop run
+    # must not be reachable from the rest of the network by default.
+    assert parse_args([]).host == "127.0.0.1"
+    # The cluster's preview stacks run it in a pod, behind the tailnet.
+    assert parse_args(["--host", "0.0.0.0", "--db", "/data/dev.db"]).host == "0.0.0.0"
 
 
 def test_the_seeded_push_devices_never_reach_a_real_push_service(db):

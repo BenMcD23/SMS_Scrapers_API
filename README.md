@@ -121,6 +121,15 @@ short: prod's database runs as two instances, on squadron and home. The
 primary (and the API with it) lives on home; squadron's link is too flaky to
 hold it.
 
+### Preview stacks
+
+Label a pull request `preview` (here, in the SMS site or in the portal) and the
+cluster runs that branch, with the SMS site and the cadet portal, on the seed
+from `app/scripts/dev_server.py`, on the tailnet only. It never touches either
+database. `.github/workflows/preview-image.yml` builds labelled pull requests (and
+main, which a repo without the label runs) for it, and how it works is in
+the homelab repo's ADR 0010.
+
 ### Versions
 
 Images are tagged `v<VERSION>.<commit count>`, for example `v1.0.412`, and dev
