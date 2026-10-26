@@ -3,12 +3,12 @@
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import given_events, stock_events
 from core.db import get_db
-from core.emailer import ready_to_collect_email_html, send_email
+from core.order_items import get_order_item, mark_ready, undo_given
 from core.qualifications import flying_blue_stages, order_badge_held, qual_names_with_flights
 from core.security import require_staff
 from database.models import (
@@ -505,28 +505,14 @@ def badge_orders_delete(
 def badge_orders_mark_item_ready(
     order_id: int,
     item_id: int,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
-    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(BadgeOrderItem).filter(
-        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    order, item = _badge_item(db, order_id, item_id)
 
-    item.ready_to_collect = datetime.now()
-    db.commit()
-
-    if order.cadet and order.cadet.email:
-        greeting_name = f"{order.cadet.rank} {order.cadet.last_name}" if order.cadet.rank else order.cadet.last_name
-        send_email(
-            to=order.cadet.email,
-            subject="Your badge is ready to collect",
-            html_body=ready_to_collect_email_html(cadet_name=greeting_name, item_name=item.badge_name, item_kind="badge"),
-        )
+    mark_ready(db, order, item, background, subject="Your badge is ready to collect",
+               item_name=item.badge_name, item_kind="badge")
 
     db.refresh(order)
     return badge_order_to_dict(order)
@@ -547,14 +533,7 @@ def badge_order_item_stock(
     if action not in ("remove", "return"):
         raise HTTPException(status_code=400, detail="action must be 'remove' or 'return'")
 
-    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(BadgeOrderItem).filter(
-        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+    order, item = _badge_item(db, order_id, item_id)
 
     events = stock_events.events_list(item.stock_events)
     by = body.get("by") or idinfo.get("email")
@@ -724,15 +703,7 @@ def badge_order_lists_mark_entry_received(
 
 
 def _badge_item(db: Session, order_id: int, item_id: int):
-    order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    item = db.query(BadgeOrderItem).filter(
-        BadgeOrderItem.id == item_id, BadgeOrderItem.order_id == order_id
-    ).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return order, item
+    return get_order_item(db, BadgeOrder, BadgeOrderItem, order_id, item_id)
 
 
 @router.post("/stores/badges/orders/{order_id}/items/{item_id}/mark-given", status_code=200)
@@ -770,16 +741,8 @@ def badge_orders_undo_item_given(
     """Take back a mark-as-given. The badge goes back to waiting; the give and
     the undo both stay in its history."""
     order, item = _badge_item(db, order_id, item_id)
-    if order.completed:
-        raise HTTPException(status_code=409, detail="Reopen the order before undoing a badge")
-    if not item.given_at:
-        raise HTTPException(status_code=409, detail="This badge hasn't been marked as given")
     by = (body or {}).get("by") or idinfo.get("email")
-    events = given_events.events_list(item.given_events)
-    events.append(given_events.new_event(given_events.UNDONE, by))
-    item.given_events = given_events.dump(events)
-    item.given_at = None
-    item.given_by = None
+    undo_given(order, item, by, noun="a badge")
     db.commit()
     db.refresh(order)
     return badge_order_to_dict(order)
