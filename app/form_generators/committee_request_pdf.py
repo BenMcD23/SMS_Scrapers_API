@@ -48,8 +48,9 @@ def build_committee_request_pdf(
     justification: str,
 ) -> bytes:
     """Return the request as PDF bytes. ``items`` is
-    [{"description", "quantity", "unit_cost", "cost"}], ``cost`` being the line
-    total; items without a quantity read as one."""
+    [{"description", "details", "quantity", "unit_cost", "cost"}]: the name, its
+    longer description and ``cost`` the line total. Items without a quantity
+    read as one."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -68,6 +69,8 @@ def build_committee_request_pdf(
     section = ParagraphStyle("section", parent=styles["Heading2"], fontSize=12,
                              spaceBefore=16, spaceAfter=6, textColor=ACCENT)
     body = ParagraphStyle("body", parent=styles["Normal"], fontSize=10, leading=15)
+    detail = ParagraphStyle("detail", parent=styles["Normal"], fontSize=9, leading=13,
+                            textColor=MUTED, spaceBefore=2)
     cost_cell = ParagraphStyle("cost", parent=styles["Normal"], fontSize=10,
                                alignment=TA_RIGHT)
 
@@ -109,19 +112,20 @@ def build_committee_request_pdf(
     num_w = 20 * mm
     money_w = 28 * mm
     rows = [[
-        Paragraph("<b>Description</b>", body),
+        Paragraph("<b>Item</b>", body),
         Paragraph("<b>Qty</b>", cost_cell),
         Paragraph("<b>Unit cost</b>", cost_cell),
         Paragraph("<b>Total</b>", cost_cell),
     ]]
     for item in items:
         desc = escape(str(item.get("description", "")))
+        details = escape(str(item.get("details") or "").strip()).replace("\n", "<br/>")
         cost = _num(item.get("cost"))
         quantity = item.get("quantity") or 1
         unit_cost = item.get("unit_cost")
         unit_cost = _num(unit_cost) if unit_cost is not None else cost / quantity
         rows.append([
-            Paragraph(desc, body),
+            [Paragraph(desc, body), *([Paragraph(details, detail)] if details else [])],
             Paragraph(str(quantity), cost_cell),
             Paragraph(_gbp(unit_cost), cost_cell),
             Paragraph(_gbp(cost), cost_cell),

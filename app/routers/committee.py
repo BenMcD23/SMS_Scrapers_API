@@ -42,7 +42,8 @@ MAX_RECEIPT_BYTES = 5 * 1024 * 1024
 # ── request/response models ──────────────────────────────────────────────────
 
 class CommitteeRequestItem(BaseModel):
-    description: str
+    description: str   # the item's name; kept as the key old requests use
+    details: str = ""  # the longer description under it: model, supplier, why this one
     quantity: int = 1
     unit_cost: float | None = None
     # The line total. Usually quantity × unit cost, but the requester can
@@ -94,7 +95,7 @@ def _clean_items(raw: list[CommitteeRequestItem]) -> list[dict]:
         cost = i.cost if i.cost is not None else unit_cost * i.quantity
         if unit_cost < 0 or cost < 0:
             raise HTTPException(status_code=400, detail="Item costs cannot be negative")
-        items.append({"description": description, "quantity": i.quantity,
+        items.append({"description": description, "details": i.details.strip(), "quantity": i.quantity,
                       "unit_cost": round(float(unit_cost), 2), "cost": round(float(cost), 2)})
     if not items:
         raise HTTPException(status_code=400, detail="Add at least one item")
@@ -109,7 +110,8 @@ def _items_out(items: list[dict] | None) -> list[dict]:
         cost = float(i.get("cost") or 0)
         quantity = i.get("quantity") or 1
         unit_cost = i.get("unit_cost")
-        out.append({"description": i.get("description", ""), "quantity": quantity,
+        out.append({"description": i.get("description", ""), "details": i.get("details") or "",
+                    "quantity": quantity,
                     "unit_cost": float(unit_cost) if unit_cost is not None else round(cost / quantity, 2),
                     "cost": cost})
     return out
