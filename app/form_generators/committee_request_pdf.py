@@ -6,6 +6,7 @@ for the OC/committee emails and site downloads.
 
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
@@ -29,6 +30,13 @@ def _gbp(amount: float) -> str:
     return f"£{amount:,.2f}"
 
 
+def _num(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def build_committee_request_pdf(
     reference: str,
     title: str,
@@ -39,7 +47,9 @@ def build_committee_request_pdf(
     total: float,
     justification: str,
 ) -> bytes:
-    """Return the request as PDF bytes. ``items`` is [{"description", "cost"}]."""
+    """Return the request as PDF bytes. ``items`` is
+    [{"description", "quantity", "unit_cost", "cost"}], ``cost`` being the line
+    total; items without a quantity read as one."""
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
@@ -78,7 +88,7 @@ def build_committee_request_pdf(
          Paragraph(created_at.strftime("%d/%m/%Y"), value)],
         [Paragraph("Requested by", label),
          Paragraph(f"{requester_name} &lt;{requester_email}&gt;", value)],
-        [Paragraph("Title", label), Paragraph(title, value)],
+        [Paragraph("Title", label), Paragraph(escape(title), value)],
     ]
     meta_tbl = Table(meta, colWidths=[35 * mm, doc.width - 35 * mm])
     meta_tbl.setStyle(TableStyle([
@@ -88,34 +98,49 @@ def build_committee_request_pdf(
     ]))
     story.append(meta_tbl)
 
+    # Justification first: the committee reads why before what.
+    if justification and justification.strip():
+        story.append(Paragraph("Justification", section))
+        for para in justification.strip().split("\n"):
+            story.append(Paragraph(escape(para) or "&nbsp;", body))
+
     # Items table.
     story.append(Paragraph("Items", section))
-    rows = [[Paragraph("<b>Description</b>", body), Paragraph("<b>Cost</b>", cost_cell)]]
+    num_w = 20 * mm
+    money_w = 28 * mm
+    rows = [[
+        Paragraph("<b>Description</b>", body),
+        Paragraph("<b>Qty</b>", cost_cell),
+        Paragraph("<b>Unit cost</b>", cost_cell),
+        Paragraph("<b>Total</b>", cost_cell),
+    ]]
     for item in items:
-        desc = str(item.get("description", ""))
-        try:
-            cost = float(item.get("cost", 0) or 0)
-        except (TypeError, ValueError):
-            cost = 0.0
-        rows.append([Paragraph(desc, body), Paragraph(_gbp(cost), cost_cell)])
-    rows.append([Paragraph("<b>Total</b>", body), Paragraph(f"<b>{_gbp(total)}</b>", cost_cell)])
+        desc = escape(str(item.get("description", "")))
+        cost = _num(item.get("cost"))
+        quantity = item.get("quantity") or 1
+        unit_cost = item.get("unit_cost")
+        unit_cost = _num(unit_cost) if unit_cost is not None else cost / quantity
+        rows.append([
+            Paragraph(desc, body),
+            Paragraph(str(quantity), cost_cell),
+            Paragraph(_gbp(unit_cost), cost_cell),
+            Paragraph(_gbp(cost), cost_cell),
+        ])
+    rows.append([Paragraph("<b>Total</b>", body), "", "",
+                 Paragraph(f"<b>{_gbp(total)}</b>", cost_cell)])
 
-    items_tbl = Table(rows, colWidths=[doc.width - 35 * mm, 35 * mm])
+    items_tbl = Table(rows, colWidths=[doc.width - num_w - 2 * money_w, num_w, money_w, money_w],
+                      repeatRows=1)
     items_tbl.setStyle(TableStyle([
         ("LINEBELOW", (0, 0), (-1, 0), 1, ACCENT),
         ("LINEBELOW", (0, 1), (-1, -2), 0.5, BORDER),
         ("LINEABOVE", (0, -1), (-1, -1), 1, ACCENT),
+        ("SPAN", (0, -1), (2, -1)),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     story.append(items_tbl)
-
-    # Justification.
-    if justification and justification.strip():
-        story.append(Paragraph("Justification", section))
-        for para in justification.strip().split("\n"):
-            story.append(Paragraph(para or "&nbsp;", body))
 
     doc.build(story)
     return buf.getvalue()
