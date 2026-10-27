@@ -42,14 +42,28 @@ MAX_RECEIPT_BYTES = 5 * 1024 * 1024
 # ── request/response models ──────────────────────────────────────────────────
 
 class CommitteeRequestItem(BaseModel):
-    description: str
-    cost: float
+    description: str   # the item's name; kept as the key old requests use
+    details: str = ""  # the longer description under it: model, supplier, why this one
+    quantity: int = 1
+    unit_cost: float | None = None
+    # The line total. Usually quantity × unit cost, but the requester can
+    # override it (a multi-buy discount, delivery folded in), so it is sent
+    # rather than recomputed. Old clients send only this.
+    cost: float | None = None
 
 
 class CommitteeRequestCreate(BaseModel):
     title: str
     justification: str = ""
     items: list[CommitteeRequestItem]
+
+
+class CommitteeRequestUpdate(BaseModel):
+    """The OC's edit. Every field is optional so a fix to one doesn't resend the rest."""
+    title: str | None = None
+    justification: str | None = None
+    items: list[CommitteeRequestItem] | None = None
+    rejection_reason: str | None = None
 
 
 class RejectBody(BaseModel):
@@ -63,6 +77,52 @@ def _user_name(user: User | None) -> str:
         return "Unknown"
     name = f"{user.first_name or ''} {user.last_name or ''}".strip()
     return name or user.email
+
+
+def _clean_items(raw: list[CommitteeRequestItem]) -> list[dict]:
+    """Validate and normalise submitted items into the stored shape. Blank rows
+    are dropped; a missing unit cost or line total is filled from the other."""
+    items = []
+    for i in raw:
+        description = i.description.strip()
+        if not description:
+            continue
+        if i.quantity < 1:
+            raise HTTPException(status_code=400, detail="Each item needs a quantity of at least 1")
+        if i.unit_cost is None and i.cost is None:
+            raise HTTPException(status_code=400, detail=f"{description}: give a unit cost or a total")
+        unit_cost = i.unit_cost if i.unit_cost is not None else i.cost / i.quantity
+        cost = i.cost if i.cost is not None else unit_cost * i.quantity
+        if unit_cost < 0 or cost < 0:
+            raise HTTPException(status_code=400, detail="Item costs cannot be negative")
+        items.append({"description": description, "details": i.details.strip(), "quantity": i.quantity,
+                      "unit_cost": round(float(unit_cost), 2), "cost": round(float(cost), 2)})
+    if not items:
+        raise HTTPException(status_code=400, detail="Add at least one item")
+    return items
+
+
+def _items_out(items: list[dict] | None) -> list[dict]:
+    """Stored items in today's shape. Requests made before quantities existed
+    hold only a description and cost, which reads as one of that cost."""
+    out = []
+    for i in items or []:
+        cost = float(i.get("cost") or 0)
+        quantity = i.get("quantity") or 1
+        unit_cost = i.get("unit_cost")
+        out.append({"description": i.get("description", ""), "details": i.get("details") or "",
+                    "quantity": quantity,
+                    "unit_cost": float(unit_cost) if unit_cost is not None else round(cost / quantity, 2),
+                    "cost": cost})
+    return out
+
+
+def _build_pdf(r: CommitteeRequest) -> bytes:
+    return build_committee_request_pdf(
+        reference=r.reference, title=r.title, requester_name=_user_name(r.requester),
+        requester_email=r.requester.email if r.requester else "", created_at=r.created_at,
+        items=_items_out(r.items), total=r.total, justification=r.justification,
+    )
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -86,7 +146,7 @@ def _summary(r: CommitteeRequest) -> dict:
 def _detail(r: CommitteeRequest, viewer: User, viewer_email: str) -> dict:
     data = _summary(r)
     data.update({
-        "items": r.items or [],
+        "items": _items_out(r.items),
         "justification": r.justification or "",
         "rejection_reason": r.rejection_reason,
         "sent_to_committee_at": _iso(r.sent_to_committee_at),
@@ -127,12 +187,7 @@ def create_request(
     title = data.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="A title is required")
-    items = [{"description": i.description.strip(), "cost": round(float(i.cost), 2)}
-             for i in data.items if i.description.strip()]
-    if not items:
-        raise HTTPException(status_code=400, detail="Add at least one item")
-    if any(i["cost"] < 0 for i in items):
-        raise HTTPException(status_code=400, detail="Item costs cannot be negative")
+    items = _clean_items(data.items)
     total = round(sum(i["cost"] for i in items), 2)
 
     user = get_or_create_user(db, idinfo)
@@ -224,6 +279,54 @@ def download_request_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{r.reference}.pdf"'},
     )
+
+
+@router.patch("/committee-requests/{request_id}")
+def update_request(
+    request_id: int,
+    data: CommitteeRequestUpdate,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_oc),
+):
+    """The OC corrects a request after it has gone in: the wording, the items or
+    the rejection reason. The stored PDF is rebuilt so every later email and
+    download carries the corrected version. A paid or withdrawn request is a
+    closed record and stays as it was."""
+    r = _get_or_404(db, request_id)
+    if r.status in ("paid", "withdrawn"):
+        raise HTTPException(status_code=409, detail="A paid or withdrawn request can no longer be edited")
+
+    changed = []
+    if data.title is not None:
+        title = data.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="A title is required")
+        r.title = title
+        changed.append("title")
+    if data.justification is not None:
+        r.justification = data.justification
+        changed.append("justification")
+    if data.items is not None:
+        r.items = _clean_items(data.items)
+        r.total = round(sum(i["cost"] for i in r.items), 2)
+        changed.append("items")
+    if data.rejection_reason is not None:
+        if r.status != "rejected":
+            raise HTTPException(status_code=409, detail="Only a rejected request has a reason to edit")
+        r.rejection_reason = data.rejection_reason.strip() or None
+        changed.append("rejection_reason")
+
+    if changed:
+        r.pdf_data = _build_pdf(r)
+        db.commit()
+        record_audit(
+            db, idinfo,
+            action="update", resource="committee_request", resource_id=r.id,
+            detail={"fields": changed},
+        )
+    db.refresh(r)
+    user = get_or_create_user(db, idinfo)
+    return _detail(r, user, idinfo.get("email", ""))
 
 
 @router.post("/committee-requests/{request_id}/send-to-committee")

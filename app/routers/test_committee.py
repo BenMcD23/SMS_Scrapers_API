@@ -2,11 +2,14 @@
 receipts → payment → paid workflow, who may do each step, and every
 out-of-order transition."""
 
+import io
+
 import pytest
+from pypdf import PdfReader
 
 import routers.committee as committee
 from core.crypto import encrypt_password
-from database.models import CommitteeRequest, User, UserProfile
+from database.models import AuditEvent, CommitteeRequest, User, UserProfile
 
 STAFF = {"Authorization": "Bearer staff"}
 OTHER = {"Authorization": "Bearer staff2"}
@@ -67,7 +70,11 @@ def test_create_cleans_items_totals_and_emails_the_oc(api, outbox):
     assert res.status_code == 200
     body = res.json()
     assert body["reference"].startswith("CR-") and body["reference"].endswith("-001")
-    assert body["items"] == [{"description": "Tent", "cost": 120.56}, {"description": "Pegs", "cost": 4.5}]
+    # An old client sends only a cost: it reads as one item at that price.
+    assert body["items"] == [
+        {"description": "Tent", "details": "", "quantity": 1, "unit_cost": 120.56, "cost": 120.56},
+        {"description": "Pegs", "details": "", "quantity": 1, "unit_cost": 4.5, "cost": 4.5},
+    ]
     assert body["total"] == 125.06
     assert body["status"] == "submitted"
     assert body["is_requester"] is True and body["can_approve"] is False
@@ -101,10 +108,66 @@ def test_only_the_first_oc_is_emailed(api, outbox, monkeypatch):
     ({"items": []}, "at least one item"),
     ({"items": [{"description": " ", "cost": 3}]}, "at least one item"),
     ({"items": [{"description": "Refund", "cost": -1}]}, "negative"),
+    ({"items": [{"description": "Refund", "details": "", "quantity": 2, "unit_cost": -1}]}, "negative"),
+    ({"items": [{"description": "Tent", "details": "", "quantity": 0, "unit_cost": 5}]}, "quantity of at least 1"),
+    ({"items": [{"description": "Tent", "details": "", "quantity": 2}]}, "unit cost or a total"),
 ])
 def test_create_rejections(api, body, detail):
     res = _create(api, **body)
     assert res.status_code == 400 and detail in res.json()["detail"]
+
+
+def test_quantity_and_unit_cost_fill_the_line_total(api):
+    body = _create(api, items=[
+        {"description": "Radio", "details": "", "quantity": 3, "unit_cost": 24.99},
+        # A multi-buy: the requester typed their own total over 4 × £2.50.
+        {"description": "Batteries", "details": "", "quantity": 4, "unit_cost": 2.5, "cost": 8},
+        # Only a total and a quantity: the unit cost is worked back from it.
+        {"description": "Antenna", "details": "", "quantity": 2, "cost": 15},
+    ]).json()
+    assert body["items"] == [
+        {"description": "Radio", "details": "", "quantity": 3, "unit_cost": 24.99, "cost": 74.97},
+        {"description": "Batteries", "details": "", "quantity": 4, "unit_cost": 2.5, "cost": 8},
+        {"description": "Antenna", "details": "", "quantity": 2, "unit_cost": 7.5, "cost": 15},
+    ]
+    assert body["total"] == 97.97
+
+
+def test_requests_stored_before_quantities_read_as_one_each(api, db):
+    rid = _create(api).json()["id"]
+    db.get(CommitteeRequest, rid).items = [{"description": "Old tent", "cost": 80}]
+    db.commit()
+    assert api.get(f"/committee-requests/{rid}", headers=STAFF).json()["items"] == [
+        {"description": "Old tent", "details": "", "quantity": 1, "unit_cost": 80.0, "cost": 80.0},
+    ]
+
+
+def _pdf_text(content: bytes) -> str:
+    return "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(content)).pages)
+
+
+def test_pdf_puts_the_justification_above_an_items_table(api):
+    rid = _create(api, justification="Our tents are worn out & leak", items=[
+        {"description": "Tent <large>", "details": "Vango Banshee 300\nGreen, from Go Outdoors",
+         "quantity": 2, "unit_cost": 60},
+    ]).json()["id"]
+    text = _pdf_text(api.get(f"/committee-requests/{rid}/pdf", headers=STAFF).content)
+    assert text.index("Our tents are worn out & leak") < text.index("Items")
+    for cell in ("Item", "Qty", "Unit cost", "Tent <large>", "£60.00", "£120.00",
+                 "Vango Banshee 300", "Green, from Go Outdoors"):
+        assert cell in text
+    # The item's description sits under its name, before its prices.
+    assert text.index("Tent <large>") < text.index("Vango Banshee 300") < text.index("Green, from")
+
+
+def test_each_item_keeps_its_own_description(api):
+    body = _create(api, items=[
+        {"description": "Radio", "details": "  Motorola XT420, licence-free  ", "quantity": 2, "unit_cost": 90},
+        {"description": "Batteries", "quantity": 4, "unit_cost": 2.5},
+    ]).json()
+    assert [(i["description"], i["details"]) for i in body["items"]] == [
+        ("Radio", "Motorola XT420, licence-free"), ("Batteries", ""),
+    ]
 
 
 def test_create_schema_validation(api):
@@ -330,3 +393,120 @@ def test_send_for_payment_needs_receipts_bank_details_and_an_address(api, db, mo
     monkeypatch.setattr(committee, "COMMITTEE_EMAIL", "")
     res = api.post(f"/committee-requests/{rid}/send-for-payment", headers=STAFF)
     assert res.status_code == 400 and "COMMITTEE_EMAIL" in res.json()["detail"]
+
+
+# ── the OC's edit ─────────────────────────────────────────────────────────────
+
+def test_the_oc_edits_the_text_and_items_and_the_pdf_follows(api, db):
+    rid = _create(api).json()["id"]
+    res = api.patch(f"/committee-requests/{rid}", headers=OC, json={
+        "title": "  Camping kit (revised)  ",
+        "justification": "Two patrols share one tent",
+        "items": [{"description": "Tent", "details": "", "quantity": 2, "unit_cost": 100, "cost": 190}],
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["title"] == "Camping kit (revised)"
+    assert body["justification"] == "Two patrols share one tent"
+    assert body["items"] == [{"description": "Tent", "details": "", "quantity": 2, "unit_cost": 100, "cost": 190}]
+    assert body["total"] == 190
+    # The requester and status are untouched by an edit.
+    assert body["status"] == "submitted" and body["requester_name"] == "Sam Staff"
+
+    text = _pdf_text(api.get(f"/committee-requests/{rid}/pdf", headers=STAFF).content)
+    assert "Camping kit (revised)" in text and "Two patrols share one tent" in text
+    assert "£190.00" in text and "Annual camp" not in text
+
+    audit = db.query(AuditEvent).filter_by(resource="committee_request", resource_id=str(rid)).one()
+    assert audit.action == "update" and audit.actor_email == "oc@317atc.co.uk"
+    assert audit.detail == {"fields": ["title", "justification", "items"]}
+
+
+def test_the_oc_can_rewrite_an_items_description(api):
+    rid = _create(api).json()["id"]
+    body = api.patch(f"/committee-requests/{rid}", headers=OC, json={"items": [
+        {"description": "Tent", "details": "Four-person, with porch", "quantity": 1, "unit_cost": 120},
+    ]}).json()
+    assert body["items"][0]["details"] == "Four-person, with porch"
+
+
+def test_an_edit_of_one_field_leaves_the_rest(api):
+    created = _create(api).json()
+    body = api.patch(f"/committee-requests/{created['id']}", headers=OC,
+                     json={"justification": ""}).json()
+    assert body["justification"] == ""
+    assert body["title"] == created["title"] and body["items"] == created["items"]
+
+
+def test_an_empty_edit_changes_nothing(api, db):
+    rid = _create(api).json()["id"]
+    pdf = db.get(CommitteeRequest, rid).pdf_data
+    assert api.patch(f"/committee-requests/{rid}", headers=OC, json={}).status_code == 200
+    db.expire_all()
+    assert db.get(CommitteeRequest, rid).pdf_data == pdf
+    assert db.query(AuditEvent).filter_by(resource="committee_request").count() == 0
+
+
+@pytest.mark.parametrize("headers", [STAFF, OTHER])
+def test_only_the_oc_edits_not_even_the_requester(api, headers):
+    rid = _create(api).json()["id"]
+    assert api.patch(f"/committee-requests/{rid}", headers=headers, json={"title": "Mine"}).status_code == 403
+
+
+@pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
+def test_non_staff_cannot_edit(api, persona):
+    rid = _create(api).json()["id"]
+    assert api.patch(f"/committee-requests/{rid}", headers=api.as_(persona), json={"title": "x"}).status_code == 403
+
+
+def test_editing_needs_a_token(api):
+    rid = _create(api).json()["id"]
+    assert api.patch(f"/committee-requests/{rid}", json={"title": "x"}).status_code == 401
+
+
+def test_editing_a_missing_request_404s(api):
+    assert api.patch("/committee-requests/9", headers=OC, json={"title": "x"}).status_code == 404
+
+
+@pytest.mark.parametrize("body,detail", [
+    ({"title": " "}, "title"),
+    ({"items": []}, "at least one item"),
+    ({"items": [{"description": "Tent", "details": "", "quantity": 1, "unit_cost": -5}]}, "negative"),
+])
+def test_edit_rejections_leave_the_request_as_it_was(api, body, detail):
+    created = _create(api).json()
+    res = api.patch(f"/committee-requests/{created['id']}", headers=OC, json=body)
+    assert res.status_code == 400 and detail in res.json()["detail"]
+    after = api.get(f"/committee-requests/{created['id']}", headers=STAFF).json()
+    assert after["title"] == created["title"] and after["items"] == created["items"]
+
+
+def test_the_oc_can_edit_at_every_open_stage(api, db):
+    rid = _create(api).json()["id"]
+    _to_approved(api, rid)
+    assert api.patch(f"/committee-requests/{rid}", headers=OC, json={"title": "Approved kit"}).status_code == 200
+
+
+def test_paid_and_withdrawn_requests_are_closed_records(api, db):
+    withdrawn = _create(api).json()["id"]
+    api.post(f"/committee-requests/{withdrawn}/withdraw", headers=STAFF)
+    res = api.patch(f"/committee-requests/{withdrawn}", headers=OC, json={"title": "x"})
+    assert res.status_code == 409
+
+    paid = _create(api).json()["id"]
+    db.get(CommitteeRequest, paid).status = "paid"
+    db.commit()
+    assert api.patch(f"/committee-requests/{paid}", headers=OC, json={"title": "x"}).status_code == 409
+
+
+def test_rejection_reason_is_editable_only_once_rejected(api):
+    rid = _create(api).json()["id"]
+    res = api.patch(f"/committee-requests/{rid}", headers=OC, json={"rejection_reason": "No"})
+    assert res.status_code == 409
+
+    api.post(f"/committee-requests/{rid}/reject", json={"reason": "Too dear"}, headers=OC)
+    body = api.patch(f"/committee-requests/{rid}", headers=OC,
+                     json={"rejection_reason": " Over budget this year "}).json()
+    assert body["rejection_reason"] == "Over budget this year"
+    cleared = api.patch(f"/committee-requests/{rid}", headers=OC, json={"rejection_reason": ""}).json()
+    assert cleared["rejection_reason"] is None
