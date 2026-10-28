@@ -393,23 +393,24 @@ async def named_scraper_stream(
     state = named_scraper_states[name]
 
     async def event_generator():
+        # Copy under the lock, yield outside it: a generator paused at a yield
+        # while holding this threading.Lock deadlocks the event loop as soon as
+        # a second viewer asks for it, and the scraper with it.
         with state["lock"]:
+            backlog = list(state["messages"])
             if state["running"] and state["started_by"]:
-                yield f"data: {json.dumps({'type': 'status', 'value': 'running', 'started_by': state['started_by'], 'scraper_name': name})}\n\n"
+                backlog.insert(0, json.dumps({'type': 'status', 'value': 'running', 'started_by': state['started_by'], 'scraper_name': name}))
             last_idx = len(state["messages"])
-            for msg in state["messages"]:
-                yield f"data: {msg}\n\n"
+        for msg in backlog:
+            yield f"data: {msg}\n\n"
 
         while True:
             await asyncio.sleep(0.5)
             with state["lock"]:
-                current_len = len(state["messages"])
-            if last_idx < current_len:
-                with state["lock"]:
-                    new_msgs = state["messages"][last_idx:]
-                for msg in new_msgs:
-                    yield f"data: {msg}\n\n"
-                last_idx = current_len
+                new_msgs = state["messages"][last_idx:]
+            for msg in new_msgs:
+                yield f"data: {msg}\n\n"
+            last_idx += len(new_msgs)
 
     return StreamingResponse(
         event_generator(),
@@ -431,21 +432,20 @@ async def upload_stream(
         raise HTTPException(status_code=404, detail="Upload job not found")
 
     async def event_generator():
+        # Never yield while holding the lock; see named_scraper_stream.
         with state["lock"]:
-            last_idx = len(state["messages"])
-            for msg in state["messages"]:
-                yield f"data: {msg}\n\n"
+            backlog = list(state["messages"])
+        last_idx = len(backlog)
+        for msg in backlog:
+            yield f"data: {msg}\n\n"
 
         while True:
             await asyncio.sleep(0.5)
             with state["lock"]:
-                current_len = len(state["messages"])
-            if last_idx < current_len:
-                with state["lock"]:
-                    new_msgs = state["messages"][last_idx:]
-                for msg in new_msgs:
-                    yield f"data: {msg}\n\n"
-                last_idx = current_len
+                new_msgs = state["messages"][last_idx:]
+            for msg in new_msgs:
+                yield f"data: {msg}\n\n"
+            last_idx += len(new_msgs)
 
     return StreamingResponse(
         event_generator(),
