@@ -198,6 +198,67 @@ def _parse_qual_rows(rows, attachment_check_quals):
     return quals
 
 
+WHT_TAB = "#ctl00_ctl00_cphBaseBody_cphBody_TabsCadet_Wht"
+WHT_GRID = "ctl00_ctl00_cphBaseBody_cphBody_WHTGridView"
+
+
+def _read_wht_rows(page: Page):
+    """Each WHT row's labels, keyed by the label's id suffix (lblWHTType, ...),
+    in one round trip. Keyed by id rather than column position because the
+    grid's last two columns are unlabelled and may move."""
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll("span[id$='_lblWHTType']")).map(type => {
+            const tr = type.closest('tr');
+            const out = {};
+            tr.querySelectorAll("span[id*='_lbl']").forEach(s => {
+                out[s.id.slice(s.id.lastIndexOf('_') + 1)] = s.innerText;
+            });
+            return out;
+        })"""
+    )
+
+
+def _parse_wht_rows(rows):
+    """WHT records out of _read_wht_rows' output, minus duplicates and rows
+    without a weapon or pass date."""
+    whts = {}
+    for row in rows:
+        weapon = (row.get("lblWHTType") or "").strip()
+        passed = _qual_date(row.get("lblWHTDate"))
+        if not weapon or not passed:
+            continue
+        expires = _qual_date(row.get("lblWHTDateExpires"))
+        whts[(weapon, passed)] = {
+            "weapon": weapon,
+            "date_passed": passed.date(),
+            "date_expires": expires.date() if expires else None,
+            "awarded_by": (row.get("lblAwardedBy") or "").strip() or None,
+        }
+    return list(whts.values())
+
+
+def get_whts(page: Page):
+    """Every weapon handling test on the open cadet profile, expired ones too.
+
+    None (not []) when the tab or its grid didn't load, so the save keeps
+    what's stored. Bader may render no grid at all for a cadet with no tests;
+    that reads as None too, which is harmless as there is nothing to keep.
+    """
+    try:
+        for selector in ["xpath=//a[contains(text(), 'Qualifications & Awards')]", WHT_TAB]:
+            safe_click(page, page.wait_for_selector(selector, timeout=15000))
+            wait_for_preloader(page)
+            wait_for_aspx_load(page)
+        # Prefix match: the grid's table and every label in it start with this.
+        page.wait_for_selector(f"[id^='{WHT_GRID}']", timeout=10000)
+        # DataTables drops rows past the first 10 from the DOM.
+        ensure_all_rows_shown(page, f"{WHT_GRID}_length", WHT_GRID, required=False)
+        return _parse_wht_rows(_read_wht_rows(page))
+    except Exception as e:
+        logger.error(f"Warning: Could not extract WHTs: {e}")
+        return None
+
+
 CIN_LABEL = "#ctl00_ctl00_cphBaseBody_cphBody_overview_fvProfile_lblPersonnelNumber"
 
 
@@ -315,6 +376,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         except Exception as e:
             logger.error(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
 
+        cadetWhts = get_whts(page)
         cadetAttendance = get_attendance(page)
 
         cadet_data.append({
@@ -326,6 +388,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             "date_of_birth": date_of_birth,
             "classification": classification,
             "qualifications": cadetQualifications,
+            "whts": cadetWhts,
             "attendance": cadetAttendance,
         })
 
