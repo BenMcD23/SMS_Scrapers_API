@@ -59,6 +59,7 @@ class Cadet(Base):
     theory_lessons    = relationship("CadetTheoryLesson", back_populates="cadet", cascade="all, delete-orphan")
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
+    whts              = relationship("CadetWht",             back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
     appointment_application = relationship("AppointmentApplication", back_populates="cadet", uselist=False,
                                            cascade="all, delete-orphan")
@@ -247,6 +248,23 @@ class CadetAttendance(Base):
     unit          = Column(Text,       nullable=True)  # unit attended
 
     cadet = relationship("Cadet", back_populates="attendance")
+
+
+class CadetWht(Base):
+    """One weapon handling test from the cadet's Bader profile (Qualifications &
+    Awards → Weapon Handling Tests), scraped by the cadet-quali scraper. Every
+    test is kept, expired ones too, so the audit can show who has lapsed. Like
+    attendance, a cadet's rows are full-replaced on each run that reads any."""
+    __tablename__ = "Cadet_WHTs"
+
+    id           = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id     = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    weapon       = Column(Text,       nullable=False)  # e.g. "L98A2", "Scorpion (single shot)"
+    date_passed  = Column(Date,       nullable=False)
+    date_expires = Column(Date,       nullable=True)
+    awarded_by   = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="whts")
 
 
 class CadetPortalData(Base):

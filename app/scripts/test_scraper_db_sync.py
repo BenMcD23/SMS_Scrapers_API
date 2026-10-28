@@ -7,7 +7,7 @@ cadets who have left, dedupe qualifications, and match names to people.
 
 import json
 import threading
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -23,6 +23,7 @@ from database.models import (
     CadetLeavingProcess,
     CadetMedical,
     CadetQualification,
+    CadetWht,
     FlyingEvent,
     RemovedCadet,
     StoresOrder,
@@ -151,6 +152,27 @@ def test_attendance_is_replaced_only_when_something_was_read(db, bader, monkeypa
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     db.expire_all()
     assert sorted(a.date.day for a in db.query(CadetAttendance).all()) == [1, 8]
+
+
+@pytest.mark.parametrize("unread", [None, []])
+def test_whts_are_replaced_only_when_something_was_read(db, bader, monkeypatch, unread):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
+    db.add(CadetWht(cadet_id=1001, weapon="L98A2", date_passed=date(2025, 1, 1), date_expires=date(2025, 7, 1)))
+    db.commit()
+    # A tab that failed to load (None) or read nothing ([]) keeps the old tests.
+    _quali(monkeypatch, [_amy(whts=unread)])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    assert db.query(CadetWht).count() == 1
+
+    wht = {"weapon": "Scorpion (single shot)", "date_passed": date(2026, 3, 28),
+           "date_expires": date(2026, 9, 28), "awarded_by": "Doherty, S Flt Lt"}
+    _quali(monkeypatch, [_amy(whts=[wht, {**wht, "weapon": "L98A2"}])])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert sorted(w.weapon for w in db.query(CadetWht).all()) == ["L98A2", "Scorpion (single shot)"]
+    assert "2 WHT(s)" in _summary(run)
 
 
 def _summary(run):

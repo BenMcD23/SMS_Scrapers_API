@@ -254,6 +254,53 @@ def audit_medical(
     ]
 
 
+# The squadron's weapon systems, always shown as audit columns even when nobody
+# holds one. Any other weapon Bader returns is added after them.
+WHT_WEAPONS = ("L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)")
+
+
+def _wht_status(w, today: date) -> str:
+    # No expiry date counts as expired: a safety audit mustn't show an
+    # unknown as cleared.
+    return "current" if w.date_expires and w.date_expires >= today else "expired"
+
+
+@router.get("/cadets/audit/whts")
+def audit_whts(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Every cadet with their newest weapon handling test per weapon (current
+    or expired) and their full WHT history. A cadet with no test for a weapon
+    simply has no entry for it."""
+    today = date.today()
+    cadets = (
+        db.query(Cadet)
+        .options(selectinload(Cadet.whts))
+        .order_by(Cadet.last_name, Cadet.first_name)
+        .all()
+    )
+    extra = sorted({w.weapon for c in cadets for w in c.whts} - set(WHT_WEAPONS))
+    out = []
+    for c in cadets:
+        history = sorted(c.whts, key=lambda w: w.date_passed, reverse=True)
+        tests = [
+            {
+                "weapon": w.weapon,
+                "date_passed": w.date_passed.isoformat(),
+                "date_expires": w.date_expires.isoformat() if w.date_expires else None,
+                "awarded_by": w.awarded_by,
+                "status": _wht_status(w, today),
+            }
+            for w in history
+        ]
+        latest = {}
+        for t in tests:
+            latest.setdefault(t["weapon"], t)  # history is newest first
+        out.append({**_cadet_summary(c), "latest": latest, "history": tests})
+    return {"weapons": [*WHT_WEAPONS, *extra], "cadets": out}
+
+
 class AuditCheckBody(BaseModel):
     cadet_cins: list[int] = []
     qualifications: list[str] = []

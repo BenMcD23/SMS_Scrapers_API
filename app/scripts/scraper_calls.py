@@ -22,6 +22,7 @@ from database.models import (
     CadetEvent,
     CadetMedical,
     CadetQualification,
+    CadetWht,
     RemovedCadet,
 )
 from scripts.absence_scraper import get_absences
@@ -133,6 +134,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         missing_attachments = 0
         removed_quals = 0
         attendance_rows = 0
+        wht_rows = 0
         scraped_cins = set()
         removed_cins = {cin for (cin,) in db_session.query(RemovedCadet.cin)}
 
@@ -240,6 +242,14 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 ])
                 attendance_rows += len(attendance)
 
+            # Same rule as attendance: Bader keeps every test, so replace them
+            # all, but only when something was read.
+            whts = entry.get("whts")
+            if whts:
+                db_session.query(CadetWht).filter(CadetWht.cadet_id == cin).delete(synchronize_session=False)
+                db_session.add_all([CadetWht(cadet_id=cin, **w) for w in whts])
+                wht_rows += len(whts)
+
             saved += 1
 
         db_session.commit()
@@ -261,7 +271,7 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
         with scraper_lock:
             scraper_messages.append(json.dumps({
                 "type": "info",
-                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing} no longer on SMS, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s)."
+                "value": f"DB update complete — {saved} cadets saved, {emails_matched} emails matched, {skipped} skipped, {missing} no longer on SMS, {removed_quals} stale qualification(s) removed, {missing_attachments} missing attachment(s), {attendance_rows} attendance record(s), {wht_rows} WHT(s)."
             }))
 
         if stop_event.is_set():

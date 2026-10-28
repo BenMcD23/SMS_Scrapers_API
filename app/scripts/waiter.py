@@ -45,3 +45,17 @@ def safe_click(page: Page, element):
             element.evaluate("el => el.click()")
         except Exception:
             pass
+
+
+def open_tab(page: Page, dropdown: str, item: str, timeout: int = 15000):
+    """Open a profile tab: the dropdown toggle, then the item in it.
+
+    Only the item is a postback. The toggle just shows the menu (Bootstrap
+    stops its href), so waiting for a preloader after it only ever sat out
+    wait_for_preloader's one-second window. The item click itself waits for
+    the menu to show it.
+    """
+    safe_click(page, page.wait_for_selector(dropdown, timeout=timeout))
+    safe_click(page, page.wait_for_selector(item, state="attached", timeout=timeout))
+    wait_for_preloader(page)
+    wait_for_aspx_load(page)

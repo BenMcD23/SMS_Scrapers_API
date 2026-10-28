@@ -10,7 +10,7 @@ from scripts.attendance import get_attendance
 from scripts.profiles import CADETS, collect_profile_links, open_profile
 from scripts.reports import page_through_report
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
-from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import open_tab, safe_click, wait_for_aspx_load, wait_for_preloader
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,72 @@ def _parse_qual_rows(rows, attachment_check_quals):
     return quals
 
 
+# By suffix: the tab strip is TabsCadet1 on the profile page and TabsCadet once
+# a qualifications tab is open.
+WHT_TAB = "a.dropdown-item[id$='_Wht']"
+QUALS_DROPDOWN = "xpath=//a[contains(text(), 'Qualifications & Awards')]"
+WHT_GRID = "ctl00_ctl00_cphBaseBody_cphBody_WHTGridView"
+
+
+def _read_wht_rows(page: Page):
+    """Each WHT row's labels, keyed by the label's id suffix (lblWHTType, ...),
+    in one round trip. Keyed by id rather than column position because the
+    grid's last two columns are unlabelled and may move."""
+    return page.evaluate(
+        """() => Array.from(document.querySelectorAll("span[id$='_lblWHTType']")).map(type => {
+            const tr = type.closest('tr');
+            const out = {};
+            tr.querySelectorAll("span[id*='_lbl']").forEach(s => {
+                out[s.id.slice(s.id.lastIndexOf('_') + 1)] = s.innerText;
+            });
+            return out;
+        })"""
+    )
+
+
+def _parse_wht_rows(rows):
+    """WHT records out of _read_wht_rows' output, minus duplicates and rows
+    without a weapon or pass date."""
+    whts = {}
+    for row in rows:
+        weapon = (row.get("lblWHTType") or "").strip()
+        passed = _qual_date(row.get("lblWHTDate"))
+        if not weapon or not passed:
+            continue
+        expires = _qual_date(row.get("lblWHTDateExpires"))
+        whts[(weapon, passed)] = {
+            "weapon": weapon,
+            "date_passed": passed.date(),
+            "date_expires": expires.date() if expires else None,
+            "awarded_by": (row.get("lblAwardedBy") or "").strip() or None,
+        }
+    return list(whts.values())
+
+
+def get_whts(page: Page):
+    """Every weapon handling test on the open cadet profile, expired ones too.
+
+    None (not []) when the tab or its grid didn't load, so the save keeps
+    what's stored. Bader may render no grid at all for a cadet with no tests;
+    that reads as None too, which is harmless as there is nothing to keep.
+    """
+    try:
+        open_tab(page, QUALS_DROPDOWN, WHT_TAB)
+        # Prefix match: the grid's table and every label in it start with this.
+        page.wait_for_selector(f"[id^='{WHT_GRID}']", timeout=10000)
+        rows = _read_wht_rows(page)
+        # DataTables drops rows past the first page (10) from the DOM. Fewer
+        # than that is everything, and such a table may have no length control
+        # at all, which ensure_all_rows_shown would sit out its timeout for.
+        if len(rows) >= 10:
+            ensure_all_rows_shown(page, f"{WHT_GRID}_length", WHT_GRID)
+            rows = _read_wht_rows(page)
+        return _parse_wht_rows(rows)
+    except Exception as e:
+        logger.error(f"Warning: Could not extract WHTs: {e}")
+        return None
+
+
 CIN_LABEL = "#ctl00_ctl00_cphBaseBody_cphBody_overview_fvProfile_lblPersonnelNumber"
 
 
@@ -298,11 +364,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             classification = get_classification(page)
 
         # Navigate to qualifications
-        for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-            tab_el = page.wait_for_selector(f"xpath=//a[contains(text(), '{tab_text}')]", timeout=15000)
-            safe_click(page, tab_el)
-            wait_for_preloader(page)
-            wait_for_aspx_load(page)
+        open_tab(page, QUALS_DROPDOWN, "xpath=//a[contains(text(), 'General Qualifications')]")
 
         # None (not []) when the tab didn't load, so the save keeps what's stored
         # rather than syncing to an empty list.
@@ -315,6 +377,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         except Exception as e:
             logger.error(f"Warning: Could not extract qualifications for {cadetNames[i]}: {e}")
 
+        cadetWhts = get_whts(page)
         cadetAttendance = get_attendance(page)
 
         cadet_data.append({
@@ -326,6 +389,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             "date_of_birth": date_of_birth,
             "classification": classification,
             "qualifications": cadetQualifications,
+            "whts": cadetWhts,
             "attendance": cadetAttendance,
         })
 

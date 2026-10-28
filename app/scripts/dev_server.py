@@ -103,6 +103,7 @@ def seed(db, now: datetime | None = None) -> bool:
         CadetDietary,
         CadetMedical,
         CadetQualification,
+        CadetWht,
         Staff,
     )
 
@@ -144,6 +145,22 @@ def seed(db, now: datetime | None = None) -> bool:
     # One the scraper stopped finding on SMS, so the overview's banner shows.
     cadets[22].missing_since = now - timedelta(days=9)
     db.add_all(cadets)
+
+    # WHTs last six months. Cadet i passed weapon k (i + k) * 20 days ago, so
+    # the WHT audit gets current, expired and never-tested cells; every fifth
+    # cadet also has an older lapsed test, and every fourth none at all.
+    weapons = ("L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)")
+    for i, c in enumerate(cadets):
+        if i % 4 == 3:
+            continue
+        for k, weapon in enumerate(weapons[: i % 3 + 1]):
+            passed = (now - timedelta(days=(i + k) * 20)).date()
+            db.add(CadetWht(cadet_id=c.cin, weapon=weapon, date_passed=passed,
+                            date_expires=passed + timedelta(days=182),
+                            awarded_by=None if k == 2 else "Doherty, S Flt Lt"))
+            if i % 5 == 0:
+                db.add(CadetWht(cadet_id=c.cin, weapon=weapon, date_passed=passed - timedelta(days=400),
+                                date_expires=passed - timedelta(days=218), awarded_by="WO K. Duffy (AC/07333)"))
 
     # Cadets who stopped coming: no parade in the last LAPSED_WEEKS weeks, so
     # the OC dashboard's leaving process has someone to list.
