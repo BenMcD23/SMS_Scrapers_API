@@ -46,8 +46,14 @@ def entries_total(info_text: str):
 def fire_postback(page: Page, target: str, argument: str = "") -> bool:
     """Submit the WebForms postback a LinkButton would, without needing its row.
 
+    Clicks a stand-in link with the row's own ``javascript:__doPostBack`` href.
+    Calling ``__doPostBack`` directly does nothing on Bader: the AJAX script
+    wraps it, and the wrapper sends nothing unless a link was clicked. Each
+    profile then sat out the 20s navigation wait and fell back to redrawing
+    the whole list.
+
     Returns False when the page has no ``__doPostBack`` (so the caller takes the
-    click path). The call is deferred by a ``setTimeout`` because the navigation
+    click path). The click is deferred by a ``setTimeout`` because the navigation
     it triggers otherwise tears down the execution context before ``evaluate``
     can return, which surfaces as an exception on a call that actually worked.
     """
@@ -55,7 +61,12 @@ def fire_postback(page: Page, target: str, argument: str = "") -> bool:
         if not page.evaluate("() => typeof __doPostBack === 'function'"):
             return False
         page.evaluate(
-            "([t, a]) => { setTimeout(() => __doPostBack(t, a), 0); }",
+            """([t, a]) => {
+                const link = document.createElement('a');
+                link.href = `javascript:__doPostBack(${JSON.stringify(t)}, ${JSON.stringify(a)})`;
+                (document.forms[0] || document.body).appendChild(link);
+                setTimeout(() => link.click(), 0);
+            }""",
             [target, argument],
         )
     except Exception:

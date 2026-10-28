@@ -10,7 +10,7 @@ from scripts.attendance import get_attendance
 from scripts.profiles import CADETS, collect_profile_links, open_profile
 from scripts.reports import page_through_report
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
-from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import open_tab, safe_click, wait_for_aspx_load, wait_for_preloader
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,10 @@ def _parse_qual_rows(rows, attachment_check_quals):
     return quals
 
 
-WHT_TAB = "#ctl00_ctl00_cphBaseBody_cphBody_TabsCadet_Wht"
+# By suffix: the tab strip is TabsCadet1 on the profile page and TabsCadet once
+# a qualifications tab is open.
+WHT_TAB = "a.dropdown-item[id$='_Wht']"
+QUALS_DROPDOWN = "xpath=//a[contains(text(), 'Qualifications & Awards')]"
 WHT_GRID = "ctl00_ctl00_cphBaseBody_cphBody_WHTGridView"
 
 
@@ -245,15 +248,17 @@ def get_whts(page: Page):
     that reads as None too, which is harmless as there is nothing to keep.
     """
     try:
-        for selector in ["xpath=//a[contains(text(), 'Qualifications & Awards')]", WHT_TAB]:
-            safe_click(page, page.wait_for_selector(selector, timeout=15000))
-            wait_for_preloader(page)
-            wait_for_aspx_load(page)
+        open_tab(page, QUALS_DROPDOWN, WHT_TAB)
         # Prefix match: the grid's table and every label in it start with this.
         page.wait_for_selector(f"[id^='{WHT_GRID}']", timeout=10000)
-        # DataTables drops rows past the first 10 from the DOM.
-        ensure_all_rows_shown(page, f"{WHT_GRID}_length", WHT_GRID, required=False)
-        return _parse_wht_rows(_read_wht_rows(page))
+        rows = _read_wht_rows(page)
+        # DataTables drops rows past the first page (10) from the DOM. Fewer
+        # than that is everything, and such a table may have no length control
+        # at all, which ensure_all_rows_shown would sit out its timeout for.
+        if len(rows) >= 10:
+            ensure_all_rows_shown(page, f"{WHT_GRID}_length", WHT_GRID)
+            rows = _read_wht_rows(page)
+        return _parse_wht_rows(rows)
     except Exception as e:
         logger.error(f"Warning: Could not extract WHTs: {e}")
         return None
@@ -359,11 +364,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             classification = get_classification(page)
 
         # Navigate to qualifications
-        for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-            tab_el = page.wait_for_selector(f"xpath=//a[contains(text(), '{tab_text}')]", timeout=15000)
-            safe_click(page, tab_el)
-            wait_for_preloader(page)
-            wait_for_aspx_load(page)
+        open_tab(page, QUALS_DROPDOWN, "xpath=//a[contains(text(), 'General Qualifications')]")
 
         # None (not []) when the tab didn't load, so the save keeps what's stored
         # rather than syncing to an empty list.

@@ -9,7 +9,7 @@ from datetime import datetime
 from playwright.sync_api import Page
 
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
-from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import open_tab
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +46,11 @@ def get_attendance(page: Page):
         # an exact-text match scoped to that dropdown: `contains(text(),
         # 'Attendance')` also resolves the sidebar's "Attendance Registers" link
         # and picks that one first.
-        for selector in [
+        open_tab(
+            page,
             "xpath=//a[contains(text(), 'Service Record')]",
             "xpath=//div[contains(@class,'dropdown-menu')]//a[normalize-space()='Attendance']",
-        ]:
-            tab_el = page.wait_for_selector(selector, timeout=15000)
-            safe_click(page, tab_el)
-            wait_for_preloader(page)
-            wait_for_aspx_load(page)
+        )
 
         # The table the second click opens is what the fixed sleeps after each
         # click were really standing in for — wait on it instead.

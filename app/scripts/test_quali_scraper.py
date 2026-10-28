@@ -86,3 +86,41 @@ def test_a_wht_tab_that_never_loads_reads_as_none_not_empty(monkeypatch):
             raise PlaywrightTimeoutError("no tab")
 
     assert qs.get_whts(NoTab()) is None
+
+
+def _wht_page(monkeypatch, first_read, full_read=None):
+    """get_whts on a fake page whose grid reads ``first_read`` rows, and
+    ``full_read`` once every row is shown. Records whether that was asked for."""
+    calls = {"expanded": False}
+    reads = iter([first_read, full_read])
+
+    class Page:
+        def wait_for_selector(self, selector, timeout):
+            pass
+
+    def expand(page, select_name, table_id):
+        assert select_name == f"{qs.WHT_GRID}_length"
+        calls["expanded"] = True
+
+    monkeypatch.setattr(qs, "open_tab", lambda page, dropdown, item: None)
+    monkeypatch.setattr(qs, "_read_wht_rows", lambda page: next(reads))
+    monkeypatch.setattr(qs, "ensure_all_rows_shown", expand)
+    return Page(), calls
+
+
+def test_a_short_wht_grid_is_read_as_is(monkeypatch):
+    # Fewer rows than a page has no length control; waiting for one cost 20s a cadet.
+    page, calls = _wht_page(monkeypatch, [_wht("L98A2", "28/03/2025", "28/09/2025", "")] * 2)
+    assert len(qs.get_whts(page)) == 1 and calls["expanded"] is False
+
+
+def test_an_empty_wht_grid_is_an_empty_list(monkeypatch):
+    page, calls = _wht_page(monkeypatch, [])
+    assert qs.get_whts(page) == [] and calls["expanded"] is False
+
+
+def test_a_full_first_page_of_whts_shows_every_row_before_reading(monkeypatch):
+    page_one = [_wht("L98A2", f"{d:02d}/01/2025", "", "") for d in range(1, 11)]
+    every_row = page_one + [_wht("L98A2", "11/01/2025", "", "")]
+    page, calls = _wht_page(monkeypatch, page_one, every_row)
+    assert len(qs.get_whts(page)) == 11 and calls["expanded"] is True
