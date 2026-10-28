@@ -137,10 +137,14 @@ def ensure_all_rows_shown(
         return True
 
     select.select_option(value="-1")
-    wait_for_preloader(page)
-    wait_for_aspx_load(page)
     if table_id is not None:
+        # The length change is drawn client-side: nothing posts back and no
+        # preloader shows, so waiting for one only sat out its one-second
+        # window. The drawn row count is the real condition.
         wait_for_full_draw(page, table_id, timeout=timeout)
+    else:
+        wait_for_preloader(page)
+        wait_for_aspx_load(page)
     return True
 
 

@@ -10,7 +10,7 @@ from scripts.attendance import get_attendance
 from scripts.profiles import CADETS, collect_profile_links, open_profile
 from scripts.reports import page_through_report
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
-from scripts.waiter import open_tab, safe_click, wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import open_tab, wait_for_aspx_load
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +62,11 @@ CLASSIFICATION_LEVELS = [
 
 def get_classification(page: Page):
     try:
-        class_tab_ids = [
-            "ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Classification",
-            "ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Summary",
-        ]
-        for elem_id in class_tab_ids:
-            tab_element = page.wait_for_selector(f"#{elem_id}", timeout=15000)
-            safe_click(page, tab_element)
-            wait_for_preloader(page)
-            wait_for_aspx_load(page)
+        open_tab(
+            page,
+            "#ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Classification",
+            "#ctl00_ctl00_cphBaseBody_cphBody_TabsCadet1_Summary",
+        )
 
         # The edit link only exists once the Classification form view has
         # rendered — the condition the fixed sleeps above were standing in for.
