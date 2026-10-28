@@ -57,3 +57,25 @@ def test_open_tab_clicks_the_toggle_then_the_item_in_its_menu(page):
       <div id="menu" style="display:none"><a id="item" onclick="window.opened = true">Attendance</a></div>""")
     open_tab(page, "#toggle", "#item", timeout=2000)
     assert page.evaluate("() => window.opened") is True
+
+
+def test_showing_all_rows_waits_for_the_draw_not_a_preloader(page, monkeypatch):
+    # The length change is client-side, so the old preloader wait after it only
+    # ever sat out its one-second window.
+    import scripts.tables as tables
+    from scripts.tables import ensure_all_rows_shown
+
+    def no_preloader(*a, **k):
+        raise AssertionError("waited for a preloader after a client-side redraw")
+
+    monkeypatch.setattr(tables, "wait_for_preloader", no_preloader)
+    page.set_content("""
+      <select name="t_length" onchange="setTimeout(draw, 300)">
+        <option value="10" selected>10</option><option value="-1">All</option></select>
+      <table id="t"><tbody><tr><td>1</td></tr></tbody></table>
+      <div id="t_info">Showing 1 to 1 of 12 entries</div>
+      <script>function draw() {
+        document.querySelector('#t tbody').innerHTML = '<tr><td>x</td></tr>'.repeat(12);
+      }</script>""")
+    assert ensure_all_rows_shown(page, "t_length", "t", timeout=3000) is True
+    assert page.evaluate("() => document.querySelectorAll('#t tbody tr').length") == 12
