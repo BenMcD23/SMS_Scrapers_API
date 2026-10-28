@@ -48,7 +48,6 @@ def roster(db):
     ("/cadets", {"staff", "snco"}),
     ("/cadets/audit/badge-types", {"staff"}),
     ("/cadets/audit/medical", {"staff"}),
-    ("/cadets/audit/whts", {"staff"}),
     ("/cadets/1", {"staff"}),
     ("/cadets/1/attendance", {"staff"}),
 ])
@@ -394,7 +393,26 @@ def test_removing_a_cadet_twice_is_404(api, db):
 
 # ── WHT audit ─────────────────────────────────────────────────────────────────
 
-def test_wht_audit_shows_each_cadets_newest_test_per_weapon_and_whether_it_is_current(api, db, roster):
+WEAPONS = ["L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)"]
+
+
+def _whts(api, *weapons, cins=(1, 2, 3)):
+    body = {"cadet_cins": list(cins), "qualifications": [f"wht:{w}" for w in weapons]}
+    res = api.post("/cadets/audit/check", json=body, headers=api.as_("staff"))
+    assert res.status_code == 200
+    return {r["cin"]: {c["qual_type"]: c for c in r["qualifications_check"]} for r in res.json()}
+
+
+def test_the_audit_catalog_offers_each_weapon_as_a_current_or_expired_check(api, db, roster):
+    db.add(CadetWht(cadet_id=1, weapon="Air Rifle", date_passed=date(2026, 1, 1), date_expires=date(2026, 7, 1)))
+    db.commit()
+    whts = [b for b in api.get("/cadets/audit/badge-types", headers=api.as_("staff")).json() if b["kind"] == "wht"]
+    # Ours first, always, then any other weapon Bader returned.
+    assert [(b["key"], b["name"]) for b in whts] == [(f"wht:{w}", w) for w in [*WEAPONS, "Air Rifle"]]
+    assert {tuple(b["levels"]) for b in whts} == {("current", "expired")}
+
+
+def test_a_wht_check_reports_each_cadets_newest_test_and_whether_it_is_current(api, db, roster):
     today = date.today()
     db.add_all([
         # Amy: an old lapsed L98A2 and a newer current one, plus an expired Scorpion.
@@ -411,34 +429,33 @@ def test_wht_audit_shows_each_cadets_newest_test_per_weapon_and_whether_it_is_cu
     ])
     db.commit()
 
-    body = api.get("/cadets/audit/whts", headers=api.as_("staff")).json()
-    assert body["weapons"] == ["L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)"]
-    by_cin = {c["cin"]: c for c in body["cadets"]}
-
-    amy = by_cin[1]
-    assert {w: t["status"] for w, t in amy["latest"].items()} == {
-        "L98A2": "current", "Scorpion (single shot)": "expired"}
-    assert amy["latest"]["L98A2"]["awarded_by"] == "Doherty, S Flt Lt"
-    assert [t["date_passed"] for t in amy["history"]] == sorted(
-        (t["date_passed"] for t in amy["history"]), reverse=True)
-    assert len(amy["history"]) == 3
-
-    bob = by_cin[2]
-    assert bob["latest"]["Scorpion (magazine fed)"]["status"] == "current"
-    assert bob["latest"]["Scorpion (magazine fed)"]["awarded_by"] == "Ó Súilleabháin, É Fg Off"
-    assert bob["latest"]["L98A2"] == {**bob["latest"]["L98A2"], "status": "expired", "date_expires": None}
-
-    # A cadet who has never done a WHT is still listed, so the audit shows the gap.
-    assert by_cin[3]["latest"] == {} and by_cin[3]["history"] == []
+    checks = _whts(api, *WEAPONS)
+    amy, bob, cat = checks[1], checks[2], checks[3]
+    assert amy["wht:L98A2"] == {
+        "qual_type": "wht:L98A2", "display_name": "L98A2 WHT", "kind": "wht", "level": "current", "has": True,
+        "date_achieved": (today - timedelta(days=30)).isoformat(),
+        "date_expires": (today + timedelta(days=152)).isoformat(), "awarded_by": "Doherty, S Flt Lt"}
+    assert amy["wht:Scorpion (single shot)"]["level"] == "expired"
+    assert bob["wht:Scorpion (magazine fed)"]["level"] == "current"
+    assert bob["wht:Scorpion (magazine fed)"]["awarded_by"] == "Ó Súilleabháin, É Fg Off"
+    assert (bob["wht:L98A2"]["level"], bob["wht:L98A2"]["date_expires"]) == ("expired", None)
+    # Never tested: no level, so the audit's "None" chip finds them.
+    assert {k: (c["has"], c["level"]) for k, c in cat.items()} == {f"wht:{w}": (False, None) for w in WEAPONS}
 
 
-def test_wht_audit_adds_a_weapon_bader_returns_that_we_dont_list(api, db, roster):
-    db.add(CadetWht(cadet_id=1, weapon="Air Rifle", date_passed=date(2026, 1, 1), date_expires=date(2026, 7, 1)))
+def test_wht_checks_sit_beside_badge_checks(api, db, roster):
+    db.add(CadetWht(cadet_id=1, weapon="L98A2", date_passed=date.today(), date_expires=date.today()))
     db.commit()
-    body = api.get("/cadets/audit/whts", headers=api.as_("staff")).json()
-    assert body["weapons"][-1] == "Air Rifle"
+    body = {"cadet_cins": [1], "qualifications": ["shooting", "wht:L98A2"]}
+    [amy] = api.post("/cadets/audit/check", json=body, headers=api.as_("staff")).json()
+    assert [c["qual_type"] for c in amy["qualifications_check"]] == ["shooting", "wht:L98A2"]
 
 
-def test_wht_audit_with_no_cadets(api):
-    body = api.get("/cadets/audit/whts", headers=api.as_("staff")).json()
-    assert body == {"weapons": ["L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)"], "cadets": []}
+def test_an_event_audit_checks_whts_too(api, db, roster):
+    db.add(AllEvent(id=9, title="Range day"))
+    db.add(CadetEvent(event_id=9, cadet_id=2))
+    db.add(CadetWht(cadet_id=2, weapon="L98A2", date_passed=date.today(), date_expires=date.today()))
+    db.commit()
+    body = {"event_id": 9, "qualifications": ["wht:L98A2"]}
+    [bob] = api.post("/cadets/audit/event-check", json=body, headers=api.as_("staff")).json()
+    assert bob["qualifications_check"][0]["level"] == "current"

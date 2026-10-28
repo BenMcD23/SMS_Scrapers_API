@@ -36,6 +36,7 @@ from database.models import (
     CadetDietary,
     CadetEvent,
     CadetMedical,
+    CadetWht,
     NcoComment,
     NcoCommentReply,
     RemovedCadet,
@@ -143,11 +144,41 @@ def _award_date(badge, level, qual_objs):
     return None
 
 
+# The squadron's weapon systems, always offered in the audit even when nobody
+# holds one. Any other weapon Bader returns is offered after them.
+WHT_WEAPONS = ("L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)")
+# A weapon handling test is audited like a qualification whose levels are
+# "current" and "expired", keyed "wht:<weapon>" in the catalog.
+WHT_PREFIX = "wht:"
+
+
+def _wht_status(w, today: date) -> str:
+    # No expiry date counts as expired: a safety audit mustn't show an
+    # unknown as cleared.
+    return "current" if w.date_expires and w.date_expires >= today else "expired"
+
+
+def _wht_check(c, weapon: str, today: date) -> dict:
+    """The cadet's newest test on ``weapon``, shaped like a qualification check."""
+    latest = max((w for w in c.whts if w.weapon == weapon), key=lambda w: w.date_passed, default=None)
+    return {
+        "qual_type": WHT_PREFIX + weapon,
+        "display_name": f"{weapon} WHT",
+        "kind": "wht",
+        "level": _wht_status(latest, today) if latest else None,
+        "has": latest is not None,
+        "date_achieved": latest.date_passed.isoformat() if latest else None,
+        "date_expires": latest.date_expires.isoformat() if latest and latest.date_expires else None,
+        "awarded_by": latest.awarded_by if latest else None,
+    }
+
+
 def _build_audit_result(cadets, qualifications, include_medical, include_dietary,
                         include_missing_attachments=False):
     # `qualifications` is a list of badge-type keys from the catalog. Unknown
     # keys are ignored so the frontend can't crash the audit.
     badges = [BADGE_TYPE_BY_KEY[k] for k in qualifications if k in BADGE_TYPE_BY_KEY]
+    weapons = [k[len(WHT_PREFIX):] for k in qualifications if k.startswith(WHT_PREFIX)]
     today = date.today()
     results = []
     for c in cadets:
@@ -172,6 +203,8 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
                 }
                 for b in badges
             ]
+        if weapons:
+            entry.setdefault("qualifications_check", []).extend(_wht_check(c, w, today) for w in weapons)
         if include_medical:
             entry["allergies"] = [
                 {
@@ -194,17 +227,29 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
 # ─── Audit routes (must be before /cadets/{cin}) ──────────────────────────────
 
 @router.get("/cadets/audit/badge-types")
-def audit_badge_types(idinfo: dict = Depends(require_staff)):
+def audit_badge_types(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
     """The qualification catalog — badge types, their kind, and ordered levels
-    (highest first) — so the frontend can build the audit UI dynamically."""
+    (highest first) — so the frontend can build the audit UI dynamically. Weapon
+    handling tests come last, one per weapon, with kind "wht"."""
+    seen = {w for (w,) in db.query(CadetWht.weapon).distinct()}
+    weapons = [*WHT_WEAPONS, *sorted(seen - set(WHT_WEAPONS))]
     return [
-        {
-            "key": b.key,
-            "name": b.name,
-            "kind": b.kind,
-            "levels": [lvl.level for lvl in b.levels],
-        }
-        for b in BADGE_TYPES
+        *(
+            {
+                "key": b.key,
+                "name": b.name,
+                "kind": b.kind,
+                "levels": [lvl.level for lvl in b.levels],
+            }
+            for b in BADGE_TYPES
+        ),
+        *(
+            {"key": WHT_PREFIX + w, "name": w, "kind": "wht", "levels": ["current", "expired"]}
+            for w in weapons
+        ),
     ]
 
 
@@ -254,53 +299,6 @@ def audit_medical(
     ]
 
 
-# The squadron's weapon systems, always shown as audit columns even when nobody
-# holds one. Any other weapon Bader returns is added after them.
-WHT_WEAPONS = ("L98A2", "Scorpion (magazine fed)", "Scorpion (single shot)")
-
-
-def _wht_status(w, today: date) -> str:
-    # No expiry date counts as expired: a safety audit mustn't show an
-    # unknown as cleared.
-    return "current" if w.date_expires and w.date_expires >= today else "expired"
-
-
-@router.get("/cadets/audit/whts")
-def audit_whts(
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    """Every cadet with their newest weapon handling test per weapon (current
-    or expired) and their full WHT history. A cadet with no test for a weapon
-    simply has no entry for it."""
-    today = date.today()
-    cadets = (
-        db.query(Cadet)
-        .options(selectinload(Cadet.whts))
-        .order_by(Cadet.last_name, Cadet.first_name)
-        .all()
-    )
-    extra = sorted({w.weapon for c in cadets for w in c.whts} - set(WHT_WEAPONS))
-    out = []
-    for c in cadets:
-        history = sorted(c.whts, key=lambda w: w.date_passed, reverse=True)
-        tests = [
-            {
-                "weapon": w.weapon,
-                "date_passed": w.date_passed.isoformat(),
-                "date_expires": w.date_expires.isoformat() if w.date_expires else None,
-                "awarded_by": w.awarded_by,
-                "status": _wht_status(w, today),
-            }
-            for w in history
-        ]
-        latest = {}
-        for t in tests:
-            latest.setdefault(t["weapon"], t)  # history is newest first
-        out.append({**_cadet_summary(c), "latest": latest, "history": tests})
-    return {"weapons": [*WHT_WEAPONS, *extra], "cadets": out}
-
-
 class AuditCheckBody(BaseModel):
     cadet_cins: list[int] = []
     qualifications: list[str] = []
@@ -314,6 +312,8 @@ def _audit_load_options(body) -> list:
     so the result is built in a fixed number of queries however many cadets
     are checked."""
     opts = [selectinload(Cadet.qualifications), selectinload(Cadet.flights)]
+    if any(k.startswith(WHT_PREFIX) for k in body.qualifications):
+        opts.append(selectinload(Cadet.whts))
     if body.include_medical:
         opts.append(selectinload(Cadet.medical))
     if body.include_dietary:
