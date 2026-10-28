@@ -474,3 +474,35 @@ def test_scraper_host_unset_locally_is_not_oracle(api, monkeypatch):
     # Local dev has no downward API; no warning there.
     monkeypatch.delenv("NODE_NAME", raising=False)
     assert api.get("/scraper-host", headers=STAFF).json() == {"node": None, "on_oracle": False}
+
+
+# The live-log streams run on the event loop thread. If one paused at a yield
+# while still holding the scraper's threading.Lock, a second viewer (React
+# Strict Mode opens two) blocked the whole event loop on it, and the scraper
+# blocked on its next log line: every request hung and Chromium sat blank.
+async def _first_chunk_then_lock_is_free(response, state):
+    body = response.body_iterator
+    await body.__anext__()
+    free = state["lock"].acquire(blocking=False)
+    if free:
+        state["lock"].release()
+    await body.aclose()
+    return free
+
+
+def test_a_paused_scraper_stream_does_not_hold_the_scraper_lock(fresh_state, monkeypatch):
+    import anyio
+    monkeypatch.setattr(sc, "require_staff", lambda authorization: None)
+    state = fresh_state["cadet-quali"]
+    state.update(running=True, started_by="amy@x", messages=['{"type": "info", "value": "one"}'] * 3)
+    response = anyio.run(lambda: sc.named_scraper_stream("cadet-quali", authorization="Bearer staff"))
+    assert anyio.run(_first_chunk_then_lock_is_free, response, state)
+
+
+def test_a_paused_upload_stream_does_not_hold_the_job_lock(monkeypatch):
+    import anyio
+    state = {"messages": ['{"type": "info", "value": "one"}'] * 3, "lock": threading.Lock()}
+    monkeypatch.setattr(sc, "upload_jobs", {"j1": state})
+    monkeypatch.setattr(sc, "require_staff", lambda authorization: None)
+    response = anyio.run(lambda: sc.upload_stream("j1", authorization="Bearer staff"))
+    assert anyio.run(_first_chunk_then_lock_is_free, response, state)
