@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy.orm import Session
 
 from core.assistant_tools import TOOLS, describe_tools
-from core.llm import generate
+from core.llm import GROQ_MODEL, NVIDIA_MODEL, generate
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,12 @@ MAX_RESULT_CHARS = 24_000
 MAX_CHARTS = 4
 MAX_TABLES = 4
 MAX_FOLLOW_UPS = 3
+MAX_CADET_LINKS = 50
+
+# Not the whole shared chain: Gemini's free tier lets Google use what it's sent
+# to improve its products, and these prompts carry cadets' dates of birth and
+# emails, so the assistant leaves Gemini out.
+MODELS = [NVIDIA_MODEL, GROQ_MODEL]
 
 Cell = str | int | float | None
 
@@ -139,6 +145,8 @@ class Result:
     charts: list[dict] = field(default_factory=list)
     tables: list[dict] = field(default_factory=list)
     follow_ups: list[str] = field(default_factory=list)
+    # [{cin, name}] the answer mentions, to link to their records.
+    cadets: list[dict] = field(default_factory=list)
 
 
 def _transcript(history: list[dict], question: str, work: list[str]) -> str:
@@ -210,20 +218,80 @@ def run_tool(db: Session, name, args, personal: bool = True) -> dict:
         return {"error": f"{name} failed; try a different question"}
 
 
-def ask(db: Session, question: str, history: list[dict] | None = None, personal: bool = True) -> Result:
-    """Answer one question, with earlier turns for context. `personal` False
-    keeps dates of birth and emails out of every tool result ("Hide personal
-    data" is on). Raises RuntimeError when every model in the chain fails."""
+# What the site shows while each tool runs, so a 30-second answer shows its
+# working instead of a spinner.
+STEPS = {
+    "squadron_overview": "Counting the squadron",
+    "find_cadets": "Looking cadets up",
+    "cadet_record": "Reading a cadet's record",
+    "expiring": "Checking what's expiring",
+    "attendance": "Checking attendance",
+    "badge_holders": "Checking badges",
+    "stores_stock": "Checking the stores shelves",
+    "open_orders": "Checking uniform orders",
+    "upcoming_events": "Checking upcoming events",
+    "rafac_docs": "Searching the RAFAC documents",
+    "cadet_events": "Checking events",
+    "theory_progress": "Checking theory lessons",
+    "badge_orders": "Checking badge orders",
+    "nco_appraisals": "Checking NCO appraisals",
+    "nco_comments": "Reading NCO comments",
+    "session_plans": "Checking session plans",
+    "leaving": "Checking the leaving process",
+    "stats_history": "Looking at past numbers",
+    "staff_list": "Checking staff",
+    "aggregate": "Adding up the figures",
+}
+THINKING = "Thinking"
+WRITING = "Writing the answer"
+
+
+@dataclass
+class Step:
+    """One thing the assistant is doing, for the site's live progress line."""
+    label: str
+
+
+def _cadets_in(results: list[dict], answer: str, tables: list[dict]) -> list[dict]:
+    """The cadets the answer names, so the site can link each to their record.
+    Taken from what the tools returned (a cadet ref always has a flight key;
+    staff rows don't, so a staff CIN is never linked as a cadet's), and kept
+    only if the name appears in the answer or a table."""
+    seen: dict[int, str] = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("cin"), int) and isinstance(node.get("name"), str) and "flight" in node:
+                seen.setdefault(node["cin"], node["name"])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(results)
+    text = answer + " " + " ".join(str(c) for t in tables for row in t["rows"] for c in row)
+    return [{"cin": cin, "name": name} for cin, name in seen.items() if name and name in text][:MAX_CADET_LINKS]
+
+
+def ask_steps(db: Session, question: str, history: list[dict] | None = None, personal: bool = True):
+    """Answer one question as a generator: yields a Step as each round and
+    tool starts, then the Result last. `personal` False keeps dates of birth
+    and emails out of every tool result ("Hide personal data" is on). Raises
+    RuntimeError when every model in the chain fails."""
     history = history or []
     work: list[str] = []
     calls: list[dict] = []
+    results: list[dict] = []
     model = ""
     for round_no in range(1, MAX_ROUNDS + 1):
         prompt = _transcript(history, question, work)
         last = round_no == MAX_ROUNDS
         if last:
             prompt += "\n\nNo more tool calls: give your answer now from the results above."
-        text, model = generate(prompt, SYSTEM_PROMPT, temperature=0.2, max_tokens=12000, groq_max_tokens=6000)
+        yield Step(WRITING if work else THINKING)
+        text, model = generate(prompt, SYSTEM_PROMPT, temperature=0.2, max_tokens=12000, groq_max_tokens=6000,
+                               models=MODELS)
         reply = parse_reply(text)
         wanted = reply.get("calls")
         if not wanted or last:
@@ -231,21 +299,34 @@ def ask(db: Session, question: str, history: list[dict] | None = None, personal:
             if not isinstance(answer, str) or not answer.strip():
                 # Asked for tools on the last round, or answered with nothing.
                 answer = "I couldn't work that out from the squadron's records. Try asking it a different way."
-            return Result(
-                answer=answer.strip(), model=model, calls=calls,
+            answer = answer.strip()
+            tables = _valid(Table, reply.get("tables"), MAX_TABLES)
+            yield Result(
+                answer=answer, model=model, calls=calls,
                 charts=_valid(Chart, reply.get("charts"), MAX_CHARTS),
-                tables=_valid(Table, reply.get("tables"), MAX_TABLES),
+                tables=tables,
                 follow_ups=_follow_ups(reply.get("follow_ups")),
+                cadets=_cadets_in(results, answer, tables),
             )
+            return
 
         for call in wanted[:MAX_CALLS_PER_ROUND]:
             call = call if isinstance(call, dict) else {}
             name, args = call.get("tool"), call.get("args")
+            yield Step(STEPS.get(name, "Looking it up") if isinstance(name, str) else "Looking it up")
             result = run_tool(db, name, args, personal)
+            results.append(result)
             calls.append({"tool": str(name), "args": args if isinstance(args, dict) else {},
                           "ok": "error" not in result})
             body = json.dumps(result, default=str, separators=(",", ":"))
             if len(body) > MAX_RESULT_CHARS:
                 body = body[:MAX_RESULT_CHARS] + "…(cut: too long, narrow the question)"
             work.append(f"[{len(calls)}] {name} {json.dumps(args or {})}\n{body}")
-    raise AssertionError("unreachable")  # the last round always returns
+
+
+def ask(db: Session, question: str, history: list[dict] | None = None, personal: bool = True) -> Result:
+    """ask_steps without the progress: just the Result."""
+    for event in ask_steps(db, question, history, personal):
+        if isinstance(event, Result):
+            return event
+    raise AssertionError("unreachable")  # the last round always yields a Result

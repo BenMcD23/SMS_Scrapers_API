@@ -616,7 +616,8 @@ def seed_push(db, now: datetime | None = None) -> None:
 
 def seed_assistant(db, now: datetime | None = None) -> None:
     """Two saved assistant chats for the dev staff login, so /assistant opens
-    with a chat list and an answer with a chart and a table rather than empty.
+    with a chat list (one pinned) and a rated answer with a chart, a table and
+    linked cadets rather than empty, and the owner's usage view has data.
     Written directly: a real answer needs an LLM key the preview doesn't have.
     The numbers are the seed's own, read the way the assistant reads them."""
     import core.security as security
@@ -637,12 +638,14 @@ def seed_assistant(db, now: datetime | None = None) -> None:
         day = date.fromisoformat(iso)
         return f"{day.day} {day:%b %Y}"
 
-    def chat(title, ago, turns):
+    def chat(title, ago, turns, pinned=False):
         when = now - ago
-        c = AssistantChat(email=security.OWNER_EMAIL.lower(), title=title, created_at=when, updated_at=when)
-        for question, answer, extra in turns:
+        c = AssistantChat(email=security.OWNER_EMAIL.lower(), title=title, pinned=pinned,
+                          created_at=when, updated_at=when)
+        for question, answer, extra, feedback in turns:
             c.messages.append(AssistantMessage(role="user", content=question, created_at=when))
-            c.messages.append(AssistantMessage(role="assistant", content=answer, extra=extra, created_at=when))
+            c.messages.append(AssistantMessage(role="assistant", content=answer, extra=extra,
+                                               feedback=feedback, created_at=when))
         db.add(c)
 
     chat("Report on the squadron's size by flight", timedelta(hours=2), [(
@@ -658,12 +661,15 @@ def seed_assistant(db, now: datetime | None = None) -> None:
          "calls": [{"tool": "aggregate", "args": {"dataset": "cadets", "group_by": [{"field": "flight"}]},
                     "ok": True},
                    {"tool": "find_cadets", "args": {"min_age": 17}, "ok": True}],
+         "cadets": [{"cin": c["cin"], "name": c["name"]} for c in oldest],
          "model": "z-ai/glm-5.3"},
-    )])
+        1,
+    )], pinned=True)
     chat("How many NCOs are there?", timedelta(days=3), [(
         "How many NCOs are there?",
         "I couldn't check that just now. Try asking again in a minute.",
         {"charts": [], "tables": [], "follow_ups": [], "calls": [], "model": "openai/gpt-oss-120b"},
+        -1,  # so the owner's usage page has a thumbs-down to show
     )])
     db.commit()
 

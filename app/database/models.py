@@ -1579,7 +1579,8 @@ class AssistantChat(Base):
 
     id         = Column(Integer, primary_key=True, autoincrement=True)
     email      = Column(Text, nullable=False, index=True)  # lower-cased owner
-    title      = Column(Text, nullable=False)              # the first question, cut short
+    title      = Column(Text, nullable=False)              # the first question cut short, or renamed
+    pinned     = Column(Boolean, nullable=False, default=False, server_default="0")  # top of the list
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)          # newest first in the list
 
@@ -1597,6 +1598,10 @@ class AssistantMessage(Base):
     content    = Column(Text, nullable=False)  # the question, or the answer's Markdown
     # An answer's extras: {charts, tables, follow_ups, calls, model}. None on a question.
     extra      = Column(JSON, nullable=True)
+    # The asker's thumbs on an answer: 1 up, -1 down, None not rated. The
+    # owner's usage view lists the thumbs-down, which is how wrong answers
+    # get found.
+    feedback   = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False)
 
     chat = relationship("AssistantChat", back_populates="messages")

@@ -24,21 +24,38 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Literal
 
+import httpx
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from core import dashboard_query
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
+from core.config import CHATBOT_URL
+from core.leaving import LAPSE_DAYS, leaving_status
 from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level, qual_names_with_flights
+from core.ranks import nco_team
 from core.recruit_form import age_on
+from core.theory_lessons import THEORY_LESSONS
 from database.models import (
+    AllEvent,
+    BadgeOrder,
     Cadet,
     CadetAbsence,
     CadetAttendance,
+    CadetEvent,
     CadetFlight,
+    CadetLeavingProcess,
     CadetQualification,
+    CadetTheoryLesson,
+    CadetTheoryProgress,
     CadetWht,
     Event317,
+    NcoAppraisal,
+    NcoComment,
+    SessionPlan,
+    Staff,
+    StaffAttendance,
+    StatsSnapshot,
     StoresItem,
     StoresOrder,
 )
@@ -72,6 +89,19 @@ def _capped(key: str, rows: list, limit: int = MAX_ROWS, **extra) -> dict:
     if len(rows) > limit:
         out["truncated"] = f"showing the first {limit} of {len(rows)}; narrow the question to see the rest"
     return out
+
+
+def _clip(text, limit: int) -> str | None:
+    if text is None:
+        return None
+    text = str(text).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _user_name(user) -> str | None:
+    if not user:
+        return None
+    return f"{user.first_name or ''} {user.last_name or ''}".strip() or None
 
 
 def _today() -> date:
@@ -381,6 +411,243 @@ def upcoming_events(db: Session, args: EventsArgs, personal: bool = False) -> di
     return _capped("events", rows)
 
 
+# ─── RAFAC documents ─────────────────────────────────────────────────────────
+
+class DocsArgs(BaseModel):
+    question: str = Field(min_length=3, max_length=1000,
+                          description="a policy question, with the detail that matters (activity, age, role)")
+
+
+def rafac_docs(db: Session, args: DocsArgs, personal: bool = False) -> dict:
+    """The Docs Assistant (routers/chat.py) as a tool: answers from the RAFAC
+    controlled documents, with the documents it quotes. "Couldn't check" comes
+    back as an error, so the model says it couldn't look rather than guessing."""
+    try:
+        res = httpx.post(f"{CHATBOT_URL}/ask", json={"question": args.question.strip()}, timeout=60.0)
+    except httpx.HTTPError:
+        return {"error": "the RAFAC documents service is unreachable just now"}
+    if res.status_code != 200:
+        return {"error": "the RAFAC documents service failed to answer"}
+    try:
+        body = res.json()
+    except ValueError:
+        return {"error": "the RAFAC documents service sent back something unreadable"}
+    return {
+        "found": bool(body.get("found", True)),
+        "answer": _clip(body.get("answer"), 3000),
+        "sources": [{"n": s.get("n"), "document": s.get("filename"), "where": s.get("location")}
+                    for s in (body.get("sources") or [])[:8] if isinstance(s, dict)],
+    }
+
+
+# ─── Events ──────────────────────────────────────────────────────────────────
+
+class CadetEventsArgs(BaseModel):
+    cin: int | None = Field(None, description="one cadet's events")
+    event: str | None = Field(None, max_length=100, description="part of an event title: who went")
+
+
+def cadet_events(db: Session, args: CadetEventsArgs, personal: bool = False) -> dict:
+    """Events cadets have been on (Bader's cadet event history), by cadet, by
+    event, or every event with how many went."""
+    def title(e: AllEvent) -> str:
+        return f"{e.parent.title} – {e.title}" if e.parent else e.title
+
+    if args.cin is not None:
+        rows = (db.query(CadetEvent).filter_by(cadet_id=args.cin).all())
+        return _capped("events", sorted({title(r.event) for r in rows if r.event}))
+    events = db.query(AllEvent).all()
+    if args.event:
+        wanted = args.event.casefold()
+        events = [e for e in events if wanted in title(e).casefold()]
+        rows = [{"event": title(e), "cadets": [_ref(ce.cadet) for ce in e.cadet_events if ce.cadet]}
+                for e in events]
+        return _capped("events", [r for r in rows if r["cadets"]], limit=20)
+    counts = sorted(({"event": title(e), "category": e.category, "cadets": len(e.cadet_events)}
+                     for e in events if e.cadet_events), key=lambda r: -r["cadets"])
+    return _capped("events", counts)
+
+
+# ─── Theory and classification ───────────────────────────────────────────────
+
+class TheoryArgs(BaseModel):
+    cin: int | None = Field(None, description="one cadet's theory progress")
+    lesson: str | None = Field(None, max_length=80, description="part of a lesson name, e.g. Airmanship")
+
+
+def theory_progress(db: Session, args: TheoryArgs, personal: bool = False) -> dict:
+    """Theory lessons done towards badges and classifications: which parts a
+    cadet has had, and who has finished, part-done or not started a lesson."""
+    done = defaultdict(set)
+    for r in db.query(CadetTheoryProgress):
+        done[r.cadet_id].add(r.lesson_key)
+    parts = defaultdict(lambda: defaultdict(set))
+    for r in db.query(CadetTheoryLesson):
+        parts[r.cadet_id][r.lesson_key].add(r.part)
+
+    if args.cin is not None:
+        c = db.get(Cadet, args.cin)
+        if not c:
+            return {"error": f"no cadet with CIN {args.cin}"}
+        return {**_ref(c), "classification": c.classification, "lessons": [
+            {"lesson": lesson.name, "group": lesson.category, "parts": lesson.parts,
+             "done": lesson.key in done[c.cin], "parts_had": sorted(parts[c.cin][lesson.key])}
+            for lesson in THEORY_LESSONS if lesson.key in done[c.cin] or parts[c.cin][lesson.key]
+        ]}
+
+    lessons = [lesson for lesson in THEORY_LESSONS
+               if not args.lesson or args.lesson.casefold() in lesson.name.casefold()]
+    cadets = db.query(Cadet).order_by(Cadet.last_name).all()
+    out = []
+    for lesson in lessons:
+        finished = [c for c in cadets if lesson.key in done[c.cin]]
+        partial = [c for c in cadets if lesson.key not in done[c.cin] and parts[c.cin][lesson.key]]
+        row = {"lesson": lesson.name, "group": lesson.category, "finished": len(finished),
+               "part_done": len(partial)}
+        if args.lesson:
+            row |= {"finished_cadets": [_ref(c) for c in finished][:MAX_ROWS],
+                    "part_done_cadets": [{**_ref(c), "parts_had": sorted(parts[c.cin][lesson.key])}
+                                         for c in partial][:MAX_ROWS]}
+        out.append(row)
+    return {"lessons": out}
+
+
+# ─── Badge orders ────────────────────────────────────────────────────────────
+
+def badge_orders(db: Session, _args: NoArgs, personal: bool = False) -> dict:
+    """Badges ordered for cadets and not yet handed over."""
+    rows = []
+    for o in db.query(BadgeOrder).order_by(BadgeOrder.created_at):
+        for i in o.order_items:
+            if i.given_at:
+                continue
+            rows.append({"cadet": _ref(o.cadet) if o.cadet else None, "badge": i.badge_name,
+                         "ordered": _iso(o.created_at), "replacement": i.replacement,
+                         "ready_to_collect": i.ready_to_collect is not None})
+    return _capped("badges", rows)
+
+
+# ─── NCO team ────────────────────────────────────────────────────────────────
+
+class AppraisalArgs(BaseModel):
+    cin: int | None = Field(None, description="one NCO's appraisals in full")
+
+
+def nco_appraisals(db: Session, args: AppraisalArgs, personal: bool = False) -> dict:
+    """NCO appraisals: when each NCO was last appraised, when the next review
+    is due, and any flags; one NCO's in full when asked."""
+    today = _today()
+    if args.cin is not None:
+        rows = (db.query(NcoAppraisal).filter_by(cadet_id=args.cin)
+                .order_by(NcoAppraisal.appraisal_date.desc()).all())
+        return _capped("appraisals", [{
+            "date": _iso(a.appraisal_date), "next_review": _iso(a.next_review_date),
+            "cause_for_concern": a.cause_for_concern, "extend_probation": a.extend_probation,
+            **{k: _clip(getattr(a, k), 800) for k in
+               ("general_observations", "effectiveness_in_role", "strengths", "weaknesses", "targets")},
+        } for a in rows], limit=5)
+    latest: dict = {}
+    for a in db.query(NcoAppraisal).order_by(NcoAppraisal.appraisal_date):
+        latest[a.cadet_id] = a
+    rows = []
+    for c in nco_team(db):
+        a = latest.get(c.cin)
+        rows.append({**_ref(c), "last_appraised": _iso(a.appraisal_date) if a else None,
+                     "next_review": _iso(a.next_review_date) if a else None,
+                     "overdue": bool(a) and _day(a.next_review_date) < today,
+                     "cause_for_concern": bool(a and a.cause_for_concern)})
+    return _capped("ncos", rows, never_appraised=sum(1 for r in rows if not r["last_appraised"]))
+
+
+class CommentsArgs(BaseModel):
+    cin: int | None = Field(None, description="only comments about this cadet")
+    days: int = Field(90, ge=1, le=730, description="how far back to look")
+
+
+def nco_comments(db: Session, args: CommentsArgs, personal: bool = False) -> dict:
+    """Notes NCOs and staff have left about cadets or the squadron, newest first."""
+    since = datetime.combine(_today() - timedelta(days=args.days), datetime.min.time())
+    q = db.query(NcoComment).filter(NcoComment.comment_date >= since)
+    if args.cin is not None:
+        q = q.filter(NcoComment.cadet_id == args.cin)
+    rows = [{"date": _iso(c.comment_date), "about": c.cadet_name or "the squadron",
+             "by": _user_name(c.author), "subject": c.subject, "note": _clip(c.body, 500),
+             "replies": len(c.replies)}
+            for c in q.order_by(NcoComment.comment_date.desc())]
+    return _capped("comments", rows)
+
+
+class PlansArgs(BaseModel):
+    status: str | None = Field(None, max_length=30,
+                               description="draft, submitted, amendments_requested or approved")
+
+
+def session_plans(db: Session, args: PlansArgs, personal: bool = False) -> dict:
+    """NCOs' session plans: what's being run when, by whom, and where each is
+    in review."""
+    q = db.query(SessionPlan)
+    if args.status:
+        q = q.filter(SessionPlan.status == args.status)
+    rows = [{"session": p.session_name, "date": _iso(p.session_date), "ic": p.session_ic,
+             "status": p.status, "by": _user_name(p.author), "aim": _clip(p.aim, 200),
+             "reviewed_by": p.reviewed_by}
+            for p in q.order_by(SessionPlan.session_date.desc())]
+    return _capped("plans", rows)
+
+
+# ─── Leaving and trends ──────────────────────────────────────────────────────
+
+def leaving(db: Session, _args: NoArgs, personal: bool = False) -> dict:
+    """Cadets in the leaving process: parents told they've stopped coming, and
+    whether the two weeks to reply are up. Lapsed cadets not yet in it are in
+    attendance (no register in the window)."""
+    now = datetime.now()
+    rows = []
+    for p in db.query(CadetLeavingProcess).order_by(CadetLeavingProcess.sent_at):
+        status, days_left = leaving_status(p.sent_at, now)
+        rows.append({**_ref(p.cadet), "parents_told": _iso(p.sent_at), "status": status,
+                     "days_left": days_left, "adjutant_asked": _iso(p.adj_requested_at)})
+    return _capped("cadets", rows, lapse_days=LAPSE_DAYS)
+
+
+class HistoryArgs(BaseModel):
+    months: int = Field(12, ge=1, le=60, description="how far back")
+
+
+def stats_history(db: Session, args: HistoryArgs, personal: bool = False) -> dict:
+    """Squadron strength over time from the weekly stats snapshots: total and
+    by flight, rank and classification. Spread evenly to at most 60 points."""
+    since = datetime.now() - timedelta(days=31 * args.months)
+    snaps = db.query(StatsSnapshot).filter(StatsSnapshot.captured_at >= since).order_by(StatsSnapshot.captured_at).all()
+    if len(snaps) > 60:
+        step = len(snaps) / 60
+        snaps = [snaps[int(i * step)] for i in range(60)] + [snaps[-1]]
+    return {"points": [
+        {"date": _iso(s.captured_at), **{k: (s.data or {}).get(k) for k in
+                                         ("total_cadets", "by_flight", "by_rank", "by_classification")}}
+        for s in snaps
+    ]}
+
+
+# ─── Staff ───────────────────────────────────────────────────────────────────
+
+class StaffArgs(BaseModel):
+    weeks: int = Field(12, ge=1, le=104, description="attendance over the last N weeks")
+
+
+def staff_list(db: Session, args: StaffArgs, personal: bool = False) -> dict:
+    """Adult staff by name and rank, with their recent attendance. Their
+    emails, phones and addresses are never given."""
+    since = datetime.combine(_today() - timedelta(weeks=args.weeks), datetime.min.time())
+    counts: dict = defaultdict(lambda: {PRESENT: 0, AUTHORISED: 0, ABSENT: 0})
+    for r in db.query(StaffAttendance).filter(StaffAttendance.date >= since):
+        counts[r.staff_id][attendance_state(r.status)] += 1
+    rows = [{"cin": s.cin, "name": f"{s.first_name} {s.last_name}".strip(), "rank": s.rank,
+             **counts[s.cin]}
+            for s in db.query(Staff).order_by(Staff.last_name)]
+    return _capped("staff", rows, since=since.date().isoformat())
+
+
 # ─── aggregate ───────────────────────────────────────────────────────────────
 
 class AggregateArgs(dashboard_query.QuerySpec):
@@ -430,6 +697,24 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("stores_stock", "Uniform stock on the shelves by item and size.", StockArgs, stores_stock),
     Tool("open_orders", "Uniform items still owed to cadets, and whether each is in stock.", NoArgs, open_orders),
     Tool("upcoming_events", "The squadron's upcoming events.", EventsArgs, upcoming_events),
+    Tool("rafac_docs", "Ask the RAFAC controlled documents (ACPs, JSPs, policy) a policy question; returns "
+         "the answer and the documents it quotes. Slow (10s+): only for policy questions.", DocsArgs, rafac_docs),
+    Tool("cadet_events", "Events cadets have been on: one cadet's (cin), who went on one (event), or every "
+         "event with how many went.", CadetEventsArgs, cadet_events),
+    Tool("theory_progress", "Theory lessons done towards badges and classifications: one cadet's (cin), "
+         "who has finished or part-done a lesson (lesson), or a summary of every lesson.",
+         TheoryArgs, theory_progress),
+    Tool("badge_orders", "Badges ordered for cadets and not yet handed over.", NoArgs, badge_orders),
+    Tool("nco_appraisals", "Every NCO's last appraisal, next review and flags; one NCO's appraisals in full "
+         "with cin.", AppraisalArgs, nco_appraisals),
+    Tool("nco_comments", "Notes NCOs and staff have left about cadets or the squadron.", CommentsArgs,
+         nco_comments),
+    Tool("session_plans", "NCOs' session plans and where each is in review.", PlansArgs, session_plans),
+    Tool("leaving", "Cadets in the leaving process (parents told) and whether their two weeks are up.",
+         NoArgs, leaving),
+    Tool("stats_history", "Squadron strength over time (total, by flight, rank, classification) from "
+         "weekly snapshots: for trends.", HistoryArgs, stats_history),
+    Tool("staff_list", "Adult staff by name and rank, with recent attendance.", StaffArgs, staff_list),
     Tool("aggregate",
          "Count, average or total over a whole dataset, grouped by up to two fields (dates bucket by "
          "grain: day, week, month, year) and filtered (ops: eq, neq, in, not_in, gt, gte, lt, lte, empty, "

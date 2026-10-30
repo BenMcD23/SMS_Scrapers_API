@@ -238,7 +238,8 @@ def test_aggregate_refuses_anything_off_the_allowlist(squadron, args, expected):
 
 def test_every_tool_works_on_an_empty_database(db):
     # A fresh install, or a scrape that hasn't run yet: empty lists, not errors.
-    for name in TOOLS:
+    # rafac_docs is a network call, tested with a fake in test_assistant_tools.py.
+    for name in [n for n in TOOLS if n != "rafac_docs"]:
         args = {"cadet_record": {"cin": 1}, "badge_holders": {"badge": "first_aid"},
                 "aggregate": {"dataset": "cadet_attendance"}}.get(name, {})
         result = call(db, name, **args)
@@ -450,3 +451,40 @@ def test_hide_personal_reaches_the_tools(squadron, model):
     model["replies"] = [{"calls": [{"tool": "find_cadets", "args": {"name": "amy"}}]}, {"answer": "ok"}]
     assistant.ask(squadron, "Amy's email?")
     assert "amy@example.com" in model["prompts"][3]
+
+
+# ─── Steps, models and cadet links ───────────────────────────────────────────
+
+def test_ask_steps_reports_each_round_and_tool_before_the_result(squadron, model):
+    model["replies"] = [{"calls": [{"tool": "expiring"}, {"tool": "nope"}]}, {"answer": "Done."}]
+    events = list(assistant.ask_steps(squadron, "q"))
+    assert [e.label for e in events[:-1]] == [
+        "Thinking", "Checking what's expiring", "Looking it up", "Writing the answer"]
+    assert isinstance(events[-1], assistant.Result)
+
+
+def test_every_tool_has_a_progress_label():
+    assert set(assistant.STEPS) == set(TOOLS)
+
+
+def test_the_assistant_leaves_gemini_out_of_its_chain(db, monkeypatch):
+    # Its prompts carry dates of birth and emails; Gemini's free tier may use
+    # what it's sent.
+    seen = {}
+
+    def fake_generate(prompt, system, **kw):
+        seen.update(kw)
+        return '{"answer": "ok"}', "z-ai/glm-5.3"
+
+    monkeypatch.setattr(assistant, "generate", fake_generate)
+    assistant.ask(db, "q")
+    assert seen["models"] == assistant.MODELS
+    assert not any("gemini" in m for m in assistant.MODELS)
+
+
+def test_cadets_named_in_the_answer_or_a_table_are_returned_to_link(squadron, model):
+    model["replies"] = [{"calls": [{"tool": "find_cadets"}, {"tool": "staff_list"}]},
+                        {"answer": "Amy Ashworth leads.", "tables": [
+                            {"title": "t", "columns": ["Name"], "rows": [["Siân Ó Briain"]]}]}]
+    result = assistant.ask(squadron, "q")
+    assert result.cadets == [{"cin": 1, "name": "Amy Ashworth"}, {"cin": 3, "name": "Siân Ó Briain"}]

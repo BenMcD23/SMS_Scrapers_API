@@ -471,3 +471,8 @@ def test_the_seeded_assistant_chats_open_for_the_dev_staff_login(api, db):
     # The other chat is the backup-model case.
     other = api.get(f"/assistant/chats/{chats[1]['id']}", headers=staff).json()
     assert other["messages"][1]["fallback"] is True
+    # Pinned, rated and linked, so each of those shows in the preview.
+    assert chats[0]["pinned"] is True and answer["feedback"] == 1
+    assert [c["name"] for c in answer["cadets"]] == [r[0] for r in answer["tables"][0]["rows"]]
+    usage = api.get("/assistant/usage", headers=staff).json()
+    assert usage["thumbs_down"] == 1 and usage["rated_down"][0]["question"] == "How many NCOs are there?"
