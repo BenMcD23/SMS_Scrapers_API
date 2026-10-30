@@ -43,6 +43,18 @@ def _ensure_all_rows_shown(page: Page, expected_rows: int | None = None):
     ensure_all_rows_shown(page, "eventTable_length", "eventTable", expected_rows)
 
 
+ATTENDEES_TABLE = "ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_gvCadetsAttendees"
+
+
+def _show_all_attendees(page: Page):
+    """Show every row of the open attendees modal. Best effort, as before: a
+    list too short to page may have no length control."""
+    try:
+        ensure_all_rows_shown(page, f"{ATTENDEES_TABLE}_length", ATTENDEES_TABLE, required=False, timeout=5000)
+    except Exception:
+        pass
+
+
 def _ensure_events_table(page: Page, expected_rows: int | None = None):
     """Get back to a fully rendered events table as cheaply as possible.
 
@@ -191,7 +203,10 @@ def get_sub_app_attendees(page: Page, event_id, scraper_messages, scraper_lock):
             sub_app_name = sub_app_names[i]
             with scraper_lock:
                 scraper_messages.append(f"Scraping sub-app {i+1} of {num_sub_apps}: {sub_app_name}")
-            button_id = f"ctl00_ctl00_cphBaseBody_cphBody_rpEvents_ctl{i:02d}_eventCard_fvEventCard_lbAttendees"
+            # The button's own id: Bader numbers the cards with gaps (ctl00,
+            # ctl02, ...), so one rebuilt from the loop index found nothing and
+            # sat out the 20s wait.
+            button_id = btn_tags[i]["id"]
 
             try:
                 button = page.wait_for_selector(f"#{button_id}", timeout=20000)
@@ -218,11 +233,7 @@ def get_sub_app_attendees(page: Page, event_id, scraper_messages, scraper_lock):
                     safe_click(page, close_button)
                     continue
 
-                try:
-                    page.locator("[name='ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_gvCadetsAttendees_length']").select_option(value="-1")
-                    wait_for_preloader(page)
-                except Exception:
-                    pass
+                _show_all_attendees(page)
 
                 tables = modal.query_selector_all("tbody")
                 if not tables:
@@ -244,7 +255,8 @@ def get_sub_app_attendees(page: Page, event_id, scraper_messages, scraper_lock):
             except Exception as e:
                 with scraper_lock:
                     scraper_messages.append(f"Exception for sub-app '{sub_app_name}': {type(e).__name__}: {e}")
-                results.append({"sub_app_name": sub_app_name, "attendees": "No cadets attending this event."})
+                # Not "No cadets attending": that read as a fact in the run log.
+                results.append({"sub_app_name": sub_app_name, "attendees": "Could not read attendees."})
 
         return results
 
@@ -313,11 +325,7 @@ def get_event_attendees(page: Page, event_names, number_of_events, scraper_messa
                 _ensure_events_table(page, number_of_events)
                 continue
 
-            try:
-                page.locator("[name='ctl00_ctl00_cphBaseBody_cphBody_eventNoticeboard_gvCadetsAttendees_length']").select_option(value="-1")
-                wait_for_preloader(page)
-            except Exception:
-                pass
+            _show_all_attendees(page)
 
             # Use whole-page tbody search to match original Selenium behaviour
             tbodies = page.query_selector_all("tbody")

@@ -8,7 +8,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.profiles import CADETS, link_index
 from scripts.tables import ensure_all_rows_shown, wait_for_full_draw
-from scripts.waiter import safe_click, wait_for_aspx_load, wait_for_preloader
+from scripts.waiter import open_tab, safe_click, wait_for_aspx_load, wait_for_preloader
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +95,9 @@ def add_qualification_with_attachment(
 
     # 2. Navigate to Qualifications & Awards -> General Qualifications
     log("Navigating to General Qualifications tab...")
-    for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-        tab = page.wait_for_selector(
-            f"xpath=//a[contains(text(), '{tab_text}')]",
-            timeout=15000,
-        )
-        safe_click(page, tab)
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-        time.sleep(0.5)
+    open_tab(page, "xpath=//a[contains(text(), 'Qualifications & Awards')]",
+             "xpath=//a[contains(text(), 'General Qualifications')]")
+    time.sleep(0.5)
 
     # 3. Click "Add Qualification" button
     log("Clicking 'Add Qualification'...")
@@ -216,15 +210,9 @@ def add_qualification_with_attachment(
     wait_for_aspx_load(page)
     time.sleep(1)
 
-    for tab_text in ["Qualifications & Awards", "General Qualifications"]:
-        tab = page.wait_for_selector(
-            f"xpath=//a[contains(text(), '{tab_text}')]",
-            timeout=15000,
-        )
-        safe_click(page, tab)
-        wait_for_preloader(page)
-        wait_for_aspx_load(page)
-        time.sleep(0.5)
+    open_tab(page, "xpath=//a[contains(text(), 'Qualifications & Awards')]",
+             "xpath=//a[contains(text(), 'General Qualifications')]")
+    time.sleep(0.5)
 
     # 7. Find ctrl index for our qualification
     log(f"Finding ctrl index for '{qualification_name}'...")
