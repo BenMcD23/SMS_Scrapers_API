@@ -32,6 +32,7 @@ from scripts.dev_server import (
     schema_is_stale,
     seed,
     seed_applications,
+    seed_assistant,
     seed_audit,
     seed_inspections,
     seed_oc_dashboard,
@@ -370,6 +371,7 @@ def _seed_everything(api, db):
     seed_oc_dashboard(api, api.as_("oc"))
     seed_audit(api, staff, db, now=NOW)
     seed_push(db, now=NOW)
+    seed_assistant(db, now=NOW)
 
 
 def test_the_applications_show_one_of_each_state(api, db):
@@ -451,3 +453,21 @@ def test_the_seeded_push_devices_never_reach_a_real_push_service(db):
     assert len(subs) == 2
     assert all(".invalid/" in s.endpoint for s in subs)
     assert {bool(s.last_sent_at) for s in subs} == {True, False}
+
+
+def test_the_seeded_assistant_chats_open_for_the_dev_staff_login(api, db):
+    # The preview has no LLM key, so these are the only answers it ever shows:
+    # they must load through the real endpoints, chart and table intact.
+    seed(db, now=NOW)
+    seed_assistant(db, now=NOW)
+    staff = api.as_("owner")  # the dev "Staff" button is the owner account
+    chats = api.get("/assistant/chats", headers=staff).json()
+    assert [c["title"] for c in chats] == ["Report on the squadron's size by flight", "How many NCOs are there?"]
+    report = api.get(f"/assistant/chats/{chats[0]['id']}", headers=staff).json()
+    answer = report["messages"][1]
+    [chart] = answer["charts"]
+    assert sum(chart["series"][0]["values"]) == CADET_COUNT
+    assert answer["tables"][0]["rows"] and all(r[3] >= 17 for r in answer["tables"][0]["rows"])
+    # The other chat is the backup-model case.
+    other = api.get(f"/assistant/chats/{chats[1]['id']}", headers=staff).json()
+    assert other["messages"][1]["fallback"] is True

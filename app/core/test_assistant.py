@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 import core.assistant as assistant
-from core.assistant_tools import MAX_ROWS, TOOLS, describe_tools
+from core.assistant_tools import MAX_CADETS, MAX_ROWS, TOOLS, describe_tools
 from database.models import (
     Cadet,
     CadetAbsence,
@@ -169,37 +169,91 @@ def test_squadron_overview_counts_and_flags_cadets_missing_from_sms(squadron):
     assert [c["cin"] for c in out["not_seen_on_sms"]] == [3]
 
 
-def test_no_tool_ever_returns_personal_data(squadron):
-    # The answers go to a third-party model: contact details, DOB, medical and
-    # absence reasons must never be in what a tool hands back.
-    secrets = ["amy@example.com", "07700900001", "mum@example.com", "2010-04-05", "Peanuts",
-               "Carries two pens", "Hospital", "7700900999"]
-    out = json.dumps([
-        call(squadron, "squadron_overview"), call(squadron, "find_cadets"),
-        *(call(squadron, "cadet_record", cin=cin) for cin in (1, 2, 3)),
-        call(squadron, "expiring", within_days=730, include_expired=True), call(squadron, "attendance"),
-        *(call(squadron, "badge_holders", badge=b, holds=h) for b in ("first_aid", "leadership")
-          for h in (True, False)),
-        call(squadron, "stores_stock"), call(squadron, "open_orders"), call(squadron, "upcoming_events"),
+def _everything(db, personal):
+    return json.dumps([
+        assistant.run_tool(db, name, args, personal) for name, args in [
+            ("squadron_overview", {}), ("find_cadets", {}),
+            *(("cadet_record", {"cin": cin}) for cin in (1, 2, 3)),
+            ("expiring", {"within_days": 730, "include_expired": True}), ("attendance", {}),
+            *(("badge_holders", {"badge": b, "holds": h}) for b in ("first_aid", "leadership") for h in (True, False)),
+            ("stores_stock", {}), ("open_orders", {}), ("upcoming_events", {}),
+            ("aggregate", {"dataset": "cadets", "group_by": [{"field": "flight"}]}),
+        ]
     ], default=str)
-    for secret in secrets:
+
+
+NEVER_SENT = ["07700900001", "mum@example.com", "Peanuts", "Carries two pens", "Hospital", "7700900999"]
+
+
+def test_dates_of_birth_and_emails_are_given_but_never_phones_parents_or_medical(squadron):
+    # Staff asked for DOBs and cadet emails; the rest stays out of what goes
+    # to a third-party model whatever is asked.
+    out = _everything(squadron, personal=True)
+    assert "amy@example.com" in out and "2010-04-05" in out
+    for secret in NEVER_SENT:
         assert secret not in out
+
+
+def test_hide_personal_data_keeps_dates_of_birth_and_emails_out_too(squadron):
+    out = _everything(squadron, personal=False)
+    for secret in [*NEVER_SENT, "amy@example.com", "2010-04-05", '"age"']:
+        assert secret not in out
+
+
+def test_find_cadets_gives_age_and_filters_by_it(squadron):
+    squadron.get(Cadet, 2).date_of_birth = datetime(TODAY.year - 13, 1, 1)
+    squadron.commit()
+    amy = call(squadron, "find_cadets", name="amy")["cadets"][0]
+    assert amy["date_of_birth"] == "2010-04-05" and amy["email"] == "amy@example.com"
+    assert amy["age"] == TODAY.year - 2010 - ((TODAY.month, TODAY.day) < (4, 5))
+    assert [c["cin"] for c in call(squadron, "find_cadets", max_age=14)["cadets"]] == [2]
+    # A cadet with no date of birth isn't guessed into an age band.
+    assert 3 not in [c["cin"] for c in call(squadron, "find_cadets", min_age=0)["cadets"]]
+    # Age filters still work with personal data hidden; the ages just aren't shown.
+    hidden = assistant.run_tool(squadron, "find_cadets", {"max_age": 14}, False)["cadets"]
+    assert [c["cin"] for c in hidden] == [2] and "age" not in hidden[0]
+
+
+def test_aggregate_counts_and_trends_through_the_dashboard_allowlist(squadron):
+    by_flight = call(squadron, "aggregate", dataset="cadets", group_by=[{"field": "flight"}])
+    assert [(r["keys"], r["value"]) for r in by_flight["rows"]] == [(["A"], 1), (["B"], 2)]
+    turnout = call(squadron, "aggregate", dataset="cadet_attendance", measure="turnout",
+                   filters=[{"field": "flight", "op": "eq", "value": "A"}])
+    assert turnout["rows"][0]["value"] == 100 and turnout["unit"] == "%"
+    monthly = call(squadron, "aggregate", dataset="cadet_attendance", range_days=365,
+                   group_by=[{"field": "date", "grain": "month"}])
+    assert sum(r["value"] for r in monthly["rows"]) == 12
+
+
+@pytest.mark.parametrize("args, expected", [
+    ({"dataset": "medical"}, "Unknown dataset"),
+    ({"dataset": "cadets", "group_by": [{"field": "email"}]}, "can't be grouped by 'email'"),
+    ({"dataset": "cadets", "measure": "sum"}, "no measure"),
+    ({"dataset": "cadets", "filters": [{"field": "joined_on", "op": "gt", "value": "soon"}]}, "isn't a date"),
+])
+def test_aggregate_refuses_anything_off_the_allowlist(squadron, args, expected):
+    # The allowlist is what keeps contact and medical columns unreachable.
+    assert expected in call(squadron, "aggregate", **args)["error"]
 
 
 def test_every_tool_works_on_an_empty_database(db):
     # A fresh install, or a scrape that hasn't run yet: empty lists, not errors.
     for name in TOOLS:
-        args = {"cin": 1} if name == "cadet_record" else {"badge": "first_aid"} if name == "badge_holders" else {}
+        args = {"cadet_record": {"cin": 1}, "badge_holders": {"badge": "first_aid"},
+                "aggregate": {"dataset": "cadet_attendance"}}.get(name, {})
         result = call(db, name, **args)
         assert name == "cadet_record" or "error" not in result, name
 
 
 def test_long_lists_are_cut_and_say_so(db):
-    db.add_all(Cadet(cin=i, first_name="C", last_name=str(i), flight="A") for i in range(MAX_ROWS + 5))
+    # Rows a tool returns are capped; the cadet list a little higher, so a
+    # whole squadron still fits in one answer.
+    db.add_all(Cadet(cin=i, first_name="C", last_name=str(i), flight="A") for i in range(MAX_CADETS + 5))
     db.commit()
     out = call(db, "find_cadets")
-    assert out["count"] == MAX_ROWS + 5 and len(out["cadets"]) == MAX_ROWS
+    assert out["count"] == MAX_CADETS + 5 and len(out["cadets"]) == MAX_CADETS
     assert "narrow" in out["truncated"]
+    assert len(call(db, "attendance")["cadets"]) == MAX_ROWS
 
 
 @pytest.mark.parametrize("name, args, expected", [
@@ -214,7 +268,7 @@ def test_a_bad_call_comes_back_as_an_error_for_the_model(db, name, args, expecte
 
 
 def test_a_tool_that_crashes_is_reported_not_raised(db, monkeypatch):
-    def boom(_db, _args):
+    def boom(_db, _args, _personal):
         raise ValueError("db gone")
     monkeypatch.setitem(TOOLS, "squadron_overview", replace(TOOLS["squadron_overview"], run=boom))
     assert assistant.run_tool(db, "squadron_overview", {}) == {"error": "squadron_overview failed; try a different question"}
@@ -342,3 +396,57 @@ def test_dates_in_results_are_iso(squadron):
     assert call(squadron, "cadet_record", cin=1)["weapon_handling_tests"][0]["passed"] == (
         TODAY - timedelta(days=30)).isoformat()
     assert isinstance(date.fromisoformat(call(squadron, "squadron_overview")["today"]), date)
+
+
+# ─── Charts, tables and follow-ups ───────────────────────────────────────────
+
+BAR = {"type": "bar", "title": "Cadets by flight", "labels": ["A", "B"],
+       "series": [{"name": "Cadets", "values": [1, 2]}]}
+TABLE = {"title": "B flight", "columns": ["Name", "Rate"], "rows": [["Ben Brook", 33], ["Siân Ó Briain", None]]}
+
+
+def test_an_answer_carries_its_charts_tables_and_follow_ups(db, model):
+    model["replies"] = [{"answer": "B is bigger.", "charts": [BAR], "tables": [TABLE],
+                         "follow_ups": [" And by rank? ", "", 5, "Turnout by month?"]}]
+    result = assistant.ask(db, "Report on flights")
+    assert result.charts == [{**BAR, "series": [{"name": "Cadets", "values": [1.0, 2.0]}], "unit": ""}]
+    assert result.tables == [TABLE]
+    assert result.follow_ups == ["And by rank?", "Turnout by month?"]
+
+
+@pytest.mark.parametrize("chart", [
+    {**BAR, "series": [{"name": "Cadets", "values": [1]}]},  # one value for two labels
+    {**BAR, "type": "radar"},
+    {**BAR, "type": "pie", "series": [BAR["series"][0], BAR["series"][0]]},  # pie with two series
+    {**BAR, "labels": [str(i) for i in range(5)], "type": "pie",
+     "series": [{"name": "x", "values": list(range(5))}]},  # 5 slices
+    {**BAR, "series": [{"name": f"s{i}", "values": [1, 2]} for i in range(5)]},  # 5 series
+    {**BAR, "labels": []},
+    "not a chart",
+])
+def test_a_chart_that_doesnt_fit_is_dropped_and_the_answer_kept(db, model, chart):
+    model["replies"] = [{"answer": "Here.", "charts": [chart, BAR]}]
+    result = assistant.ask(db, "q")
+    assert result.answer == "Here." and [c["title"] for c in result.charts] == ["Cadets by flight"]
+
+
+def test_a_ragged_table_is_dropped(db, model):
+    model["replies"] = [{"answer": "Here.", "tables": [{**TABLE, "rows": [["Ben"]]}], "charts": "nope"}]
+    result = assistant.ask(db, "q")
+    assert result.tables == [] and result.charts == []
+
+
+def test_charts_tables_and_follow_ups_are_capped(db, model):
+    model["replies"] = [{"answer": "x", "charts": [BAR] * 9, "tables": [TABLE] * 9, "follow_ups": ["a"] * 9}]
+    result = assistant.ask(db, "q")
+    assert (len(result.charts), len(result.tables), len(result.follow_ups)) == (
+        assistant.MAX_CHARTS, assistant.MAX_TABLES, assistant.MAX_FOLLOW_UPS)
+
+
+def test_hide_personal_reaches_the_tools(squadron, model):
+    model["replies"] = [{"calls": [{"tool": "find_cadets", "args": {"name": "amy"}}]}, {"answer": "ok"}]
+    assistant.ask(squadron, "Amy's email?", personal=False)
+    assert "amy@example.com" not in model["prompts"][1]
+    model["replies"] = [{"calls": [{"tool": "find_cadets", "args": {"name": "amy"}}]}, {"answer": "ok"}]
+    assistant.ask(squadron, "Amy's email?")
+    assert "amy@example.com" in model["prompts"][3]
