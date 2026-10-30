@@ -1564,3 +1564,44 @@ class PushSubscription(Base):
     user_agent   = Column(Text, nullable=True)
     created_at   = Column(DateTime, nullable=False)
     last_sent_at = Column(DateTime, nullable=True)
+
+
+# ─── Assistant chats ─────────────────────────────────────────────────────────
+
+class AssistantChat(Base):
+    """One conversation with the squadron assistant (routers/assistant.py).
+
+    Kept per person so a chat can be picked up again later, and only ever
+    shown to the account that started it: questions and answers can name
+    cadets with their dates of birth and emails.
+    """
+    __tablename__ = "Assistant_Chats"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    email      = Column(Text, nullable=False, index=True)  # lower-cased owner
+    title      = Column(Text, nullable=False)              # the first question cut short, or renamed
+    pinned     = Column(Boolean, nullable=False, default=False, server_default="0")  # top of the list
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)          # newest first in the list
+
+    messages = relationship("AssistantMessage", back_populates="chat", cascade="all, delete-orphan",
+                            order_by="AssistantMessage.id")
+
+
+class AssistantMessage(Base):
+    """One question or answer in an assistant chat."""
+    __tablename__ = "Assistant_Messages"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id    = Column(Integer, ForeignKey("Assistant_Chats.id", ondelete="CASCADE"), nullable=False, index=True)
+    role       = Column(Text, nullable=False)  # "user" | "assistant"
+    content    = Column(Text, nullable=False)  # the question, or the answer's Markdown
+    # An answer's extras: {charts, tables, follow_ups, calls, model}. None on a question.
+    extra      = Column(JSON, nullable=True)
+    # The asker's thumbs on an answer: 1 up, -1 down, None not rated. The
+    # owner's usage view lists the thumbs-down, which is how wrong answers
+    # get found.
+    feedback   = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+    chat = relationship("AssistantChat", back_populates="messages")

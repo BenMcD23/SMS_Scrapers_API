@@ -29,6 +29,7 @@ from routers import (
     activity_logs,
     appointments,
     assessments,
+    assistant,
     attendance,
     backups,
     badges,
@@ -232,5 +233,6 @@ app.include_router(classification_day.router)
 app.include_router(recruits.router)
 app.include_router(reference.router)
 app.include_router(chat.router)
+app.include_router(assistant.router)
 app.include_router(usage_router.router)
 app.include_router(push.router)

@@ -21,7 +21,7 @@ import argparse
 import os
 import random
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -614,6 +614,66 @@ def seed_push(db, now: datetime | None = None) -> None:
     db.commit()
 
 
+def seed_assistant(db, now: datetime | None = None) -> None:
+    """Two saved assistant chats for the dev staff login, so /assistant opens
+    with a chat list (one pinned) and a rated answer with a chart, a table and
+    linked cadets rather than empty, and the owner's usage view has data.
+    Written directly: a real answer needs an LLM key the preview doesn't have.
+    The numbers are the seed's own, read the way the assistant reads them."""
+    import core.security as security
+    from core import dashboard_query
+    from core.assistant_tools import FindCadetsArgs, find_cadets
+    from database.models import AssistantChat, AssistantMessage
+
+    now = now or datetime.now()
+    by_flight = dashboard_query.run(db, dashboard_query.QuerySpec(
+        dataset="cadets", group_by=[dashboard_query.GroupBy(field="flight")]))["rows"]
+    labels = [r["keys"][0] or "None" for r in by_flight]
+    counts = [r["value"] for r in by_flight]
+    oldest = sorted((c for c in find_cadets(db, FindCadetsArgs(min_age=17), True)["cadets"]),
+                    key=lambda c: c["date_of_birth"])[:5]
+
+    def _uk_date(iso):
+        # As the prompt asks the model to write them.
+        day = date.fromisoformat(iso)
+        return f"{day.day} {day:%b %Y}"
+
+    def chat(title, ago, turns, pinned=False):
+        when = now - ago
+        c = AssistantChat(email=security.OWNER_EMAIL.lower(), title=title, pinned=pinned,
+                          created_at=when, updated_at=when)
+        for question, answer, extra, feedback in turns:
+            c.messages.append(AssistantMessage(role="user", content=question, created_at=when))
+            c.messages.append(AssistantMessage(role="assistant", content=answer, extra=extra,
+                                               feedback=feedback, created_at=when))
+        db.add(c)
+
+    chat("Report on the squadron's size by flight", timedelta(hours=2), [(
+        "Report on the squadron's size by flight",
+        f"There are **{sum(counts)} cadets** across {len(labels)} flights. "
+        f"{labels[counts.index(max(counts))]} flight is the largest.",
+        {"charts": [{"type": "bar", "title": "Cadets by flight", "labels": labels,
+                     "series": [{"name": "Cadets", "values": counts}], "unit": ""}],
+         "tables": [{"title": "Oldest cadets", "columns": ["Name", "Flight", "Date of birth", "Age"],
+                     "rows": [[c["name"], c["flight"], _uk_date(c["date_of_birth"]), c["age"]]
+                              for c in oldest]}],
+         "follow_ups": ["Show parade turnout by month", "Who turns 18 this year?"],
+         "calls": [{"tool": "aggregate", "args": {"dataset": "cadets", "group_by": [{"field": "flight"}]},
+                    "ok": True},
+                   {"tool": "find_cadets", "args": {"min_age": 17}, "ok": True}],
+         "cadets": [{"cin": c["cin"], "name": c["name"]} for c in oldest],
+         "model": "z-ai/glm-5.3"},
+        1,
+    )], pinned=True)
+    chat("How many NCOs are there?", timedelta(days=3), [(
+        "How many NCOs are there?",
+        "I couldn't check that just now. Try asking again in a minute.",
+        {"charts": [], "tables": [], "follow_ups": [], "calls": [], "model": "openai/gpt-oss-120b"},
+        -1,  # so the owner's usage page has a thumbs-down to show
+    )])
+    db.commit()
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -776,6 +836,8 @@ def main() -> None:
             seed_audit(client, headers, db)
         with SessionLocal() as db:
             seed_push(db)
+        with SessionLocal() as db:
+            seed_assistant(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
