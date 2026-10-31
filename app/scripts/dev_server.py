@@ -183,7 +183,6 @@ def seed(db, now: datetime | None = None) -> bool:
 
     seed_portal(db, cadets, rng, now)
     seed_flying_paperwork(db, cadets, now)
-    seed_activity_logs(db, cadets, now)
 
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
@@ -204,6 +203,8 @@ def seed(db, now: datetime | None = None) -> bool:
         db.add(Staff(cin=3_000 + i, first_name=first, last_name=last, rank=rank, email=email,
                      phone_number=f"07700901{i:03d}",
                      attendance={n.strftime("%Y-%m"): rng.randint(1, 4) for n in nights}))
+    # After the staff: some cadets' final-report assessor is a staff member.
+    seed_activity_logs(db, cadets, now)
 
     db.commit()
     return True
@@ -234,7 +235,8 @@ def ensure_dev_cadet(db, now: datetime | None = None) -> bool:
 # skipped). The dev NCO is part-way through two sections with a gap to catch
 # up and one still to set up; the dev SNCO isn't switched on, so the portal's
 # other path (no Activity Log link) shows too. Index 2 is up to date on all
-# three, index 4 has finished one and index 6 hasn't started.
+# three, index 4 has finished all three (so its final report is due) and
+# index 6 hasn't started and index 7 finished and had their report ticked off.
 ACTIVITY_LOGS = [
     (1, "volunteering", 3, 10, (3, 7)),
     (1, "skills", 6, 5, ()),
@@ -243,10 +245,14 @@ ACTIVITY_LOGS = [
     (2, "volunteering", 3, 6, ()),
     (3, "volunteering", 6, 8, (4, 5, 6, 8)),
     (4, "volunteering", 3, 13, ()),
-    (4, "physical", 6, 13, (12,)),
+    (4, "skills", 3, 13, ()),
+    (4, "physical", 3, 13, ()),
     (5, "skills", 3, 2, (0, 1)),
+    (7, "skills", 3, 13, ()),
+    (7, "volunteering", 3, 13, ()),
+    (7, "physical", 3, 13, ()),
 ]
-ACTIVITY_LOG_CADETS = (1, 2, 3, 4, 5, 6)
+ACTIVITY_LOG_CADETS = (1, 2, 3, 4, 5, 6, 7)
 
 
 def seed_activity_logs(db, cadets, now: datetime) -> None:
@@ -256,9 +262,24 @@ def seed_activity_logs(db, cadets, now: datetime) -> None:
     from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry
 
     today = now.date()
+    from database.models import Staff
+
+    staff = db.query(Staff).filter(Staff.email == "s.hughes@example.com").first()
+    # A mix: a staff assessor, a typed outside name, and none.
+    assessors = {
+        1: (staff.first_name + " " + staff.last_name if staff else None, staff.cin if staff else None),
+        2: ("Pat Outsider", None),
+        4: (staff.first_name + " " + staff.last_name if staff else None, staff.cin if staff else None),
+        7: ("Pat Outsider", None),
+    }
     for i in ACTIVITY_LOG_CADETS:
+        name, staff_cin = assessors.get(i, (None, None))
         db.add(ActivityLogEnrolment(cadet_id=cadets[i].cin, level="Bronze", enabled_at=now - timedelta(weeks=14),
-                                    enabled_by="s.hughes@example.com"))
+                                    enabled_by="s.hughes@example.com",
+                                    dofe_number=f"DE{1000 + i}" if i != 3 else None,
+                                    assessor_name=name, assessor_staff_cin=staff_cin,
+                                    **({"report_done_at": now - timedelta(days=1),
+                                        "report_done_by": "s.hughes@example.com"} if i == 7 else {})))
     what = {"volunteering": ("Helping at the charity shop", "Learn to run the till on my own", "Shop manager"),
             "skills": ("Learning the guitar", "Play three songs all the way through", "Music teacher"),
             "physical": ("Swimming", "Swim 1km without stopping", "Swimming coach")}

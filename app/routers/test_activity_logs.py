@@ -9,7 +9,7 @@ from pypdf import PdfReader
 
 import routers.activity_logs as activity_logs
 from core.config import ACTIVITY_LOG_ALERT_EMAIL
-from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry, Cadet
+from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry, Cadet, Staff
 
 TODAY = date(2026, 10, 21)  # a Wednesday
 START = date(2026, 7, 27)   # a Monday, twelve full weeks before this one
@@ -65,6 +65,8 @@ STAFF_ROUTES = [
     ("get", "/activity-logs/cadets/1", None),
     ("put", "/activity-logs/cadets/1/enrolment", {"level": "Bronze"}),
     ("delete", "/activity-logs/cadets/1/enrolment", None),
+    ("put", "/activity-logs/cadets/1/report", None),
+    ("delete", "/activity-logs/cadets/1/report", None),
     ("put", "/activity-logs/cadets/1/skills", SETUP),
     ("post", "/activity-logs/cadets/1/skills/entries", {"entries": [_entry(TODAY)]}),
     ("patch", "/activity-logs/cadets/1/skills/entries/1", _entry(TODAY)),
@@ -632,3 +634,124 @@ def test_removing_a_cadet_takes_their_log_with_them(api, enrolled, db):
     assert db.query(ActivityLog).count() == 0 and db.query(ActivityLogEntry).count() == 0
     assert db.query(ActivityLogEnrolment).count() == 1  # Zoë's
 
+
+
+# ── DofE number, assessor and the final report ───────────────────────────────
+
+ENROL = "/activity-logs/cadets/1/enrolment"
+REPORT = "/activity-logs/cadets/1/report"
+
+
+@pytest.fixture
+def staff_member(db):
+    db.add(Staff(cin=9001, first_name="Sam", last_name="Staff", email="sam@317atc.co.uk"))
+    db.commit()
+
+
+def _finish_all_sections(api, cin_path="/activity-logs/cadets/1", who="staff"):
+    for section in ("skills", "volunteering", "physical"):
+        api.put(f"{cin_path}/{section}", json=SETUP, headers=api.as_(who))
+        res = api.post(f"{cin_path}/{section}/entries", json=_twelve_weeks(), headers=api.as_(who))
+        assert res.status_code == 201
+    return res.json()
+
+
+def test_switching_on_keeps_the_dofe_number_and_a_staff_assessor(api, cadets, staff_member):
+    res = api.put(ENROL, json={"level": "Bronze", "dofe_number": " 1234567 ", "assessor_name": "ignored",
+                               "assessor_cin": 9001}, headers=api.as_("staff"))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["dofe_number"] == "1234567"
+    # A staff pick takes the roster's name, so it can't drift from it.
+    assert (body["assessor_name"], body["assessor_cin"]) == ("Sam Staff", 9001)
+
+
+def test_an_assessor_outside_sms_is_a_name_with_no_cin(api, cadets):
+    res = api.put(ENROL, json={"assessor_name": "Jo Bloggs", "assessor_cin": None}, headers=api.as_("staff"))
+    assert (res.json()["assessor_name"], res.json()["assessor_cin"]) == ("Jo Bloggs", None)
+
+
+def test_an_assessor_who_isnt_on_the_staff_list_is_400(api, cadets, db):
+    res = api.put(ENROL, json={"assessor_name": "Ghost", "assessor_cin": 424242}, headers=api.as_("staff"))
+    assert res.status_code == 400
+    assert db.get(ActivityLogEnrolment, 1) is None  # nothing half-saved
+
+
+def test_changing_the_level_leaves_the_number_and_assessor_alone(api, cadets, staff_member):
+    api.put(ENROL, json={"dofe_number": "77", "assessor_name": "x", "assessor_cin": 9001}, headers=api.as_("staff"))
+    body = api.put(ENROL, json={"level": "Silver"}, headers=api.as_("staff")).json()
+    assert (body["level"], body["dofe_number"], body["assessor_name"], body["assessor_cin"]) == (
+        "Silver", "77", "Sam Staff", 9001)
+
+
+@pytest.mark.parametrize("body", [{"dofe_number": "x" * 41}, {"assessor_name": "x" * 121}])
+def test_overlong_number_or_assessor_is_422(api, cadets, body):
+    assert api.put(ENROL, json=body, headers=api.as_("staff")).status_code == 422
+
+
+def test_a_blank_number_does_not_wipe_the_one_on_file(api, cadets):
+    api.put(ENROL, json={"dofe_number": "77"}, headers=api.as_("staff"))
+    body = api.put(ENROL, json={"dofe_number": "  "}, headers=api.as_("staff")).json()
+    assert body["dofe_number"] == "77"
+
+
+def test_a_report_is_due_only_once_every_section_has_run_its_length(api, enrolled, staff_member):
+    api.put(ENROL, json={"assessor_name": "x", "assessor_cin": 9001}, headers=api.as_("staff"))
+    grid = lambda: api.get("/activity-logs/grid", headers=api.as_("staff")).json()["cadets"][0]  # noqa: E731
+    assert grid()["report_due"] is False and grid()["assessor_cin"] == 9001
+
+    # Two of three finished is still not due.
+    for section in ("skills", "volunteering"):
+        api.put(f"/activity-logs/cadets/1/{section}", json=SETUP, headers=api.as_("staff"))
+        api.post(f"/activity-logs/cadets/1/{section}/entries", json=_twelve_weeks(), headers=api.as_("staff"))
+    assert grid()["report_due"] is False
+
+    api.put("/activity-logs/cadets/1/physical", json=SETUP, headers=api.as_("staff"))
+    api.post("/activity-logs/cadets/1/physical/entries", json=_twelve_weeks(), headers=api.as_("staff"))
+    assert grid()["report_due"] is True and grid()["report_done"] is False
+
+
+def test_staff_tick_the_report_off_and_undo_it(api, enrolled, db, staff_member):
+    db.add(Staff(cin=9002, first_name="Rae", last_name="Reporter", email="staff@317atc.co.uk"))
+    db.commit()
+    done = _finish_all_sections(api)
+    assert done["report_ready"] is True and done["report_done_at"] is None
+
+    res = api.put(REPORT, headers=api.as_("staff"))
+    assert res.status_code == 200
+    assert res.json()["report_done_at"] and res.json()["report_done_by"] == "Rae Reporter"
+    row = api.get("/activity-logs/grid", headers=api.as_("staff")).json()["cadets"][0]
+    assert (row["report_done"], row["report_due"]) == (True, False)
+
+    undone = api.delete(REPORT, headers=api.as_("staff")).json()
+    assert undone["report_done_at"] is None and undone["report_done_by"] is None
+    row = api.get("/activity-logs/grid", headers=api.as_("staff")).json()["cadets"][0]
+    assert (row["report_done"], row["report_due"]) == (False, True)
+
+
+def test_the_report_cant_be_ticked_before_the_sections_are_finished(api, enrolled, db):
+    api.put("/activity-logs/cadets/1/skills", json=SETUP, headers=api.as_("staff"))
+    res = api.put(REPORT, headers=api.as_("staff"))
+    assert res.status_code == 409
+    assert db.get(ActivityLogEnrolment, 1).report_done_at is None
+
+
+def test_the_report_for_a_cadet_who_isnt_switched_on_is_409_and_unknown_is_404(api, cadets):
+    assert api.put(REPORT, headers=api.as_("staff")).status_code == 409
+    assert api.delete(REPORT, headers=api.as_("staff")).status_code == 409
+    assert api.put("/activity-logs/cadets/999/report", headers=api.as_("staff")).status_code == 404
+
+
+def test_moving_up_a_level_clears_a_report_ticked_at_the_old_one(api, enrolled, db):
+    _finish_all_sections(api)
+    api.put(REPORT, headers=api.as_("staff"))
+    body = api.put(ENROL, json={"level": "Silver"}, headers=api.as_("staff")).json()
+    assert body["report_done_at"] is None and body["report_ready"] is False
+    # Re-saving the same level keeps whatever's ticked.
+    api.put(ENROL, json={"level": "Silver"}, headers=api.as_("staff"))
+    assert db.get(ActivityLogEnrolment, 1).report_done_at is None
+
+
+def test_a_cadet_cant_tick_off_a_report(api, enrolled):
+    # The portal can read its own overview, but cadets can't tick a report.
+    assert api.put(REPORT, headers=api.as_("cadet")).status_code == 403
