@@ -16,6 +16,7 @@ from database.models import (
     BadgeOrder,
     BadgeOrderItem,
     Cadet,
+    CadetAttendance,
     CadetEvent,
     CadetLeavingProcess,
     CadetTheoryLesson,
@@ -203,3 +204,55 @@ def test_the_new_tools_work_on_an_empty_database(db):
     for name in ("cadet_events", "theory_progress", "badge_orders", "nco_appraisals", "nco_comments",
                  "session_plans", "leaving", "stats_history", "staff_list"):
         assert "error" not in call(db, name), name
+
+
+# ─── Programme ───────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def programme_month(db, monkeypatch):
+    """A and B at drill on a past night, B's half split on a later one; one A
+    cadet away from drill (authorised), one B cadet with no register."""
+    import core.programme as pg
+
+    def down(*_a, **_kw):
+        raise RuntimeError("down")
+    monkeypatch.setattr(pg, "generate", down)
+    db.add_all([Cadet(cin=1, first_name="Amy", last_name="Ash", flight="A"),
+                Cadet(cin=2, first_name="Al", last_name="Ash", flight="A"),
+                Cadet(cin=3, first_name="Ben", last_name="Brook", flight="B")])
+    past = (NOW - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    later = past + timedelta(days=2)
+    pg.import_month(db, past.month, past.year, nights=[
+        {"date": past, "uniform": "No.3 SD", "dnco": "", "sessions": [
+            {"period": 1, "flights": ["A", "B"], "text": "Drill\nSgt Smith", "split": False}]},
+    ])
+    if later.month != past.month:
+        pg.import_month(db, later.month, later.year, nights=[])
+    db.add_all([CadetAttendance(cadet_id=1, date=past, status="Present"),
+                CadetAttendance(cadet_id=2, date=past, status="Authorised Absence")])
+    db.commit()
+    return db
+
+
+def test_programme_lists_nights_with_turnout_by_kind(programme_month):
+    out = call(programme_month, "programme")
+    [n] = out["nights"]
+    assert n["sessions"] == [{"period": 1, "flights": "A, B", "activity": "Drill", "category": "drill"}]
+    assert out["turnout_by_kind"][0]["key"] == "drill"
+
+
+def test_programme_says_who_missed_an_activity(programme_month):
+    [n] = call(programme_month, "programme", activity="drill")["nights"]
+    assert n["flights"] == ["A", "B"] and n["there"] == 1 and n["no_register"] == 1
+    assert [(m["name"], m["absence"]) for m in n["missed"]] == [("Al Ash", "authorised")]
+
+
+def test_programme_for_one_cadet(programme_month):
+    out = call(programme_month, "programme", cin=2)
+    assert out["nights"][0]["state"] == "authorised" and out["flight"] == "A"
+    assert "error" in call(programme_month, "programme", cin=99)
+
+
+def test_programme_with_nothing_imported(db):
+    assert call(db, "programme")["nights"] == []
+    assert call(db, "programme", activity="drill")["nights"] == []

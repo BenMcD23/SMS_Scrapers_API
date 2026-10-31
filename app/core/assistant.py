@@ -240,6 +240,7 @@ STEPS = {
     "leaving": "Checking the leaving process",
     "stats_history": "Looking at past numbers",
     "staff_list": "Checking staff",
+    "programme": "Checking the programme",
     "aggregate": "Adding up the figures",
 }
 THINKING = "Thinking"

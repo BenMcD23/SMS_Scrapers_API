@@ -28,7 +28,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from core import dashboard_query
+from core import dashboard_query, programme
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.config import CHATBOT_URL
 from core.leaving import LAPSE_DAYS, leaving_status
@@ -52,6 +52,7 @@ from database.models import (
     Event317,
     NcoAppraisal,
     NcoComment,
+    ProgrammeNight,
     SessionPlan,
     Staff,
     StaffAttendance,
@@ -648,6 +649,60 @@ def staff_list(db: Session, args: StaffArgs, personal: bool = False) -> dict:
     return _capped("staff", rows, since=since.date().isoformat())
 
 
+# ─── Programme ───────────────────────────────────────────────────────────────
+
+class ProgrammeArgs(BaseModel):
+    start: date | None = Field(None, description="first night to look at, YYYY-MM-DD (default 5 weeks ago)")
+    end: date | None = Field(None, description="last night, YYYY-MM-DD (default 3 weeks ahead)")
+    activity: str | None = Field(None, max_length=80,
+                                 description="part of an activity's name: who missed it on the nights it ran")
+    cin: int | None = Field(None, description="one cadet's nights against the programme, with turnout by category")
+
+
+def programme_tool(db: Session, args: ProgrammeArgs, personal: bool = False) -> dict:
+    """The parade-night programme: what each flight did on each night, who
+    missed a given activity, or one cadet's nights. Turnout by kind of night
+    over the period comes with the night list."""
+    today = _today()
+    start = args.start or today - timedelta(weeks=5)
+    end = args.end or today + timedelta(weeks=3)
+    if args.cin is not None:
+        return programme.cadet_sessions(db, args.cin, days=max(7, (today - start).days))
+    nights = (db.query(ProgrammeNight).filter(ProgrammeNight.date >= start, ProgrammeNight.date <= end)
+              .order_by(ProgrammeNight.date).all())
+    if not args.activity:
+        return {
+            **_capped("nights", [{"date": n.date.isoformat(), "uniform": n.uniform,
+                                  "sessions": programme._night_summary(n)} for n in nights], limit=40),
+            "turnout_by_kind": programme.programme_stats(db, days=max(7, (today - start).days))["categories"],
+        }
+
+    wanted = args.activity.casefold()
+    flights_of = defaultdict(list)
+    for c in db.query(Cadet).all():
+        flights_of[(c.flight or "").strip().upper()].append(c)
+    rows = []
+    for n in nights:
+        ran = [x for x in n.sessions if wanted in x.activity.casefold()]
+        if not ran or n.date > today:
+            continue
+        on = {r.cadet_id: attendance_state(r.status) for r in db.query(CadetAttendance).filter(
+            CadetAttendance.date >= datetime.combine(n.date, datetime.min.time()),
+            CadetAttendance.date < datetime.combine(n.date + timedelta(days=1), datetime.min.time()))}
+        flights = sorted({x.flight for x in ran})
+        cadets = [c for f in flights for c in flights_of[f]]
+        rows.append({
+            "date": n.date.isoformat(), "activity": ran[0].activity, "flights": flights,
+            # Split sessions: the flight was divided, so being away is certain but
+            # being there doesn't mean they did this half.
+            "split": any(x.split for x in ran),
+            "missed": [{**_ref(c), "absence": on[c.cin]} for c in cadets if on.get(c.cin) in (ABSENT, AUTHORISED)],
+            "there": len([c for c in cadets if on.get(c.cin) == PRESENT]),
+            "no_register": len([c for c in cadets if c.cin not in on]),
+        })
+    return _capped("nights", rows, limit=20)
+
+
 # ─── aggregate ───────────────────────────────────────────────────────────────
 
 class AggregateArgs(dashboard_query.QuerySpec):
@@ -715,6 +770,9 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("stats_history", "Squadron strength over time (total, by flight, rank, classification) from "
          "weekly snapshots: for trends.", HistoryArgs, stats_history),
     Tool("staff_list", "Adult staff by name and rank, with recent attendance.", StaffArgs, staff_list),
+    Tool("programme", "The parade-night programme: what each flight did each night (with turnout by kind of "
+         "night), who missed an activity (activity), or one cadet's nights against it (cin). Flights: C is "
+         "probationary, then A and B.", ProgrammeArgs, programme_tool),
     Tool("aggregate",
          "Count, average or total over a whole dataset, grouped by up to two fields (dates bucket by "
          "grain: day, week, month, year) and filtered (ops: eq, neq, in, not_in, gt, gte, lt, lte, empty, "

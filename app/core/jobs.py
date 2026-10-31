@@ -7,13 +7,13 @@ they only run in the process holding the leader lock (core/leader.py).
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func
 
-from core import push
+from core import programme, push
 from core.config import AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
@@ -146,6 +146,26 @@ def weekly_stats_snapshot() -> None:
         db.close()
 
 
+def import_recent_programme() -> None:
+    """Re-import last month, this month and next from the programme doc.
+
+    The doc is written ahead and edited as plans change, so a weekly read
+    keeps the record matching it; last month is included to catch edits made
+    after the fact (a cancelled night, a swapped session)."""
+    today = date.today()
+    first = date(today.year, today.month, 1)
+    last_month = (first - timedelta(days=1)).replace(day=1)
+    next_month = date(today.year + today.month // 12, today.month % 12 + 1, 1)
+    db = SessionLocal()
+    try:
+        programme.import_months(db, programme.months_between(last_month, next_month))
+    except Exception:
+        db.rollback()
+        logger.exception("weekly programme import failed")
+    finally:
+        db.close()
+
+
 def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(cleanup_old_completed_assessments, "interval", hours=24)
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
@@ -154,6 +174,8 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
     # Sunday evening: after any weekend scrape, before the week's trend closes.
     scheduler.add_job(weekly_stats_snapshot, CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=LONDON))
+    # Sunday evening, before the week's parade nights.
+    scheduler.add_job(import_recent_programme, CronTrigger(day_of_week="sun", hour=20, minute=30, timezone=LONDON))
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri).
     scheduler.add_job(scheduled_send_job, CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone=LONDON))
     # Scraper schedules live in the database and are edited through the API,

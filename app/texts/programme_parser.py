@@ -234,8 +234,7 @@ def _parse_date_strict(raw: str, month: int, year: int) -> datetime | None:
     return None
 
 
-def parse_programme(month: int, year: int) -> list[dict]:
-    """Return [{date, uniform, dnco, c_flight, main_body}] for each parade night."""
+def _read_table(month: int, year: int) -> tuple[dict, _Columns]:
     drive, docs = _docs_clients()
     doc_id = _find_programme_doc_id(drive, month, year)
     document = docs.documents().get(documentId=doc_id).execute()
@@ -243,12 +242,16 @@ def parse_programme(month: int, year: int) -> list[dict]:
     table = _first_table(document)
     if table is None:
         raise ValueError("Programme doc has no table")
+    return table, _Columns(table)
 
-    columns = _Columns(table)
 
+def _walk_nights(table: dict, columns: _Columns, month: int, year: int) -> list[dict]:
+    """[{date, uniform, dnco, cells}] for each night with a real date, in
+    order. Blank-date rows are rowSpan continuations: their uniform and DNCO
+    are added to the night above. Shared by the texts (parse_programme) and
+    the programme record (parse_programme_sessions) so both read the same
+    nights the same way."""
     nights: list[dict] = []
-    last: dict | None = None
-
     for table_row in table.get("tableRows", [])[2:]:
         cells = table_row.get("tableCells", [])
 
@@ -261,41 +264,103 @@ def parse_programme(month: int, year: int) -> list[dict]:
         uniform = at(columns.uniform)
         dnco = at(columns.dnco)
 
-        # Blank-date rows are rowSpan continuations — extra uniform/DNCO values
         if not date_raw:
-            if last is not None:
+            if nights:
+                last = nights[-1]
                 if uniform:
                     last["uniform"] += (", " if last["uniform"] else "") + uniform
                 if dnco:
                     last["dnco"] += (", " if last["dnco"] else "") + dnco
             continue
-
-        c_parts, main_parts = [], []
-        for label, (c_col, a_cols, b_cols) in zip(["1st Period", "2nd Period"], columns.periods, strict=False):
-            c_text, main_section = _parse_period(cells, c_col, a_cols, b_cols)
-            if c_text:
-                c_parts.append(f"{label}:\n{c_text}")
-            if main_section:
-                main_parts.append(f"{label}\n{main_section}")
-
-        if last is not None:
-            nights.append(last)
-        last = {
-            "date_raw": date_raw,
-            "uniform": uniform,
-            "dnco": dnco,
-            "c_flight": "\n\n".join(c_parts),
-            "main_body": "\n\n".join(main_parts),
-        }
-
-    if last is not None:
-        nights.append(last)
+        nights.append({"date_raw": date_raw, "uniform": uniform, "dnco": dnco, "cells": cells})
 
     result = []
     for night in nights:
         date = _parse_date(night.pop("date_raw"), month, year)
-        if date is None:
-            continue
-        night["date"] = date
-        result.append(night)
+        if date is not None:
+            night["date"] = date
+            result.append(night)
     return result
+
+
+def parse_programme(month: int, year: int) -> list[dict]:
+    """Return [{date, uniform, dnco, c_flight, main_body}] for each parade night."""
+    table, columns = _read_table(month, year)
+    result = []
+    for night in _walk_nights(table, columns, month, year):
+        c_parts, main_parts = [], []
+        for label, (c_col, a_cols, b_cols) in zip(["1st Period", "2nd Period"], columns.periods, strict=False):
+            c_text, main_section = _parse_period(night["cells"], c_col, a_cols, b_cols)
+            if c_text:
+                c_parts.append(f"{label}:\n{c_text}")
+            if main_section:
+                main_parts.append(f"{label}\n{main_section}")
+        result.append({
+            "date": night["date"],
+            "uniform": night["uniform"],
+            "dnco": night["dnco"],
+            "c_flight": "\n\n".join(c_parts),
+            "main_body": "\n\n".join(main_parts),
+        })
+    return result
+
+
+# "As per squadron" in the probationary column: C Flight joins in with
+# everyone else rather than having its own lesson.
+AS_PER_SQUADRON = re.compile(r"^\s*as\s+per\s+(the\s+)?squadron\s*$", re.IGNORECASE)
+
+
+def _period_sessions(cells: list[dict], c_col: int, a_cols: list[int], b_cols: list[int]) -> list[dict]:
+    """What each flight did in one period, as [{flights, text, split}]: the
+    same merged-cell rules as _parse_period, kept as data instead of a text.
+
+    `split` marks a flight divided between parallel activities (several cells
+    in its sub-columns), so attendance can't say which one a cadet was in.
+    C Flight "as per squadron" goes with A and B only when they're together;
+    when they're doing different things which one C joined isn't knowable,
+    so C gets nothing for that period rather than a guess."""
+    def text(col):
+        return _cell_text(cells[col]) if col < len(cells) else ""
+
+    def span(col):
+        return _cell_span(cells[col]) if col < len(cells) else 1
+
+    c_text = text(c_col)
+    if c_text and span(c_col) > 1 and c_col + span(c_col) > max(b_cols):
+        return [{"flights": ["C", "A", "B"], "text": c_text, "split": False}]
+
+    sessions = []
+    joins = bool(c_text) and bool(AS_PER_SQUADRON.match(c_text))
+    if c_text and not joins:
+        sessions.append({"flights": ["C"], "text": c_text, "split": False})
+
+    a_head = text(a_cols[0])
+    if a_head and a_cols[0] + span(a_cols[0]) > max(b_cols):
+        flights = ["C", "A", "B"] if joins else ["A", "B"]
+        return [*sessions, {"flights": flights, "text": a_head, "split": False}]
+
+    for flight, cols in (("A", a_cols), ("B", b_cols)):
+        texts = [t for t in (text(col) for col in cols) if t]
+        for t in texts:
+            sessions.append({"flights": [flight], "text": t, "split": len(texts) > 1})
+    return sessions
+
+
+def parse_programme_sessions(month: int, year: int) -> list[dict]:
+    """[{date, uniform, dnco, sessions: [{period, flights, text, split}]}]:
+    the programme as a record of what each flight did, for
+    core/programme.py to tidy and store."""
+    table, columns = _read_table(month, year)
+    return [
+        {
+            "date": night["date"],
+            "uniform": night["uniform"],
+            "dnco": night["dnco"],
+            "sessions": [
+                {"period": period, **session}
+                for period, (c_col, a_cols, b_cols) in enumerate(columns.periods, start=1)
+                for session in _period_sessions(night["cells"], c_col, a_cols, b_cols)
+            ],
+        }
+        for night in _walk_nights(table, columns, month, year)
+    ]

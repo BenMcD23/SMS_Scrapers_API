@@ -674,6 +674,55 @@ def seed_assistant(db, now: datetime | None = None) -> None:
     db.commit()
 
 
+# The doc's own wording, cycled over the seeded parade nights: (C Flight,
+# A Flight, B Flight) per period. A tuple of one is the whole squadron; two
+# is C apart and A with B; an "X / Y" is a flight split between two things.
+PROGRAMME_WEEKS = [
+    (("Intro to Drill\nFS Gill", "Flight Time\nFlight Commander", "Flight Time\nFlight Commander"),
+     ("History of the RAF\nSgt Malik", "Classifications (Leading/Senior/Master)\nFg Off Barker / MOI Cadets")),
+    (("History of the ATC\nFS Gill", "Volleyball / Band\nSgt Lloyd Morris / FS Wimbury", "Drill\nSgt Mack"),
+     ("Rank System\nSgt Mack", "No.2 SD Inspection\nSgt Lloyd Morris", "DofE Physical\nFS Beverley")),
+    (("Remembrance Parade Practice\nFS Gill",),
+     ("Map Reading 1\nSgt Davies", "Inter Flight STEM Exercise\nFg Off Barker & CI McDonald")),
+    (("Flying Ops 1\nCpl Sawczuk", "Cadets Own Session\nCdt Warner", "Essential First Aid\nFS Wimbury"),
+     ("Drill\nSgt Davies", "HIG Chats\nFlight NCOs", "Classifications (POF)\nSgt Brice")),
+    (("Halloween Extravaganza\nSNCOs",), ("Halloween Extravaganza\nSNCOs",)),
+    (("IET Pt 1\nFS Wimbury", "Fieldcraft\nSgt Lloyd Morris", "Fieldcraft\nSgt Lloyd Morris"),
+     ("Map Reading 2\nSgt Davies", "Band / Inter Flight Sports\nFS Mullery / CI Stone", "Drill\nSgt Hall")),
+]
+UNIFORMS = ["No.3 SD", "No.2c SD", "Sports Kit", "No.3 SD", "Fancy Dress", "MTP"]
+
+
+def seed_programme(db, now: datetime | None = None) -> None:
+    """The programme for every seeded parade night, plus the next few weeks
+    (the doc is written ahead), so the stats page's programme section and the
+    assistant's programme tool show real-looking turnout. Imported through
+    core.programme with the rules, as a preview has no LLM key."""
+    from core import programme
+
+    now = now or datetime.now()
+    nights = _parade_nights(now, PARADE_NIGHTS) + [
+        _parade_nights(now, 1)[0] + timedelta(weeks=w) for w in (1, 2, 3)]
+    by_month: dict = {}
+    for i, night in enumerate(nights):
+        week = PROGRAMME_WEEKS[i % len(PROGRAMME_WEEKS)]
+        sessions = []
+        for period, cells in enumerate(week, start=1):
+            if len(cells) == 1:
+                sessions.append({"period": period, "flights": ["C", "A", "B"], "text": cells[0], "split": False})
+            elif len(cells) == 2:
+                sessions += [{"period": period, "flights": ["C"], "text": cells[0], "split": False},
+                             {"period": period, "flights": ["A", "B"], "text": cells[1], "split": False}]
+            else:
+                sessions += [{"period": period, "flights": [f], "text": t, "split": False}
+                             for f, t in zip("CAB", cells, strict=True)]
+        by_month.setdefault((night.month, night.year), []).append({
+            "date": night, "uniform": UNIFORMS[i % len(UNIFORMS)], "dnco": f"Cpl {LAST_NAMES[i % len(LAST_NAMES)]}",
+            "sessions": sessions})
+    for (month, year), month_nights in by_month.items():
+        programme.import_month(db, month, year, use_ai=False, nights=month_nights)
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -838,6 +887,8 @@ def main() -> None:
             seed_push(db)
         with SessionLocal() as db:
             seed_assistant(db)
+        with SessionLocal() as db:
+            seed_programme(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
