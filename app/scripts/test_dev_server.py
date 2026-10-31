@@ -36,6 +36,7 @@ from scripts.dev_server import (
     seed_audit,
     seed_inspections,
     seed_oc_dashboard,
+    seed_programme,
     seed_push,
     seed_recruits,
     seed_stores,
@@ -372,6 +373,7 @@ def _seed_everything(api, db):
     seed_audit(api, staff, db, now=NOW)
     seed_push(db, now=NOW)
     seed_assistant(db, now=NOW)
+    seed_programme(db, now=NOW)
 
 
 def test_the_applications_show_one_of_each_state(api, db):
@@ -476,3 +478,23 @@ def test_the_seeded_assistant_chats_open_for_the_dev_staff_login(api, db):
     assert [c["name"] for c in answer["cadets"]] == [r[0] for r in answer["tables"][0]["rows"]]
     usage = api.get("/assistant/usage", headers=staff).json()
     assert usage["thumbs_down"] == 1 and usage["rated_down"][0]["question"] == "How many NCOs are there?"
+
+
+def test_the_seeded_programme_covers_every_parade_night_and_shows_turnout(api, db):
+    # Without it the stats page's programme section and the assistant's
+    # programme tool have nothing to show in any preview.
+    from datetime import date as date_type
+
+    from database.models import ProgrammeNight
+
+    seed(db, now=NOW)
+    seed_programme(db, now=NOW)
+    nights = {n.date for n in db.query(ProgrammeNight)}
+    assert {d.date() for d in _parade_nights(NOW, PARADE_NIGHTS)} <= nights
+    assert any(d > NOW.date() for d in nights)  # written ahead, like the doc
+    stats = api.get("/programme/stats", headers=api.as_("staff")).json()
+    keys = {c["key"] for c in stats["categories"]}
+    assert {"drill", "classifications", "social"} <= keys
+    assert all(0 <= c["rate"] <= 100 for c in stats["categories"])
+    assert stats["activities"] and all(isinstance(n["date"], str) for n in stats["nights"])
+    assert date_type.fromisoformat(stats["nights"][-1]["date"]) <= NOW.date()

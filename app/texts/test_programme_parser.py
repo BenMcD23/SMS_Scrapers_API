@@ -188,3 +188,52 @@ def test_weekday_prefixes_are_stripped(doc, raw):
 def test_month_names_are_not_mistaken_for_weekdays():
     assert pp.WEEKDAY_RE.sub("", "3rd Sept").strip() == "3rd Sept"
     assert pp.WEEKDAY_RE.sub("", "Monday 7th March").strip() == "7th March"
+
+
+# ─── The same table as a record (parse_programme_sessions) ───────────────────
+
+def sessions(n):
+    return [(s["period"], s["flights"], s["text"], s["split"]) for s in n["sessions"]]
+
+
+def test_sessions_per_flight_and_period(doc):
+    doc["table"] = table(night("Wednesday 2nd", p1=("Intro", "Drill", "Radio"), p2=("Kit", "Nav", "", "First Aid"),
+                               uniform="Blues", dnco="Cpl X"))
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert (n["date"], n["uniform"], n["dnco"]) == (datetime(2026, 9, 2), "Blues", "Cpl X")
+    assert sessions(n) == [
+        (1, ["C"], "Intro", False), (1, ["A"], "Drill", False), (1, ["B"], "Radio", False),
+        (2, ["C"], "Kit", False), (2, ["A"], "Nav", False), (2, ["B"], "First Aid", False),
+    ]
+
+
+def test_sessions_for_the_whole_squadron_and_both_flights(doc):
+    doc["table"] = table(night("4/9", p1=("Sqn parade", "", ""), p2=("Kit", "Games", "", ""),
+                               spans={1: 3, 6: 3}))
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert sessions(n) == [(1, ["C", "A", "B"], "Sqn parade", False),
+                           (2, ["C"], "Kit", False), (2, ["A", "B"], "Games", False)]
+
+
+def test_a_flight_split_across_sub_columns_is_marked_split(doc):
+    doc["table"] = table(night("9th", p2=("", "Shooting\nRange 1", "Swim", "Drill")))
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert sessions(n) == [(2, ["A"], "Shooting\nRange 1", True), (2, ["A"], "Swim", True),
+                           (2, ["B"], "Drill", False)]
+
+
+def test_as_per_squadron_joins_c_to_a_shared_session_only(doc):
+    doc["table"] = table(
+        night("2nd", p1=("As Per Squadron", "Games", ""), spans={2: 2}),
+        night("4th", p1=("as per squadron", "Drill", "Radio")),
+    )
+    together, apart = pp.parse_programme_sessions(9, 2026)
+    assert sessions(together) == [(1, ["C", "A", "B"], "Games", False)]
+    # A and B doing different things: which C joined isn't knowable, so no guess.
+    assert sessions(apart) == [(1, ["A"], "Drill", False), (1, ["B"], "Radio", False)]
+
+
+def test_sessions_and_texts_agree_on_nights_and_continuations(doc):
+    doc["table"] = table(night("Wed 2nd", uniform="No.2a SD"), night("", uniform="Civvies"), night("TBC"))
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert n["uniform"] == "No.2a SD, Civvies" and n["sessions"] == []

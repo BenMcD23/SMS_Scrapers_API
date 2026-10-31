@@ -51,6 +51,7 @@ from routers import (
     oc,
     portal,
     programme,
+    programme_record,
     push,
     recruits,
     reference,
@@ -212,6 +213,7 @@ app.include_router(form_generators.router)
 app.include_router(events.router)
 app.include_router(flying.router)
 app.include_router(programme.router)
+app.include_router(programme_record.router)
 app.include_router(newsletters.router)
 app.include_router(gallery.router)
 app.include_router(assessments.router)

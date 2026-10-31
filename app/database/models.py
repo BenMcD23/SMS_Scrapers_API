@@ -1605,3 +1605,42 @@ class AssistantMessage(Base):
     created_at = Column(DateTime, nullable=False)
 
     chat = relationship("AssistantChat", back_populates="messages")
+
+
+# ─── Programme ───────────────────────────────────────────────────────────────
+
+class ProgrammeNight(Base):
+    """One parade night from the monthly programme doc (core/programme.py).
+    A month is replaced as a whole on each import, so editing the doc and
+    re-importing is how a change gets in."""
+    __tablename__ = "Programme_Nights"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    date        = Column(Date, nullable=False, unique=True)
+    uniform     = Column(Text, nullable=True)
+    duty_nco    = Column(Text, nullable=True)
+    imported_at = Column(DateTime, nullable=False)
+
+    sessions = relationship("ProgrammeSession", back_populates="night", cascade="all, delete-orphan",
+                            order_by="ProgrammeSession.id")
+
+
+class ProgrammeSession(Base):
+    """What one flight did in one period of a night: one row per flight per
+    activity, so a whole-squadron session is a row for each of C, A and B and
+    "what was B Flight doing" is one lookup."""
+    __tablename__ = "Programme_Sessions"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    night_id   = Column(Integer, ForeignKey("Programme_Nights.id", ondelete="CASCADE"), nullable=False, index=True)
+    period     = Column(Integer, nullable=False)   # 1 or 2
+    flight     = Column(Text,    nullable=False)   # "C" (probationary), "A" or "B"
+    activity   = Column(Text,    nullable=False)   # tidy name, e.g. "Map Reading 2"
+    category   = Column(Text,    nullable=False)   # a core.programme.CATEGORIES key
+    instructor = Column(Text,    nullable=True)
+    # The flight was divided between this and something else at the same time,
+    # so being there that night doesn't say a cadet did this one.
+    split      = Column(Boolean, nullable=False, default=False, server_default="0")
+    raw        = Column(Text,    nullable=False)   # the cell as written, which a re-import matches on
+
+    night = relationship("ProgrammeNight", back_populates="sessions")
