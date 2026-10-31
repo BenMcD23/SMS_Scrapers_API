@@ -23,6 +23,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from core.activity_log import SECTIONS, WEEKLY_MINUTES, minutes_by_week, progress, week_start
@@ -31,7 +32,7 @@ from core.db import get_current_cadet, get_db
 from core.emailer import activity_log_complete_email_html, send_email
 from core.http import content_disposition
 from core.security import require_staff
-from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry, Cadet
+from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry, Cadet, Staff
 from form_generators.activity_log_pdf import build_activity_log_pdf
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,18 @@ class EntriesBody(BaseModel):
 
 
 class EnrolmentBody(BaseModel):
+    """Only what's sent is changed: a level change from the cadet's page
+    mustn't wipe the DofE number or assessor already on file."""
     level: Literal["Bronze", "Silver", "Gold"] = "Bronze"
+    dofe_number: str | None = Field(default=None, max_length=40)
+    assessor_name: str | None = Field(default=None, max_length=120)
+    # A staff member's CIN, or null for someone outside SMS.
+    assessor_cin: int | None = None
+
+    @field_validator("dofe_number", "assessor_name")
+    @classmethod
+    def _strip_optional(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -144,6 +156,20 @@ def _logs_for(db: Session, cadet: Cadet, level: str) -> dict[str, ActivityLog]:
     return {log.section: log for log in logs}
 
 
+def _report_ready(logs: dict[str, ActivityLog]) -> bool:
+    """Every section is set up and has run its full length, which is when the
+    assessor's final report can be written."""
+    return all(key in logs and logs[key].completed_at is not None for key in SECTIONS)
+
+
+def _staff_name(db: Session, email: str | None) -> str | None:
+    """Who ticked the report, as a name where they're on the staff roster."""
+    if not email:
+        return None
+    staff = db.query(Staff).filter(func.lower(Staff.email) == email.lower()).first()
+    return f"{staff.first_name} {staff.last_name}" if staff else email
+
+
 def _overview(db: Session, cadet: Cadet) -> dict:
     enrolment = cadet.activity_log_enrolment
     if not enrolment:
@@ -155,6 +181,12 @@ def _overview(db: Session, cadet: Cadet) -> dict:
         "cin": cadet.cin,
         "name": _cadet_name(cadet),
         "level": enrolment.level,
+        "dofe_number": enrolment.dofe_number,
+        "assessor_name": enrolment.assessor_name,
+        "assessor_cin": enrolment.assessor_staff_cin,
+        "report_ready": _report_ready(logs),
+        "report_done_at": enrolment.report_done_at.isoformat() if enrolment.report_done_at else None,
+        "report_done_by": _staff_name(db, enrolment.report_done_by),
         "sections": [
             {"section": key, "label": label,
              "log": _log_dict(logs[key], today) if key in logs else None}
@@ -432,6 +464,10 @@ def weekly_grid(
             "rank": cadet.rank,
             "flight": cadet.flight,
             "level": enrolment.level,
+            "assessor_name": enrolment.assessor_name,
+            "assessor_cin": enrolment.assessor_staff_cin,
+            "report_done": enrolment.report_done_at is not None,
+            "report_due": _report_ready(mine) and enrolment.report_done_at is None,
             "behind": any(state in ("due", "short") for state in now) or not mine,
             "sections": sections,
             "weeks": [{"week_start": w.isoformat(), "cells": {key: cell(key, w) for key in SECTIONS}}
@@ -450,13 +486,32 @@ def cadet_activity_log(cin: int, db: Session = Depends(get_db), _: dict = Depend
 @router.put("/activity-logs/cadets/{cin}/enrolment")
 def enrol(cin: int, body: EnrolmentBody, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
     """Switch a cadet's log on (or change their level). Their portal shows the
-    Activity Log page from their next visit."""
+    Activity Log page from their next visit.
+
+    The DofE number and assessor are only changed when sent. Moving to a new
+    level clears a report ticked off at the old one: it covered other sections."""
     cadet = _cadet_or_404(db, cin)
-    if cadet.activity_log_enrolment:
-        cadet.activity_log_enrolment.level = body.level
+    sent = body.model_fields_set
+    if "assessor_cin" in sent and body.assessor_cin is not None:
+        staff = db.get(Staff, body.assessor_cin)
+        if not staff:
+            raise HTTPException(status_code=400, detail="That assessor isn't on the staff list.")
+        # The name is the staff member's own, so it can't drift from the roster.
+        body.assessor_name = f"{staff.first_name} {staff.last_name}"
+    enrolment = cadet.activity_log_enrolment
+    if enrolment:
+        if enrolment.level != body.level:
+            enrolment.report_done_at = enrolment.report_done_by = None
+        enrolment.level = body.level
     else:
-        db.add(ActivityLogEnrolment(cadet_id=cin, level=body.level, enabled_at=datetime.now(),
-                                    enabled_by=idinfo.get("email")))
+        enrolment = ActivityLogEnrolment(cadet_id=cin, level=body.level, enabled_at=datetime.now(),
+                                         enabled_by=idinfo.get("email"))
+        db.add(enrolment)
+    if "dofe_number" in sent and body.dofe_number:
+        enrolment.dofe_number = body.dofe_number
+    if "assessor_name" in sent and body.assessor_name:
+        enrolment.assessor_name = body.assessor_name
+        enrolment.assessor_staff_cin = body.assessor_cin
     db.commit()
     db.refresh(cadet)
     return _overview(db, cadet)
@@ -470,6 +525,33 @@ def unenrol(cin: int, db: Session = Depends(get_db), _: dict = Depends(require_s
     if not cadet.activity_log_enrolment:
         raise HTTPException(status_code=404, detail="This cadet's DofE activity log isn't switched on.")
     db.delete(cadet.activity_log_enrolment)
+    db.commit()
+    db.refresh(cadet)
+    return _overview(db, cadet)
+
+
+# Registered before the {section} routes below, which would otherwise try to
+# read "report" as a section name and answer 422.
+@router.put("/activity-logs/cadets/{cin}/report")
+def mark_report_done(cin: int, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """The assessor ticking off the final report. Refused until every section
+    has run its full length, so it can't be ticked early by mistake."""
+    cadet = _cadet_or_404(db, cin)
+    enrolment = _enrolment(cadet, staff=True)
+    if not _report_ready(_logs_for(db, cadet, enrolment.level)):
+        raise HTTPException(status_code=409,
+                            detail="Every section has to run its full length before the report is done.")
+    enrolment.report_done_at, enrolment.report_done_by = datetime.now(), idinfo.get("email")
+    db.commit()
+    db.refresh(cadet)
+    return _overview(db, cadet)
+
+
+@router.delete("/activity-logs/cadets/{cin}/report")
+def undo_report_done(cin: int, db: Session = Depends(get_db), _: dict = Depends(require_staff)):
+    cadet = _cadet_or_404(db, cin)
+    enrolment = _enrolment(cadet, staff=True)
+    enrolment.report_done_at = enrolment.report_done_by = None
     db.commit()
     db.refresh(cadet)
     return _overview(db, cadet)

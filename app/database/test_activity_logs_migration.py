@@ -12,7 +12,8 @@ from database.models import ActivityLog, ActivityLogEnrolment, ActivityLogEntry
 
 VERSIONS = Path(__file__).parent / "alembic/versions"
 # In upgrade order: the tables, then the sign-off columns on entries.
-MIGRATIONS = [VERSIONS / "a1c2t3l4o5g6_activity_logs.py", VERSIONS / "s2i3g4n5o6f7_activity_log_entry_sign_off.py"]
+MIGRATIONS = [VERSIONS / "a1c2t3l4o5g6_activity_logs.py", VERSIONS / "s2i3g4n5o6f7_activity_log_entry_sign_off.py",
+              VERSIONS / "d1o2f3e4a5s6_activity_log_assessor_and_report.py"]
 TABLES = (ActivityLogEnrolment, ActivityLog, ActivityLogEntry)
 
 
@@ -28,6 +29,7 @@ def test_upgrade_matches_the_models_and_downgrade_removes_them():
     engine = sa.create_engine("sqlite://")
     with engine.begin() as conn:
         conn.execute(sa.text('CREATE TABLE "Cadets" (cin BIGINT PRIMARY KEY)'))
+        conn.execute(sa.text('CREATE TABLE "Staff" (cin BIGINT PRIMARY KEY)'))
 
     for migration in MIGRATIONS:
         _run(engine, "upgrade", migration)

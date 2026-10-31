@@ -1448,6 +1448,15 @@ class ActivityLogEnrolment(Base):
     level      = Column(Text, nullable=False, default="Bronze")  # Bronze | Silver | Gold
     enabled_at = Column(DateTime, nullable=False)
     enabled_by = Column(Text, nullable=True)
+    dofe_number = Column(Text, nullable=True)
+    # Who writes the final report: a staff member (assessor_staff_cin set, so
+    # they can filter to their own cadets) or anyone else, name only. Cleared
+    # together with the report when the cadet moves up a level.
+    assessor_name      = Column(Text, nullable=True)
+    assessor_staff_cin = Column(BigInteger, ForeignKey("Staff.cin", ondelete="SET NULL"), nullable=True, index=True)
+    # Ticked off by the assessor once every section has run its full length.
+    report_done_at = Column(DateTime, nullable=True)
+    report_done_by = Column(Text, nullable=True)  # email of the staff member who ticked it
 
     cadet = relationship("Cadet", back_populates="activity_log_enrolment")
 
