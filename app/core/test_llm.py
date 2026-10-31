@@ -72,3 +72,70 @@ def test_every_model_in_the_chain_has_a_label():
         assert model in MODEL_LABELS, f"{model} has no display label"
     assert model_label(PRIMARY_MODEL) == "GLM 5.3"
     assert model_label(None) == "Unknown"
+
+
+# ─── Tool calling (chat) ─────────────────────────────────────────────────────
+
+import httpx  # noqa: E402
+
+from core.llm import GROQ_MODEL as GROQ  # noqa: E402
+from core.llm import chat  # noqa: E402
+
+
+@pytest.fixture
+def api(monkeypatch):
+    """Fake OpenAI-compatible endpoints: what each was sent, and a reply per URL."""
+    sent, replies = [], {}
+
+    def fake_post(url, headers, json, timeout):
+        sent.append((url, json))
+        reply = replies.get("nvidia" if "nvidia" in url else "groq")
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+    monkeypatch.setattr(llm, "NVIDIA_API_KEY", "nv-key")
+    monkeypatch.setattr(llm, "GROQ_API_KEY", "groq-key")
+    return sent, replies
+
+
+TOOLS = [{"type": "function", "function": {"name": "find", "parameters": {"type": "object", "properties": {}}}}]
+CALL = {"choices": [{"message": {"tool_calls": [{"id": "c1", "type": "function",
+                                                 "function": {"name": "find", "arguments": "{}"}}]}}]}
+
+
+def test_chat_sends_the_tools_and_returns_the_message(api):
+    sent, replies = api
+    replies["nvidia"] = httpx.Response(200, json=CALL)
+    message, model = chat([{"role": "user", "content": "q"}], TOOLS, models=[NVIDIA_MODEL, GROQ])
+    assert model == NVIDIA_MODEL and message["tool_calls"][0]["function"]["name"] == "find"
+    [(url, payload)] = sent
+    assert payload["tools"] == TOOLS and payload["tool_choice"] == "auto"
+    assert payload["messages"] == [{"role": "user", "content": "q"}]
+
+
+def test_chat_falls_back_when_the_first_model_fails(api):
+    sent, replies = api
+    replies["nvidia"] = httpx.ReadTimeout("slow")
+    replies["groq"] = httpx.Response(200, json=CALL)
+    _, model = chat([], TOOLS, models=[NVIDIA_MODEL, GROQ], groq_max_tokens=8000)
+    assert model == GROQ
+    groq_payload = sent[-1][1]
+    assert groq_payload["reasoning_effort"] == "medium" and groq_payload["max_tokens"] == 8000
+
+
+@pytest.mark.parametrize("reply", [httpx.Response(400, json={"error": {"message": "bad"}}), httpx.ConnectError("x")])
+def test_chat_raises_when_every_model_fails(api, reply):
+    _, replies = api
+    replies["nvidia"] = replies["groq"] = reply
+    with pytest.raises(RuntimeError, match="every model in the chain failed"):
+        chat([], TOOLS, models=[NVIDIA_MODEL, GROQ])
+
+
+def test_chat_wont_offer_tools_to_a_model_it_cant_call_them_on(api, monkeypatch):
+    with pytest.raises(RuntimeError, match="can't call tools here"):
+        chat([], TOOLS, models=["gemini-2.5-flash"])
+    monkeypatch.setattr(llm, "NVIDIA_API_KEY", None)
+    with pytest.raises(RuntimeError, match="NVIDIA_API_KEY not configured"):
+        chat([], TOOLS, models=[NVIDIA_MODEL])

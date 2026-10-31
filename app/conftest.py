@@ -343,3 +343,62 @@ def pushes(monkeypatch):
     fake = FakePush()
     monkeypatch.setattr(push, "webpush", fake)
     return fake
+
+
+@pytest.fixture
+def assistant_model(monkeypatch):
+    """A scripted model for the squadron assistant (core/assistant.py). Each
+    call to core.llm.chat returns the next reply in state["replies"], written
+    the short way and sent back as the API would:
+
+    - {"calls": [{"tool", "args"}]}  -> native tool_calls
+    - {"answer": ...}                 -> a call to the `answer` tool. Most tests
+      check plumbing, not grounding, so a bare answer says it needed no
+      records unless the test sets "no_records_needed" itself.
+    - a string                        -> plain text content
+    - an exception                    -> raised, as when every model fails
+
+    Every conversation it's sent is kept in state["prompts"] as a transcript
+    ("Staff: ...", "Assistant: ...", tool results as sent), and the tools it
+    was offered in state["tools"]."""
+    import json as _json
+
+    import core.assistant as assistant
+
+    state = {"replies": [], "prompts": [], "tools": [], "kwargs": [], "model": "z-ai/glm-5.3"}
+
+    def render(messages):
+        lines = []
+        for m in messages:
+            if m["role"] == "user":
+                lines.append(f"Staff: {m['content']}")
+            elif m["role"] == "assistant":
+                if m.get("content"):
+                    lines.append(f"Assistant: {m['content']}")
+                for tc in m.get("tool_calls") or []:
+                    lines.append(f"Assistant calls {tc['function']['name']} {tc['function']['arguments']}")
+            elif m["role"] == "tool":
+                lines.append(m["content"])
+        return "\n".join(lines)
+
+    def fake_chat(messages, tools, **kw):
+        state["prompts"].append(render(messages))
+        state["tools"].append([t["function"]["name"] for t in tools])
+        state["kwargs"].append(kw)
+        reply = state["replies"].pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, str):
+            return {"content": reply}, state["model"]
+        if "calls" in reply:
+            return {"tool_calls": [
+                {"id": f"call_{i}", "type": "function", "function": {
+                    "name": c.get("tool") if isinstance(c, dict) else None,
+                    "arguments": _json.dumps(c.get("args") or {}) if isinstance(c, dict) else "{}"}}
+                for i, c in enumerate(reply["calls"])]}, state["model"]
+        args = {"no_records_needed": True, **reply}
+        return {"tool_calls": [{"id": "call_answer", "type": "function", "function": {
+            "name": "answer", "arguments": _json.dumps(args)}}]}, state["model"]
+
+    monkeypatch.setattr(assistant, "chat", fake_chat)
+    return state

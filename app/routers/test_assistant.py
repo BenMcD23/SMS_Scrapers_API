@@ -10,32 +10,13 @@ import pytest
 import core.assistant as assistant
 from database.models import AssistantChat, AssistantMessage, AuditEvent, Cadet
 
-
-def plumbing(reply):
-    """Most tests here check the plumbing, not grounding, so a scripted bare
-    answer says it needed no records; the grounding tests set
-    "no_records_needed" themselves to say otherwise."""
-    if isinstance(reply, dict) and "answer" in reply and "calls" not in reply:
-        return {"no_records_needed": True, **reply}
-    return reply
-
-
 CHART = {"type": "bar", "title": "Cadets by flight", "labels": ["A"], "series": [{"name": "Cadets", "values": [1]}]}
 
 
 @pytest.fixture
-def model(monkeypatch):
-    state = {"replies": [], "prompts": [], "model": "z-ai/glm-5.3"}
-
-    def fake_generate(prompt, system, **_kw):
-        state["prompts"].append(prompt)
-        reply = state["replies"].pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return json.dumps(plumbing(reply)), state["model"]
-
-    monkeypatch.setattr(assistant, "generate", fake_generate)
-    return state
+def model(assistant_model):
+    """The scripted model (conftest.assistant_model)."""
+    return assistant_model
 
 
 def ask(api, persona="staff", **body):
