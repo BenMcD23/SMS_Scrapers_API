@@ -172,3 +172,16 @@ def test_stats_and_one_cadet(api, db, doc):
 def test_stats_with_nothing_imported_is_empty_not_an_error(api):
     out = api.get("/programme/stats", headers=api.as_("staff")).json()
     assert out["nights"] == [] and out["categories"] == [] and out["activities"] == []
+
+
+def test_stats_for_a_custom_range(api, db, doc):
+    db.add(Cadet(cin=1, first_name="Amy", last_name="A", flight="A"))
+    db.add(CadetAttendance(cadet_id=1, date=datetime(2026, 10, 7), status="Present"))
+    db.commit()
+    api.post("/programme/import", json={"month": 10, "year": 2026}, headers=api.as_("staff"))
+    inside = api.get("/programme/stats?start=2026-10-01&end=2026-10-10", headers=api.as_("nco")).json()
+    assert [n["date"] for n in inside["nights"]] == ["2026-10-07"]
+    before = api.get("/programme/stats?start=2026-09-01&end=2026-10-06", headers=api.as_("nco")).json()
+    assert before["nights"] == []
+    backwards = api.get("/programme/stats?start=2026-10-10&end=2026-10-01", headers=api.as_("nco"))
+    assert backwards.status_code == 422

@@ -125,11 +125,17 @@ def nights(start: date, end: date, db: Session = Depends(get_db),
 
 
 @router.get("/stats")
-def stats(days: int = 365, db: Session = Depends(get_db),
-          idinfo: dict = Depends(require_staff_or_nco)) -> dict:
-    """Turnout by kind of night, by activity, and night by night."""
-    return {**programme.programme_stats(db, max(7, min(days, 1095))),
-            "categories_all": [{"key": k, "label": v} for k, v in programme.CATEGORIES.items()]}
+def stats(days: int = 365, start: date | None = None, end: date | None = None,
+          db: Session = Depends(get_db), idinfo: dict = Depends(require_staff_or_nco)) -> dict:
+    """Turnout by kind of night, by activity, and night by night: the last
+    `days`, or from `start` to `end` (the stats page's custom range)."""
+    if start and end:
+        if end < start:
+            raise HTTPException(status_code=422, detail="The end date is before the start")
+        result = programme.programme_stats(db, days=min((end - start).days, 1095), today=end)
+    else:
+        result = programme.programme_stats(db, max(7, min(days, 1095)))
+    return {**result, "categories_all": [{"key": k, "label": v} for k, v in programme.CATEGORIES.items()]}
 
 
 @router.get("/cadets/{cin}")
