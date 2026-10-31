@@ -10,6 +10,16 @@ import pytest
 import core.assistant as assistant
 from database.models import AssistantChat, AssistantMessage, AuditEvent, Cadet
 
+
+def plumbing(reply):
+    """Most tests here check the plumbing, not grounding, so a scripted bare
+    answer says it needed no records; the grounding tests set
+    "no_records_needed" themselves to say otherwise."""
+    if isinstance(reply, dict) and "answer" in reply and "calls" not in reply:
+        return {"no_records_needed": True, **reply}
+    return reply
+
+
 CHART = {"type": "bar", "title": "Cadets by flight", "labels": ["A"], "series": [{"name": "Cadets", "values": [1]}]}
 
 
@@ -22,7 +32,7 @@ def model(monkeypatch):
         reply = state["replies"].pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return json.dumps(reply), state["model"]
+        return json.dumps(plumbing(reply)), state["model"]
 
     monkeypatch.setattr(assistant, "generate", fake_generate)
     return state
@@ -88,7 +98,8 @@ def test_a_fallback_model_is_flagged(api, model):
 # ─── Carrying on a chat ──────────────────────────────────────────────────────
 
 def test_a_follow_up_carries_on_the_same_chat_with_its_history(api, db, model):
-    model["replies"] = [{"answer": "Four.", "charts": [CHART]}, {"answer": "Six."}]
+    model["replies"] = [{"calls": [{"tool": "squadron_overview", "args": {}}]},
+                        {"answer": "Four.", "charts": [CHART]}, {"answer": "Six."}]
     first = ask(api, question="How many in A?").json()
     chat_id = first["chat"]["id"]
     second = ask(api, question="And B?", chat_id=chat_id).json()
@@ -96,7 +107,7 @@ def test_a_follow_up_carries_on_the_same_chat_with_its_history(api, db, model):
     assert second["chat"]["id"] == chat_id
     # The model sees the earlier turn, and that a chart came with it.
     assert ("Staff: How many in A?\nAssistant: Four.\n[Shown with this answer: chart \"Cadets by flight\"]"
-            "\nStaff: And B?") in model["prompts"][1]
+            "\nStaff: And B?") in model["prompts"][2]
     messages = api.get(f"/assistant/chats/{chat_id}", headers=api.as_("staff")).json()["messages"]
     assert [m["content"] for m in messages] == ["How many in A?", "Four.", "And B?", "Six."]
     assert db.query(AssistantChat).count() == 1

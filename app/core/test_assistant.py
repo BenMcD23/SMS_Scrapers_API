@@ -90,6 +90,15 @@ def call(db, tool, **args):
     return assistant.run_tool(db, tool, args)
 
 
+def plumbing(reply):
+    """Most tests here check the plumbing, not grounding, so a scripted bare
+    answer says it needed no records; the grounding tests set
+    "no_records_needed" themselves to say otherwise."""
+    if isinstance(reply, dict) and "answer" in reply and "calls" not in reply:
+        return {"no_records_needed": True, **reply}
+    return reply
+
+
 # ─── Tools ───────────────────────────────────────────────────────────────────
 
 def test_find_cadets_matches_any_part_of_a_name_and_filters(squadron):
@@ -312,7 +321,7 @@ def model(monkeypatch):
         reply = state["replies"].pop(0)
         if isinstance(reply, Exception):
             raise reply
-        return (reply if isinstance(reply, str) else json.dumps(reply)), state["model"]
+        return (reply if isinstance(reply, str) else json.dumps(plumbing(reply))), state["model"]
 
     monkeypatch.setattr(assistant, "generate", fake_generate)
     return state
@@ -388,7 +397,7 @@ def test_every_model_failing_is_raised_for_the_route_to_report(db, model):
 
 
 def test_a_plain_text_reply_is_the_answer(db, model):
-    model["replies"] = ["There are no cadets yet."]
+    model["replies"] = [LOOK, "There are no cadets yet."]
     assert assistant.ask(db, "q").answer == "There are no cadets yet."
 
 
@@ -399,6 +408,10 @@ def test_dates_in_results_are_iso(squadron):
     assert isinstance(date.fromisoformat(call(squadron, "squadron_overview")["today"]), date)
 
 
+# A first round that reads something, so what follows is a grounded answer.
+LOOK = {"calls": [{"tool": "squadron_overview", "args": {}}]}
+
+
 # ─── Charts, tables and follow-ups ───────────────────────────────────────────
 
 BAR = {"type": "bar", "title": "Cadets by flight", "labels": ["A", "B"],
@@ -407,7 +420,7 @@ TABLE = {"title": "B flight", "columns": ["Name", "Rate"], "rows": [["Ben Brook"
 
 
 def test_an_answer_carries_its_charts_tables_and_follow_ups(db, model):
-    model["replies"] = [{"answer": "B is bigger.", "charts": [BAR], "tables": [TABLE],
+    model["replies"] = [LOOK, {"answer": "B is bigger.", "charts": [BAR], "tables": [TABLE],
                          "follow_ups": [" And by rank? ", "", 5, "Turnout by month?"]}]
     result = assistant.ask(db, "Report on flights")
     assert result.charts == [{**BAR, "series": [{"name": "Cadets", "values": [1.0, 2.0]}], "unit": ""}]
@@ -426,19 +439,19 @@ def test_an_answer_carries_its_charts_tables_and_follow_ups(db, model):
     "not a chart",
 ])
 def test_a_chart_that_doesnt_fit_is_dropped_and_the_answer_kept(db, model, chart):
-    model["replies"] = [{"answer": "Here.", "charts": [chart, BAR]}]
+    model["replies"] = [LOOK, {"answer": "Here.", "charts": [chart, BAR]}]
     result = assistant.ask(db, "q")
     assert result.answer == "Here." and [c["title"] for c in result.charts] == ["Cadets by flight"]
 
 
 def test_a_ragged_table_is_dropped(db, model):
-    model["replies"] = [{"answer": "Here.", "tables": [{**TABLE, "rows": [["Ben"]]}], "charts": "nope"}]
+    model["replies"] = [LOOK, {"answer": "Here.", "tables": [{**TABLE, "rows": [["Ben"]]}], "charts": "nope"}]
     result = assistant.ask(db, "q")
     assert result.tables == [] and result.charts == []
 
 
 def test_charts_tables_and_follow_ups_are_capped(db, model):
-    model["replies"] = [{"answer": "x", "charts": [BAR] * 9, "tables": [TABLE] * 9, "follow_ups": ["a"] * 9}]
+    model["replies"] = [LOOK, {"answer": "x", "charts": [BAR] * 9, "tables": [TABLE] * 9, "follow_ups": ["a"] * 9}]
     result = assistant.ask(db, "q")
     assert (len(result.charts), len(result.tables), len(result.follow_ups)) == (
         assistant.MAX_CHARTS, assistant.MAX_TABLES, assistant.MAX_FOLLOW_UPS)
@@ -488,3 +501,86 @@ def test_cadets_named_in_the_answer_or_a_table_are_returned_to_link(squadron, mo
                             {"title": "t", "columns": ["Name"], "rows": [["Siân Ó Briain"]]}]}]
     result = assistant.ask(squadron, "q")
     assert result.cadets == [{"cin": 1, "name": "Amy Ashworth"}, {"cin": 3, "name": "Siân Ó Briain"}]
+
+
+# ─── Grounding: no made-up answers ───────────────────────────────────────────
+
+# What the backup model sent in prod for "whose first aid or WHTs expire in
+# the next three months?": no tool calls, invented cadets, CINs and dates.
+MADE_UP = {"answer": "- Cpl James Taylor (CIN 1023) – First Aid (expires 15 May 2026)\n"
+                     "- Cadet Emily Brown (CIN 1087) – WHT – Rifle (expires 02 Jun 2026)",
+           "no_records_needed": False}
+
+
+def test_an_answer_that_read_no_records_is_sent_back_and_a_looked_up_one_used(squadron, model):
+    model["replies"] = [MADE_UP, {"calls": [{"tool": "expiring", "args": {"within_days": 90}}]},
+                        {"answer": "Amy Ashworth (CIN 1): St John Youth First Aid."}]
+    result = assistant.ask(squadron, "Whose first aid expires soon?")
+    assert result.answer == "Amy Ashworth (CIN 1): St John Youth First Aid."
+    assert "Your last reply answered without reading any records" in model["prompts"][1]
+    assert "James Taylor" not in result.answer
+
+
+def test_a_model_that_never_looks_gets_no_answer_through(db, model):
+    # Every round answers from nothing: staff get "couldn't check", never the invention.
+    model["replies"] = [MADE_UP] * assistant.MAX_ROUNDS
+    result = assistant.ask(db, "Whose first aid expires soon?")
+    assert result.answer == assistant.UNCHECKED
+    assert result.charts == result.tables == result.follow_ups == result.cadets == []
+    assert len(model["prompts"]) == assistant.MAX_ROUNDS
+
+
+def test_a_plain_text_answer_from_nothing_is_not_trusted_either(db, model):
+    # gpt-oss sometimes ignores the JSON format and just writes; that's still an answer from nothing.
+    model["replies"] = ["Cpl James Taylor (CIN 1023) expires 15 May 2026."] * assistant.MAX_ROUNDS
+    assert assistant.ask(db, "q").answer == assistant.UNCHECKED
+
+
+def test_a_cin_no_tool_returned_is_rejected(squadron, model):
+    looked = {"calls": [{"tool": "find_cadets", "args": {}}]}
+    model["replies"] = [looked, {"answer": "Amy Ashworth (CIN 1) and Jo Bloggs (CIN 9999)."},
+                        {"answer": "Amy Ashworth (CIN 1)."}]
+    result = assistant.ask(squadron, "Who's in A?")
+    assert result.answer == "Amy Ashworth (CIN 1)."
+    assert "gave CIN 9999, which no tool returned" in model["prompts"][2]
+
+
+def test_an_invented_cin_in_a_table_counts_too(squadron, model):
+    looked = {"calls": [{"tool": "find_cadets", "args": {}}]}
+    table = {"title": "t", "columns": ["Name", "CIN"], "rows": [["Jo Bloggs", "CIN 9999"]]}
+    model["replies"] = [looked] + [{"answer": "See the table.", "tables": [table]}] * (assistant.MAX_ROUNDS - 1)
+    assert assistant.ask(squadron, "q").answer == assistant.UNCHECKED
+
+
+def test_a_greeting_needs_no_records_but_carries_no_made_up_figures(db, model):
+    model["replies"] = [{"answer": "Hello! Ask me about the squadron.", "no_records_needed": True,
+                         "charts": [BAR], "tables": [TABLE]}]
+    result = assistant.ask(db, "hi")
+    assert result.answer == "Hello! Ask me about the squadron."
+    # Nothing was read and there's no chat to draw on, so any figures are invented.
+    assert result.charts == [] and result.tables == []
+
+
+def test_reshaping_an_earlier_answer_needs_no_new_lookup(db, model):
+    history = [{"role": "user", "content": "Cadets by flight?"},
+               {"role": "assistant", "content": "A 1, B 2 (Amy Ashworth, CIN 1)."}]
+    model["replies"] = [{"answer": "As a pie chart.", "no_records_needed": True, "charts": [BAR]}]
+    result = assistant.ask(db, "Make that a pie chart", history)
+    assert result.charts and result.answer == "As a pie chart."
+
+
+def test_a_cin_from_earlier_in_the_chat_is_known(db, model):
+    history = [{"role": "assistant", "content": "Amy Ashworth (CIN 2100004) is in A flight."}]
+    model["replies"] = [{"answer": "Yes, CIN 2100004 is Amy.", "no_records_needed": True}]
+    assert assistant.ask(db, "Is that Amy?", history).answer == "Yes, CIN 2100004 is Amy."
+
+
+def test_a_lookup_that_failed_doesnt_count_as_reading_the_records(db, model):
+    failed = {"calls": [{"tool": "cadet_record", "args": {"cin": 999}}]}
+    model["replies"] = [failed] + [{"answer": "Cpl Bloggs is fine.", "no_records_needed": False}] * 4
+    assert assistant.ask(db, "How's Bloggs?").answer == assistant.UNCHECKED
+
+
+def test_the_prompt_forbids_answering_from_memory():
+    assert "Call a tool before answering any question about cadets" in assistant.SYSTEM_PROMPT
+    assert '"no_records_needed"' in assistant.SYSTEM_PROMPT
