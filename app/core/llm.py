@@ -85,22 +85,11 @@ def _call_gemini(model: str, prompt: str, system_prompt: str,
     return "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
 
 
-def _call_openai_compatible(url: str, api_key: str | None, key_name: str, model: str,
-                            prompt: str, system_prompt: str, temperature: float,
-                            max_tokens: int, **extras) -> str:
+def _post_openai(url: str, api_key: str | None, key_name: str, payload: dict) -> dict:
+    """POST to an OpenAI-compatible chat endpoint and return the first
+    choice's message. Shared by plain generation and tool calling."""
     if not api_key:
         raise RuntimeError(f"{key_name} not configured")
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        **extras,
-    }
 
     # Generating a whole month of texts trips the free tiers' per-minute limits
     # (Groq counts tokens, NVIDIA counts requests), so wait out 429s instead of
@@ -118,8 +107,58 @@ def _call_openai_compatible(url: str, api_key: str | None, key_name: str, model:
 
     data = resp.json()
     if "choices" not in data:
-        raise RuntimeError(f"{model} API error: {resp.text[:200]}")
-    return (data["choices"][0]["message"].get("content") or "").strip()
+        raise RuntimeError(f"{payload['model']} API error: {resp.text[:200]}")
+    return data["choices"][0]["message"]
+
+
+def _call_openai_compatible(url: str, api_key: str | None, key_name: str, model: str,
+                            prompt: str, system_prompt: str, temperature: float,
+                            max_tokens: int, **extras) -> str:
+    message = _post_openai(url, api_key, key_name, {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        **extras,
+    })
+    return (message.get("content") or "").strip()
+
+
+def chat(messages: list[dict], tools: list[dict], *, models: list[str], temperature: float = 0.2,
+         max_tokens: int = 8000, groq_max_tokens: int | None = None) -> tuple[dict, str]:
+    """One turn of a tool-calling conversation: (assistant message, model id).
+    The message has `content` and/or `tool_calls` in the OpenAI shape.
+
+    For callers that let the model look things up (the squadron assistant).
+    Asking for lookups in the API's own `tools` field, rather than as JSON in
+    the reply text, is what makes them reliable: each provider trains its
+    models on that format (gpt-oss on Groq otherwise writes calls in its own
+    shape). OpenAI-compatible models only, so Gemini isn't offered here.
+    """
+    last_error: Exception | None = None
+    for model in models:
+        try:
+            if model == NVIDIA_MODEL:
+                url, key, key_name, extras = NVIDIA_URL, NVIDIA_API_KEY, "NVIDIA_API_KEY", {
+                    "max_tokens": NVIDIA_MAX_TOKENS}
+            elif model == GROQ_MODEL:
+                # More thinking than the texts get: choosing tools well is the job here.
+                url, key, key_name, extras = GROQ_URL, GROQ_API_KEY, "GROQ_API_KEY", {
+                    "max_tokens": groq_max_tokens or max_tokens, "reasoning_effort": "medium"}
+            else:
+                raise RuntimeError(f"{model} can't call tools here")
+            message = _post_openai(url, key, key_name, {
+                "model": model, "messages": messages, "tools": tools, "tool_choice": "auto",
+                "temperature": temperature, **extras,
+            })
+            return message, model
+        except Exception as e:
+            last_error = e
+            logger.error(f"{model} failed, trying next: {e}")
+    raise RuntimeError(f"every model in the chain failed; last error: {last_error}")
 
 
 def generate(prompt: str, system_prompt: str, *, temperature: float = 0.6,

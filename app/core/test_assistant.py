@@ -90,13 +90,6 @@ def call(db, tool, **args):
     return assistant.run_tool(db, tool, args)
 
 
-def plumbing(reply):
-    """Most tests here check the plumbing, not grounding, so a scripted bare
-    answer says it needed no records; the grounding tests set
-    "no_records_needed" themselves to say otherwise."""
-    if isinstance(reply, dict) and "answer" in reply and "calls" not in reply:
-        return {"no_records_needed": True, **reply}
-    return reply
 
 
 # ─── Tools ───────────────────────────────────────────────────────────────────
@@ -310,21 +303,9 @@ def test_parse_reply(text, expected):
 # ─── The loop ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def model(monkeypatch):
-    """A scripted model: each generate() returns the next reply in the list
-    and records the prompt it was given."""
-    state = {"replies": [], "prompts": [], "model": "z-ai/glm-5.3"}
-
-    def fake_generate(prompt, system, **_kw):
-        state["prompts"].append(prompt)
-        assert "TOOLS" in system
-        reply = state["replies"].pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return (reply if isinstance(reply, str) else json.dumps(plumbing(reply))), state["model"]
-
-    monkeypatch.setattr(assistant, "generate", fake_generate)
-    return state
+def model(assistant_model):
+    """The scripted model (conftest.assistant_model)."""
+    return assistant_model
 
 
 def test_calls_tools_then_answers_from_their_results(squadron, model):
@@ -362,7 +343,9 @@ def test_rounds_are_capped_and_the_last_one_must_answer(db, model):
     result = assistant.ask(db, "q")
     assert result.answer == "Done."
     assert len(model["prompts"]) == assistant.MAX_ROUNDS
-    assert "No more tool calls" in model["prompts"][-1]
+    assert "No more lookups" in model["prompts"][-1]
+    # On the last round only `answer` is on offer, so the model can't ask for more.
+    assert model["tools"][-1] == ["answer"] and "squadron_overview" in model["tools"][0]
 
 
 def test_a_model_still_asking_for_tools_on_the_last_round_gets_a_fallback_answer(db, model):
@@ -480,18 +463,12 @@ def test_every_tool_has_a_progress_label():
     assert set(assistant.STEPS) == set(TOOLS)
 
 
-def test_the_assistant_leaves_gemini_out_of_its_chain(db, monkeypatch):
+def test_the_assistant_leaves_gemini_out_of_its_chain(db, model):
     # Its prompts carry dates of birth and emails; Gemini's free tier may use
     # what it's sent.
-    seen = {}
-
-    def fake_generate(prompt, system, **kw):
-        seen.update(kw)
-        return '{"answer": "ok"}', "z-ai/glm-5.3"
-
-    monkeypatch.setattr(assistant, "generate", fake_generate)
+    model["replies"] = [{"answer": "ok"}]
     assistant.ask(db, "q")
-    assert seen["models"] == assistant.MODELS
+    assert model["kwargs"][0]["models"] == assistant.MODELS
     assert not any("gemini" in m for m in assistant.MODELS)
 
 
@@ -584,3 +561,62 @@ def test_a_lookup_that_failed_doesnt_count_as_reading_the_records(db, model):
 def test_the_prompt_forbids_answering_from_memory():
     assert "Call a tool before answering any question about cadets" in assistant.SYSTEM_PROMPT
     assert '"no_records_needed"' in assistant.SYSTEM_PROMPT
+
+
+# ─── Native tool calling ─────────────────────────────────────────────────────
+
+def test_a_lookup_written_as_text_in_gpt_oss_style_is_still_a_lookup(squadron, model):
+    # What went wrong in prod: gpt-oss on Groq wrote its call as {"name", "arguments"}
+    # text, which read as an answer and was thrown away every round.
+    model["replies"] = ['{"name": "find_cadets", "arguments": "{\\"flight\\": \\"A\\"}"}',
+                        {"answer": "Amy Ashworth (CIN 1) is in A flight."}]
+    result = assistant.ask(squadron, "Who's in A flight?")
+    assert result.answer == "Amy Ashworth (CIN 1) is in A flight."
+    assert result.calls == [{"tool": "find_cadets", "args": {"flight": "A"}, "ok": True}]
+    # Without call ids, the results go back as a message of their own.
+    assert "Tool results:\n[1] find_cadets" in model["prompts"][1]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ('{"name": "expiring", "arguments": {"within_days": 90}}',
+     {"calls": [{"tool": "expiring", "args": {"within_days": 90}}]}),
+    ('{"tool": "attendance", "args": {"weeks": 4}}', {"calls": [{"tool": "attendance", "args": {"weeks": 4}}]}),
+    ('{"name": "answer", "arguments": {"answer": "Hi"}}', {"answer": "Hi"}),
+    ('{"name": "not_a_tool", "arguments": {}}', {"answer": '{"name": "not_a_tool", "arguments": {}}'}),
+    ('{"name": "expiring", "arguments": "not json"}', {"calls": [{"tool": "expiring", "args": {}}]}),
+])
+def test_parse_reply_knows_the_shapes_models_write_calls_in(text, expected):
+    assert assistant.parse_reply(text) == expected
+
+
+def test_native_tool_results_answer_their_own_calls(squadron, model):
+    model["replies"] = [{"calls": [{"tool": "find_cadets", "args": {"name": "amy"}}]}, {"answer": "Amy (CIN 1)."}]
+    assistant.ask(squadron, "Amy?")
+    # The call is echoed back and its result follows, as the API expects.
+    second = model["prompts"][1]
+    assert 'Assistant calls find_cadets {"name": "amy"}' in second
+    assert '"name":"Amy Ashworth"' in second and "Tool results:" not in second
+
+
+def test_an_answer_sent_alongside_lookups_waits_for_them(squadron, model, monkeypatch):
+    both = {"tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "squadron_overview", "arguments": "{}"}},
+        {"id": "c2", "type": "function", "function": {"name": "answer",
+                                                      "arguments": '{"answer": "Guessed: 60."}'}}]}
+    replies = [both, {"tool_calls": [{"id": "c3", "type": "function", "function": {
+        "name": "answer", "arguments": '{"answer": "There are 3 cadets."}'}}]}]
+    monkeypatch.setattr(assistant, "chat", lambda messages, tools, **kw: (replies.pop(0), "z-ai/glm-5.3"))
+    result = assistant.ask(squadron, "How many cadets?")
+    assert result.answer == "There are 3 cadets." and [c["tool"] for c in result.calls] == ["squadron_overview"]
+
+
+def test_every_tool_is_offered_with_a_schema_providers_can_read():
+    defs = assistant.tool_definitions()
+    names = [d["function"]["name"] for d in defs]
+    assert names == [*TOOLS, "answer"] and len(set(names)) == len(names)
+    text = json.dumps(defs)
+    assert "$ref" not in text and "$defs" not in text  # not every provider follows refs
+    agg = next(d for d in defs if d["function"]["name"] == "aggregate")["function"]["parameters"]
+    assert agg["properties"]["group_by"]["items"]["properties"]["field"]["type"] == "string"
+    assert agg["required"] == ["dataset"]
+    assert defs[-1]["function"]["parameters"]["required"] == ["answer"]

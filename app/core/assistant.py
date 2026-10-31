@@ -2,19 +2,23 @@
 tools in core/assistant_tools.py, then writing an answer from what they return,
 with charts and tables when a report or a breakdown is asked for (or helps).
 
-It runs on the shared model chain (core/llm.generate) rather than any one
-provider's native tool calling, so every model in the chain can drive it and
-the quota fallback still works mid-question. The protocol is plain JSON in the
-reply: the model either asks for tool calls or gives the answer. Each round is
-one generate() call, and rounds are capped (MAX_ROUNDS) so a model that keeps
-asking can't run up minutes of calls; on the last round it's told to answer
-with what it has.
+It uses the providers' native tool calling (core/llm.chat): the tools are sent
+as function definitions, the model asks for them in the API's own `tool_calls`
+field, and gives its final reply by calling the `answer` tool, so the shape of
+every reply is the API's to guarantee rather than the prompt's to hope for.
+(It once asked for JSON written into the reply text; gpt-oss on Groq writes
+tool calls in its own shape instead, so every request read as an answer.) A
+reply that still arrives as text is read leniently (parse_reply). Rounds are
+capped (MAX_ROUNDS) so a model that keeps asking can't run up minutes of calls;
+on the last round it's told to answer with what it has.
 
 What a tool returns is data, not instructions: the prompt says so, and the
 tools are read-only, so text planted in a record (a name, a note) can at worst
 skew an answer, never change anything. Charts and tables the model sends back
 are checked against a schema and size limits (Chart, Table) before they reach
-the site; one that doesn't fit is dropped rather than failing the answer.
+the site; one that doesn't fit is dropped rather than failing the answer. And
+an answer must be grounded in what the tools returned (_ungrounded) before
+staff see it.
 """
 
 import json
@@ -26,8 +30,8 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy.orm import Session
 
-from core.assistant_tools import TOOLS, describe_tools
-from core.llm import GROQ_MODEL, NVIDIA_MODEL, generate
+from core.assistant_tools import TOOLS
+from core.llm import GROQ_MODEL, NVIDIA_MODEL, chat
 
 logger = logging.getLogger(__name__)
 
@@ -92,21 +96,11 @@ Adult staff chat with you about the squadron's cadets, attendance, qualification
 stores and events. You answer from the squadron's database, which you read through the tools below, \
 and you can draw charts and tables. You cannot change anything.
 
-TOOLS
-{describe_tools()}
-
-HOW TO REPLY
-Reply with one JSON object and nothing else, in one of two forms:
-1. To read data: {{"calls": [{{"tool": "<name>", "args": {{...}}}}]}} — up to {MAX_CALLS_PER_ROUND} calls \
-at once; ask for everything you need together.
-2. To answer:
-{{"answer": "<Markdown>",
-  "charts": [{{"type": "bar" | "line" | "pie", "title": "...", "labels": ["A", "B"],
-              "series": [{{"name": "Cadets", "values": [26, 14]}}], "unit": "" or "%" or "min"}}],
-  "tables": [{{"title": "...", "columns": ["Name", "Flight"], "rows": [["Amy Ashworth", "A"]]}}],
-  "follow_ups": ["a short next question the staff member might ask"],
-  "no_records_needed": true only if the question needs nothing from the squadron's records}}
-Only "answer" is required.
+HOW TO WORK
+- Read the records with the tools you've been given: ask for several at once when you need them.
+- Finish by calling the `answer` tool with your reply. Its fields: answer (Markdown), and optionally
+  charts, tables, follow_ups, and no_records_needed (true only when the question needs nothing from the
+  squadron's records). Don't reply in plain text.
 
 CHARTS AND TABLES
 - Draw a chart when asked for a graph, chart or report, or when a breakdown or trend is clearer as \
@@ -135,7 +129,7 @@ You never have phone numbers, parents' details, addresses, medical or dietary in
 say so and point to the cadet's record on the site.
 - Use cadets' names with their rank and flight; include the CIN when it helps staff find them.
 - Lead with the answer. Markdown: paragraphs, "- " lists, ### headings and **bold** only (no tables or \
-links in the Markdown; put tables in "tables"). Plain British English, no emoji.
+links in the Markdown; put tables in the answer's tables). Plain British English, no emoji.
 - Dates are UK style in text and tables (12 March 2026, or 12 Mar 2026 in a table); tools give them \
 as YYYY-MM-DD. Say "today" relative to the date the tools give.
 """
@@ -154,25 +148,79 @@ class Result:
     cadets: list[dict] = field(default_factory=list)
 
 
-def _transcript(history: list[dict], question: str, work: list[str]) -> str:
-    lines = ["CONVERSATION"]
-    for turn in history:
-        who = "Staff" if turn["role"] == "user" else "Assistant"
-        lines.append(f"{who}: {turn['content']}")
-    lines.append(f"Staff: {question}")
-    if work:
-        lines += ["", "TOOL RESULTS SO FAR", *work]
-    return "\n".join(lines)
+def _inline_refs(schema: dict) -> dict:
+    """A pydantic JSON schema with its $defs written in place: not every
+    provider follows $ref in a tool's parameters."""
+    defs = schema.pop("$defs", {})
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(dict(defs[node["$ref"].split("/")[-1]]))
+            return {k: walk(v) for k, v in node.items() if k != "title"}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(schema)
+
+
+ANSWER_TOOL = {"type": "function", "function": {
+    "name": "answer",
+    "description": "Give your reply to staff. Call this once, last, after reading what you need.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string", "description": "the reply, in Markdown"},
+            "charts": {"type": "array", "description": "charts to draw", "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["bar", "line", "pie"]},
+                    "title": {"type": "string"},
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "series": {"type": "array", "items": {"type": "object", "properties": {
+                        "name": {"type": "string"},
+                        "values": {"type": "array", "items": {"type": ["number", "null"]}}},
+                        "required": ["name", "values"]}},
+                    "unit": {"type": "string", "description": '"", "%" or "min"'},
+                },
+                "required": ["type", "title", "labels", "series"]}},
+            "tables": {"type": "array", "items": {"type": "object", "properties": {
+                "title": {"type": "string"},
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "rows": {"type": "array", "items": {"type": "array", "items": {
+                    "type": ["string", "number", "null"]}}}},
+                "required": ["title", "columns", "rows"]}},
+            "follow_ups": {"type": "array", "items": {"type": "string"}},
+            "no_records_needed": {"type": "boolean",
+                                  "description": "true only if the question needs nothing from the records"},
+        },
+        "required": ["answer"],
+    },
+}}
+
+
+def tool_definitions() -> list[dict]:
+    """Every read-only tool, then `answer`, as the API's function definitions."""
+    return [
+        {"type": "function", "function": {
+            "name": t.name, "description": t.description,
+            "parameters": _inline_refs(t.args.model_json_schema()),
+        }}
+        for t in TOOLS.values()
+    ] + [ANSWER_TOOL]
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 
 
 def parse_reply(text: str) -> dict:
-    """The model's JSON reply as a dict. Models wrap JSON in fences or add a
-    sentence either side, so this takes the outermost {...}. Anything that
-    still isn't the protocol is treated as a plain answer: a model that forgot
-    the format has usually still answered."""
+    """A reply that came back as text instead of a tool call, as
+    {"answer": ...} or {"calls": [{"tool", "args"}]}. Takes the outermost
+    {...} (models wrap JSON in fences or add a sentence), and knows the shapes
+    models use for a call written as text: {"calls": [...]}, {"tool", "args"}
+    and {"name", "arguments"}. Anything else is plain text, and treated as an
+    answer: a model that ignored the format has usually still answered."""
     stripped = _FENCE.sub("", text.strip())
     start, end = stripped.find("{"), stripped.rfind("}")
     if start != -1 and end > start:
@@ -180,9 +228,46 @@ def parse_reply(text: str) -> dict:
             data = json.loads(stripped[start:end + 1])
         except json.JSONDecodeError:
             data = None
-        if isinstance(data, dict) and (isinstance(data.get("answer"), str) or isinstance(data.get("calls"), list)):
-            return data
+        if isinstance(data, dict):
+            if isinstance(data.get("answer"), str) or isinstance(data.get("calls"), list):
+                return data
+            name = data.get("tool", data.get("name"))
+            args = data.get("args", data.get("arguments", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if isinstance(name, str) and name in TOOLS:
+                return {"calls": [{"tool": name, "args": args if isinstance(args, dict) else {}}]}
+            if name == "answer" and isinstance(args, dict) and isinstance(args.get("answer"), str):
+                return args
     return {"answer": text.strip()}
+
+
+def _read_message(message: dict) -> tuple[list[dict], dict | None]:
+    """(data calls, answer) from one assistant message. Native tool calls
+    first: each is {"id", "tool", "args"}, and a call to `answer` is the reply.
+    Text content is the fallback, read by parse_reply."""
+    calls, answer = [], None
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        if fn.get("name") == "answer":
+            answer = args if isinstance(args, dict) else {}
+        else:
+            calls.append({"id": tc.get("id"), "tool": fn.get("name"), "args": args})
+    if calls or answer is not None:
+        return calls, answer
+    content = (message.get("content") or "").strip()
+    reply = parse_reply(content) if content else {"answer": ""}
+    if reply.get("calls"):
+        return [{"id": None, "tool": c.get("tool"), "args": c.get("args")}
+                for c in reply["calls"] if isinstance(c, dict)], None
+    return [], reply
 
 
 def _valid(model: type[BaseModel], items, limit: int) -> list[dict]:
@@ -336,60 +421,82 @@ def ask_steps(db: Session, question: str, history: list[dict] | None = None, per
     back with the reason while rounds remain, and replaced with UNCHECKED on
     the last: staff never see a made-up answer as if it were looked up."""
     history = history or []
-    work: list[str] = []
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages += [{"role": t["role"], "content": t["content"]} for t in history]
+    messages.append({"role": "user", "content": question})
+    tools = tool_definitions()
     calls: list[dict] = []
     results: list[dict] = []
     model = ""
     for round_no in range(1, MAX_ROUNDS + 1):
-        prompt = _transcript(history, question, work)
         last = round_no == MAX_ROUNDS
         if last:
-            prompt += "\n\nNo more tool calls: give your answer now from the results above."
+            messages.append({"role": "user", "content": "No more lookups: call the answer tool now with what "
+                                                        "the results above show."})
         yield Step(WRITING if any(c["ok"] for c in calls) else THINKING)
-        text, model = generate(prompt, SYSTEM_PROMPT, temperature=0.2, max_tokens=12000, groq_max_tokens=6000,
-                               models=MODELS)
-        reply = parse_reply(text)
-        wanted = reply.get("calls")
-        if not wanted or last:
-            answer = reply.get("answer")
-            if not isinstance(answer, str) or not answer.strip():
-                # Asked for tools on the last round, or answered with nothing.
-                answer = "I couldn't work that out from the squadron's records. Try asking it a different way."
-            answer = answer.strip()
-            tables = _valid(Table, reply.get("tables"), MAX_TABLES)
-            charts = _valid(Chart, reply.get("charts"), MAX_CHARTS)
-            problem = _ungrounded(reply, answer, tables, calls, results, history)
-            if problem and not last:
-                logger.warning(f"assistant ({model}) {problem}; sending it back")
-                work.append(f"[not used] Your last reply {problem}, so it was thrown away. Call the tools you "
-                            "need and answer only from what they return.")
-                continue
-            if problem:
-                logger.warning(f"assistant ({model}) {problem} on the last round; not answering")
-                yield Result(answer=UNCHECKED, model=model, calls=calls)
-                return
-            if not any(c["ok"] for c in calls) and not history:
-                # Nothing read and nothing earlier in the chat: any figures are made up.
-                charts, tables = [], []
-            yield Result(
-                answer=answer, model=model, calls=calls, charts=charts, tables=tables,
-                follow_ups=_follow_ups(reply.get("follow_ups")),
-                cadets=_cadets_in(results, answer, tables),
-            )
-            return
+        message, model = chat(messages, [ANSWER_TOOL] if last else tools, models=MODELS, temperature=0.2,
+                              max_tokens=12000, groq_max_tokens=8000)
+        wanted, reply = _read_message(message)
 
-        for call in wanted[:MAX_CALLS_PER_ROUND]:
-            call = call if isinstance(call, dict) else {}
-            name, args = call.get("tool"), call.get("args")
-            yield Step(STEPS.get(name, "Looking it up") if isinstance(name, str) else "Looking it up")
-            result = run_tool(db, name, args, personal)
-            results.append(result)
-            calls.append({"tool": str(name), "args": args if isinstance(args, dict) else {},
-                          "ok": "error" not in result})
-            body = json.dumps(result, default=str, separators=(",", ":"))
-            if len(body) > MAX_RESULT_CHARS:
-                body = body[:MAX_RESULT_CHARS] + "…(cut: too long, narrow the question)"
-            work.append(f"[{len(calls)}] {name} {json.dumps(args or {})}\n{body}")
+        if wanted and not last:
+            wanted = wanted[:MAX_CALLS_PER_ROUND]
+            native = all(c["id"] for c in wanted)
+            if native:
+                # Echo the calls being answered, so each result can name its call.
+                messages.append({"role": "assistant", "content": message.get("content") or "",
+                                 "tool_calls": [{"id": c["id"], "type": "function", "function": {
+                                     "name": c["tool"], "arguments": json.dumps(c["args"] or {})}}
+                                     for c in wanted]})
+            else:
+                messages.append({"role": "assistant", "content": message.get("content") or ""})
+            written = []
+            for call in wanted:
+                name, args = call["tool"], call["args"]
+                yield Step(STEPS.get(name, "Looking it up") if isinstance(name, str) else "Looking it up")
+                result = run_tool(db, name, args, personal)
+                results.append(result)
+                calls.append({"tool": str(name), "args": args if isinstance(args, dict) else {},
+                              "ok": "error" not in result})
+                body = json.dumps(result, default=str, separators=(",", ":"))
+                if len(body) > MAX_RESULT_CHARS:
+                    body = body[:MAX_RESULT_CHARS] + "…(cut: too long, narrow the question)"
+                if native:
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": body})
+                else:
+                    written.append(f"[{len(calls)}] {name} {json.dumps(args or {})}\n{body}")
+            if written:
+                messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(written)})
+            continue
+
+        reply = reply or {}
+        answer = reply.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            # Asked for tools on the last round, or answered with nothing.
+            answer = "I couldn't work that out from the squadron's records. Try asking it a different way."
+        answer = answer.strip()
+        tables = _valid(Table, reply.get("tables"), MAX_TABLES)
+        charts = _valid(Chart, reply.get("charts"), MAX_CHARTS)
+        problem = _ungrounded(reply, answer, tables, calls, results, history)
+        if problem and not last:
+            logger.warning(f"assistant ({model}) {problem}; sending it back")
+            messages.append({"role": "assistant", "content": answer})
+            messages.append({"role": "user", "content": f"[not used] Your last reply {problem}, so it was thrown "
+                                                        "away. Call the tools you need and answer only from what "
+                                                        "they return."})
+            continue
+        if problem:
+            logger.warning(f"assistant ({model}) {problem} on the last round; not answering")
+            yield Result(answer=UNCHECKED, model=model, calls=calls)
+            return
+        if not any(c["ok"] for c in calls) and not history:
+            # Nothing read and nothing earlier in the chat: any figures are made up.
+            charts, tables = [], []
+        yield Result(
+            answer=answer, model=model, calls=calls, charts=charts, tables=tables,
+            follow_ups=_follow_ups(reply.get("follow_ups")),
+            cadets=_cadets_in(results, answer, tables),
+        )
+        return
 
 
 def ask(db: Session, question: str, history: list[dict] | None = None, personal: bool = True) -> Result:
