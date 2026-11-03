@@ -4,10 +4,12 @@ The loop itself is tested in core/test_assistant.py; here the model is a
 scripted fake."""
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
 import core.assistant as assistant
+import routers.assistant as assistant_router
 from database.models import AssistantChat, AssistantMessage, AuditEvent, Cadet
 
 CHART = {"type": "bar", "title": "Cadets by flight", "labels": ["A"], "series": [{"name": "Cadets", "values": [1]}]}
@@ -322,7 +324,100 @@ def test_rename_and_pin_a_chat_and_pinned_ones_list_first(api, model):
         "second", "Flight report"]
 
 
-@pytest.mark.parametrize("body", [{"title": ""}, {"title": "   "}, {"title": "x" * 81}, {"pinned": "maybe"}])
+# ─── Retention ───────────────────────────────────────────────────────────────
+
+def _age(db, chat_id, days):
+    """Make a chat last used `days` ago."""
+    chat = db.get(AssistantChat, chat_id)
+    chat.updated_at = datetime.now() - timedelta(days=days)
+    db.commit()
+
+
+def test_a_chat_says_when_it_will_be_deleted_30_days_after_its_last_use(api, model, db):
+    model["replies"] = [{"answer": "1"}]
+    chat = ask(api).json()["chat"]
+    assert chat["protected"] is False
+    due = datetime.fromisoformat(chat["deletes_at"]) - datetime.fromisoformat(chat["updated_at"])
+    assert due == assistant_router.CHAT_RETENTION == timedelta(days=30)
+
+
+def test_using_a_chat_again_pushes_its_deletion_back(api, model, db):
+    model["replies"] = [{"answer": "1"}, {"answer": "2"}]
+    chat_id = ask(api).json()["chat"]["id"]
+    _age(db, chat_id, 25)
+    before = api.get(f"/assistant/chats/{chat_id}", headers=api.as_("staff")).json()["deletes_at"]
+    after = ask(api, chat_id=chat_id).json()["chat"]["deletes_at"]
+    assert after > before
+
+
+def test_protecting_a_chat_clears_its_deletion_date_and_unprotecting_brings_it_back(api, model):
+    model["replies"] = [{"answer": "1"}]
+    chat_id = ask(api).json()["chat"]["id"]
+    res = api.patch(f"/assistant/chats/{chat_id}", json={"protected": True}, headers=api.as_("staff")).json()
+    assert (res["protected"], res["deletes_at"]) == (True, None)
+    listed = api.get("/assistant/chats", headers=api.as_("staff")).json()[0]
+    assert (listed["protected"], listed["deletes_at"]) == (True, None)
+    res = api.patch(f"/assistant/chats/{chat_id}", json={"protected": False}, headers=api.as_("staff")).json()
+    assert res["protected"] is False and res["deletes_at"]
+
+
+def test_cleanup_deletes_unprotected_chats_unused_for_30_days_and_keeps_the_rest(api, model, db):
+    model["replies"] = [{"answer": str(i)} for i in range(4)]
+    old = ask(api, question="old").json()["chat"]["id"]
+    kept = ask(api, question="old but protected").json()["chat"]["id"]
+    recent = ask(api, question="29 days").json()["chat"]["id"]
+    others = ask(api, "staff2", question="someone else's old one").json()["chat"]["id"]
+    for chat_id, days in ((old, 31), (kept, 400), (recent, 29), (others, 31)):
+        _age(db, chat_id, days)
+    api.patch(f"/assistant/chats/{kept}", json={"protected": True}, headers=api.as_("staff"))
+
+    assistant_router.cleanup_old_chats()
+
+    db.expire_all()
+    assert {c.id for c in db.query(AssistantChat)} == {kept, recent}
+    # The messages go with their chat, not left orphaned.
+    assert {m.chat_id for m in db.query(AssistantMessage)} == {kept, recent}
+
+
+def test_cleanup_with_nothing_to_delete_changes_nothing(api, model, db):
+    model["replies"] = [{"answer": "1"}]
+    ask(api)
+    assistant_router.cleanup_old_chats()
+    assert db.query(AssistantChat).count() == 1
+
+
+def test_a_failed_cleanup_is_logged_and_deletes_nothing(api, model, db, monkeypatch, caplog):
+    model["replies"] = [{"answer": "1"}]
+    chat_id = ask(api).json()["chat"]["id"]
+    _age(db, chat_id, 40)
+
+    def boom(*a, **kw):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr("sqlalchemy.orm.Session.delete", boom)
+    assistant_router.cleanup_old_chats()
+    monkeypatch.undo()
+    assert "assistant chat cleanup failed" in caplog.text
+    db.expire_all()
+    assert db.query(AssistantChat).count() == 1
+
+
+def test_the_cleanup_runs_daily():
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    from core.jobs import register_jobs
+
+    scheduler = BackgroundScheduler()
+    register_jobs(scheduler)
+    assert assistant_router.cleanup_old_chats in [j.func for j in scheduler.get_jobs()]
+
+
+def test_someone_elses_chat_cant_be_protected(api, others_chat):
+    res = api.patch(f"/assistant/chats/{others_chat}", json={"protected": True}, headers=api.as_("staff"))
+    assert res.status_code == 404
+
+
+@pytest.mark.parametrize("body", [{"title": ""}, {"title": "   "}, {"title": "x" * 81}, {"pinned": "maybe"}, {"protected": "forever"}])
 def test_a_bad_rename_is_422(api, model, body):
     model["replies"] = [{"answer": "1"}]
     chat_id = ask(api).json()["chat"]["id"]
@@ -337,6 +432,7 @@ def test_someone_elses_chat_cant_be_renamed(api, others_chat):
 @pytest.mark.parametrize("persona", ["nco", "cadet"])
 def test_only_staff_rename_or_rate(api, persona):
     assert api.patch("/assistant/chats/1", json={"pinned": True}, headers=api.as_(persona)).status_code == 403
+    assert api.patch("/assistant/chats/1", json={"protected": True}, headers=api.as_(persona)).status_code == 403
     assert api.put("/assistant/messages/1/feedback", json={"value": 1},
                    headers=api.as_(persona)).status_code == 403
 
