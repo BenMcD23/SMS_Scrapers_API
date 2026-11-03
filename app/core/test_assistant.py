@@ -472,6 +472,16 @@ def test_the_assistant_leaves_gemini_out_of_its_chain(db, model):
     assert not any("gemini" in m for m in assistant.MODELS)
 
 
+def test_the_groq_backup_fits_its_8000_token_a_minute_limit(db, model):
+    # Groq counts prompt + max_tokens against an 8,000 TPM cap. With 8,000
+    # reserved for output, every backup request that carried a tool result was
+    # refused as "Request too large", so the answer failed outright.
+    model["replies"] = [{"answer": "ok"}]
+    assistant.ask(db, "q")
+    prompt_tokens = len(json.dumps(assistant.tool_definitions()) + assistant.SYSTEM_PROMPT) // 4
+    assert prompt_tokens + model["kwargs"][0]["groq_max_tokens"] < 8000 - 1500  # room for a small tool result
+
+
 def test_cadets_named_in_the_answer_or_a_table_are_returned_to_link(squadron, model):
     model["replies"] = [{"calls": [{"tool": "find_cadets"}, {"tool": "staff_list"}]},
                         {"answer": "Amy Ashworth leads.", "tables": [
@@ -605,7 +615,7 @@ def test_an_answer_sent_alongside_lookups_waits_for_them(squadron, model, monkey
                                                       "arguments": '{"answer": "Guessed: 60."}'}}]}
     replies = [both, {"tool_calls": [{"id": "c3", "type": "function", "function": {
         "name": "answer", "arguments": '{"answer": "There are 3 cadets."}'}}]}]
-    monkeypatch.setattr(assistant, "chat", lambda messages, tools, **kw: (replies.pop(0), "z-ai/glm-5.3"))
+    monkeypatch.setattr(assistant, "chat", lambda messages, tools, **kw: (replies.pop(0), "nvidia/nemotron-3-ultra-550b-a55b"))
     result = assistant.ask(squadron, "How many cadets?")
     assert result.answer == "There are 3 cadets." and [c["tool"] for c in result.calls] == ["squadron_overview"]
 

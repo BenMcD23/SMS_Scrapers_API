@@ -365,7 +365,7 @@ def assistant_model(monkeypatch):
 
     import core.assistant as assistant
 
-    state = {"replies": [], "prompts": [], "tools": [], "kwargs": [], "model": "z-ai/glm-5.3"}
+    state = {"replies": [], "prompts": [], "tools": [], "kwargs": [], "model": "nvidia/nemotron-3-ultra-550b-a55b"}
 
     def render(messages):
         lines = []

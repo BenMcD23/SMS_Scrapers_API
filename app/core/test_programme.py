@@ -66,7 +66,7 @@ def model(monkeypatch):
         state["calls"].append(prompt)
         if isinstance(state["reply"], Exception):
             raise state["reply"]
-        return state["reply"], "z-ai/glm-5.3"
+        return state["reply"], "nvidia/nemotron-3-ultra-550b-a55b"
 
     monkeypatch.setattr(pg, "generate", fake_generate)
     return state

@@ -40,9 +40,9 @@ def chain(monkeypatch):
     return install
 
 
-def test_primary_is_glm():
+def test_primary_is_nemotron():
     # The UI names the primary model to the user, so copy depends on this.
-    assert PRIMARY_MODEL == NVIDIA_MODEL == "z-ai/glm-5.3"
+    assert PRIMARY_MODEL == NVIDIA_MODEL == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
 def test_first_working_model_wins(chain):
@@ -70,7 +70,7 @@ def test_every_model_in_the_chain_has_a_label():
     # like "nvidia/nemotron-3-ultra-550b-a55b" to squadron staff in the texts UI.
     for model in MODEL_PREFERENCE:
         assert model in MODEL_LABELS, f"{model} has no display label"
-    assert model_label(PRIMARY_MODEL) == "GLM 5.3"
+    assert model_label(PRIMARY_MODEL) == "Nemotron 3 Ultra"
     assert model_label(None) == "Unknown"
 
 
