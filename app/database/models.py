@@ -1582,7 +1582,9 @@ class AssistantChat(Base):
 
     Kept per person so a chat can be picked up again later, and only ever
     shown to the account that started it: questions and answers can name
-    cadets with their dates of birth and emails.
+    cadets with their dates of birth and emails. For the same reason a chat
+    is deleted once it's gone unused for a month, unless its owner protected
+    it (routers/assistant.py, CHAT_RETENTION).
     """
     __tablename__ = "Assistant_Chats"
 
@@ -1590,6 +1592,7 @@ class AssistantChat(Base):
     email      = Column(Text, nullable=False, index=True)  # lower-cased owner
     title      = Column(Text, nullable=False)              # the first question cut short, or renamed
     pinned     = Column(Boolean, nullable=False, default=False, server_default="0")  # top of the list
+    protected  = Column(Boolean, nullable=False, default=False, server_default="0")  # never auto-deleted
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)          # newest first in the list
 

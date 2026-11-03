@@ -19,7 +19,7 @@ from core.emailer import quali_expiry_email_html, send_email
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
 from database.models import AssessmentSheet, AuditEvent, Cadet, CadetQualification, StatsSnapshot
-from routers import scrapers, usage
+from routers import assistant, scrapers, usage
 from routers.stats import save_snapshot
 from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
@@ -171,6 +171,7 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(scrapers.cleanup_old_run_logs, "interval", hours=24)
     scheduler.add_job(usage.cleanup_old_usage, "interval", hours=24)
     scheduler.add_job(cleanup_old_audit_events, "interval", hours=24)
+    scheduler.add_job(assistant.cleanup_old_chats, "interval", hours=24)
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
     # Sunday evening: after any weekend scrape, before the week's trend closes.
     scheduler.add_job(weekly_stats_snapshot, CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=LONDON))

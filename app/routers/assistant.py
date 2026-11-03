@@ -42,6 +42,9 @@ HISTORY_CHARS = 4000
 TITLE_CHARS = 80
 CHAT_LIST_LIMIT = 100
 UNAVAILABLE = "The assistant is unavailable. Try again in a minute."
+# A chat unused for this long is deleted, unless protected: it can hold cadets'
+# dates of birth and emails, which shouldn't sit around for ever.
+CHAT_RETENTION = timedelta(days=30)
 
 
 class Question(BaseModel):
@@ -56,6 +59,7 @@ class Question(BaseModel):
 class ChatUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=TITLE_CHARS)
     pinned: bool | None = None
+    protected: bool | None = None
 
 
 class Feedback(BaseModel):
@@ -94,7 +98,11 @@ def _message_json(m: AssistantMessage) -> dict:
 
 
 def _chat_json(chat: AssistantChat) -> dict:
+    # deletes_at is worked out here, not on the site, so the cleanup and the
+    # warning can never disagree about the date.
+    deletes_at = None if chat.protected else (chat.updated_at + CHAT_RETENTION).isoformat()
     return {"id": chat.id, "title": chat.title, "pinned": bool(chat.pinned),
+            "protected": bool(chat.protected), "deletes_at": deletes_at,
             "created_at": chat.created_at.isoformat(), "updated_at": chat.updated_at.isoformat()}
 
 
@@ -165,8 +173,10 @@ def get_chat(chat_id: int, db: Session = Depends(get_db), idinfo: dict = Depends
 @router.patch("/chats/{chat_id}")
 def update_chat(chat_id: int, body: ChatUpdate, db: Session = Depends(get_db),
                 idinfo: dict = Depends(require_staff)) -> dict:
-    """Rename or pin a chat. Neither counts as using it, so the list order by
-    last use doesn't jump."""
+    """Rename, pin or protect a chat. None of them counts as using it, so the
+    list order by last use doesn't jump. Unprotecting starts the 30 days from
+    when it was last used, so an old chat can be due for deletion at once:
+    the site warns before it does that."""
     chat = _own_chat(db, chat_id, idinfo)
     if body.title is not None:
         title = body.title.strip()
@@ -175,6 +185,8 @@ def update_chat(chat_id: int, body: ChatUpdate, db: Session = Depends(get_db),
         chat.title = title
     if body.pinned is not None:
         chat.pinned = body.pinned
+    if body.protected is not None:
+        chat.protected = body.protected
     db.commit()
     return _chat_json(chat)
 
@@ -304,3 +316,24 @@ def usage(days: int = 30, db: Session = Depends(get_db), idinfo: dict = Depends(
             "fallback": (a.extra or {}).get("model") not in (None, "", PRIMARY_MODEL),
         } for a in reversed(down[-20:])],
     }
+
+
+def cleanup_old_chats() -> None:
+    """Delete chats unused for CHAT_RETENTION, unless protected. Run daily
+    (core/jobs.py); the site warns in the last week."""
+    cutoff = datetime.now() - CHAT_RETENTION
+    db = database.SessionLocal()
+    try:
+        old = (db.query(AssistantChat)
+               .filter(AssistantChat.protected == False, AssistantChat.updated_at < cutoff)  # noqa: E712
+               .all())
+        for chat in old:
+            db.delete(chat)  # one at a time so the messages cascade
+        db.commit()
+        if old:
+            logger.info(f"assistant cleanup deleted {len(old)} chat(s) unused for {CHAT_RETENTION.days} days")
+    except Exception:
+        db.rollback()
+        logger.exception("assistant chat cleanup failed")
+    finally:
+        db.close()

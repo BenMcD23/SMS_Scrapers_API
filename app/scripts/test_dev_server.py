@@ -464,7 +464,14 @@ def test_the_seeded_assistant_chats_open_for_the_dev_staff_login(api, db):
     seed_assistant(db, now=NOW)
     staff = api.as_("owner")  # the dev "Staff" button is the owner account
     chats = api.get("/assistant/chats", headers=staff).json()
-    assert [c["title"] for c in chats] == ["Report on the squadron's size by flight", "How many NCOs are there?"]
+    assert [c["title"] for c in chats] == ["Report on the squadron's size by flight", "How many NCOs are there?",
+                                           "Who's missing parades?", "Which cadets have a WHT expiring?"]
+    # One in its last week before deletion (the warning shows), one protected.
+    by_title = {c["title"]: c for c in chats}
+    due = datetime.fromisoformat(by_title["Who's missing parades?"]["deletes_at"])
+    assert timedelta(0) < due - NOW <= timedelta(days=7)
+    assert by_title["Which cadets have a WHT expiring?"]["protected"] is True
+    assert by_title["Which cadets have a WHT expiring?"]["deletes_at"] is None
     report = api.get(f"/assistant/chats/{chats[0]['id']}", headers=staff).json()
     answer = report["messages"][1]
     [chart] = answer["charts"]

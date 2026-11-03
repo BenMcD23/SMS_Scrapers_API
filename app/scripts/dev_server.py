@@ -636,8 +636,8 @@ def seed_push(db, now: datetime | None = None) -> None:
 
 
 def seed_assistant(db, now: datetime | None = None) -> None:
-    """Two saved assistant chats for the dev staff login, so /assistant opens
-    with a chat list (one pinned) and a rated answer with a chart, a table and
+    """Saved assistant chats for the dev staff login, so /assistant opens
+    with a chat list (one pinned, one protected, one nearly due for deletion) and a rated answer with a chart, a table and
     linked cadets rather than empty, and the owner's usage view has data.
     Written directly: a real answer needs an LLM key the preview doesn't have.
     The numbers are the seed's own, read the way the assistant reads them."""
@@ -659,10 +659,10 @@ def seed_assistant(db, now: datetime | None = None) -> None:
         day = date.fromisoformat(iso)
         return f"{day.day} {day:%b %Y}"
 
-    def chat(title, ago, turns, pinned=False):
+    def chat(title, ago, turns, pinned=False, protected=False):
         when = now - ago
         c = AssistantChat(email=security.OWNER_EMAIL.lower(), title=title, pinned=pinned,
-                          created_at=when, updated_at=when)
+                          protected=protected, created_at=when, updated_at=when)
         for question, answer, extra, feedback in turns:
             c.messages.append(AssistantMessage(role="user", content=question, created_at=when))
             c.messages.append(AssistantMessage(role="assistant", content=answer, extra=extra,
@@ -691,6 +691,22 @@ def seed_assistant(db, now: datetime | None = None) -> None:
         "I couldn't check that just now. Try asking again in a minute.",
         {"charts": [], "tables": [], "follow_ups": [], "calls": [], "model": "openai/gpt-oss-120b"},
         -1,  # so the owner's usage page has a thumbs-down to show
+    )])
+    # One protected, one in its last week before the 30-day cleanup, so the
+    # list shows both and opening the second shows the deletion warning.
+    chat("Which cadets have a WHT expiring?", timedelta(days=45), [(
+        "Which cadets have a WHT expiring?",
+        "None in the next three months.",
+        {"charts": [], "tables": [], "follow_ups": [], "calls": [{"tool": "expiring", "args": {}, "ok": True}],
+         "model": "nvidia/nemotron-3-ultra-550b-a55b"},
+        None,
+    )], protected=True)
+    chat("Who's missing parades?", timedelta(days=26), [(
+        "Who's missing parades?",
+        "Nobody has missed more than two in a row.",
+        {"charts": [], "tables": [], "follow_ups": [], "calls": [{"tool": "attendance", "args": {}, "ok": True}],
+         "model": "nvidia/nemotron-3-ultra-550b-a55b"},
+        None,
     )])
     db.commit()
 
