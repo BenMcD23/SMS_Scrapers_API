@@ -396,6 +396,27 @@ def test_usage_counts_questions_tools_fallbacks_and_lists_thumbs_down(api, model
     assert (out["thumbs_up"], out["thumbs_down"]) == (1, 1)
     [down] = out["rated_down"]
     assert (down["question"], down["answer"]) == ("How many cadets?", "Wrong!")
+    assert (down["model_label"], down["fallback"]) == ("Nemotron 3 Ultra", False)
+
+
+def test_a_thumbs_down_says_whether_the_backup_model_gave_it(api, model, db):
+    # The point of showing the model: telling a bad backup answer from a bad primary one.
+    model["model"] = "openai/gpt-oss-120b"
+    model["replies"] = [{"answer": "Wrong."}, {"answer": "Also wrong."}]
+    backup = ask(api, question="Q1").json()["answer"]["id"]
+    old = ask(api, question="Q2").json()["answer"]["id"]
+    # An answer saved before models were recorded.
+    row = db.get(AssistantMessage, old)
+    row.extra = {k: v for k, v in (row.extra or {}).items() if k != "model"}
+    db.commit()
+    for answer_id in (backup, old):
+        api.put(f"/assistant/messages/{answer_id}/feedback", json={"value": -1}, headers=api.as_("staff"))
+
+    out = api.get("/assistant/usage", headers=api.as_("owner")).json()
+    assert [(d["question"], d["model_label"], d["fallback"]) for d in out["rated_down"]] == [
+        ("Q2", "Unknown", False),
+        ("Q1", "Groq gpt-oss-120b", True),
+    ]
 
 
 def test_usage_with_nothing_asked_is_zeros(api):

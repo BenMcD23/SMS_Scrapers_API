@@ -299,5 +299,8 @@ def usage(days: int = 30, db: Session = Depends(get_db), idinfo: dict = Depends(
             "date": a.created_at.isoformat(), "email": a.chat.email,
             "question": asked(a),
             "answer": a.content[:500],
+            # Which model answered, to see whether bad answers cluster on the backup.
+            "model_label": model_label((a.extra or {}).get("model")),
+            "fallback": (a.extra or {}).get("model") not in (None, "", PRIMARY_MODEL),
         } for a in reversed(down[-20:])],
     }
