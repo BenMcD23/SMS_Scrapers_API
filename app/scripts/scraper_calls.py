@@ -894,7 +894,7 @@ def _parse_assessment_date(raw) -> datetime | None:
 def order_badge_for_upload(db_session, cadet_id: int, assessment_type: str, gained_on: datetime | None) -> str | None:
     """Put in the badge order for a qualification that has just gone onto Bader,
     so the QM doesn't have to raise it by hand. Returns the badge ordered, or
-    ``None`` when there's nothing to order: the type has no badge (MOI), or the
+    ``None`` when there's nothing to order: the type has no order item, or the
     cadet already has an order for it — re-uploading after a reopen must not
     order the same badge twice. Replacement orders don't count; those are for a
     lost badge, not the one being earned now."""

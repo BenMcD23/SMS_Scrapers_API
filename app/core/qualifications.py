@@ -295,7 +295,7 @@ def bader_quals_for(badge_key: str, level: str) -> tuple[BaderQual, ...]:
 
 # ─── Badge orders ─────────────────────────────────────────────────────────────
 # Order names come from core/catalogue.BADGE_CATEGORIES: "<prefix> – <level>"
-# for levelled badges, bare names for Core/Classification.
+# for levelled badges, bare names for Core/Classification/Lanyards.
 
 _ORDER_PREFIX_TO_BADGE = {
     "Leadership": "leadership", "Music": "music", "Shooting": "shooting",
@@ -303,6 +303,12 @@ _ORDER_PREFIX_TO_BADGE = {
     "Road Marching": "road_marching", "First Aid": "first_aid",
     "DofE": "duke_of_edinburgh", "Flying": "flying",
 }
+# Order items that aren't "<prefix> – <level>" but still stand for one
+# qualification, as (badge_key, level).
+_ORDER_ITEM_TO_BADGE = {"MOI Lanyard": ("moi", YES)}
+# Uploading an MOI puts this on Bader, and that's when the lanyard is ordered;
+# "Instructor Cadet" (the moi rung) can follow later. Either means it's held.
+_MOI_UPLOADED = "Methods of Instruction(Training)"
 _ORDER_CLASSIFICATION = {
     "First Class": "First Class Cadet", "Leading": "Leading Cadet",
     "Senior": "Senior Cadet", "Master": "Master Air Cadet",
@@ -313,7 +319,10 @@ def order_badge_name(badge_key: str, level: str) -> str | None:
     """The badge-order name for a ``(badge_key, level)`` — the inverse of what
     ``order_badge_held`` parses — so a qualification gained here can be ordered
     under the same name the QM's order form uses. ``None`` for badges with no
-    order item (e.g. MOI)."""
+    order item (e.g. swimming)."""
+    item = next((name for name, badge in _ORDER_ITEM_TO_BADGE.items() if badge == (badge_key, level)), None)
+    if item:
+        return item
     prefix = next((p for p, k in _ORDER_PREFIX_TO_BADGE.items() if k == badge_key), None)
     if not prefix or level not in (BLUE, BRONZE, SILVER, GOLD):
         return None
@@ -333,6 +342,11 @@ def order_badge_held(badge_name: str, qual_names, classification: str | None) ->
     qualification behind it (Core badges, unknown names)."""
     if badge_name in _ORDER_CLASSIFICATION:
         return (classification or "").strip() == _ORDER_CLASSIFICATION[badge_name]
+    if badge_name in _ORDER_ITEM_TO_BADGE:
+        names = list(qual_names)
+        key, level = _ORDER_ITEM_TO_BADGE[badge_name]
+        moi_uploaded = key == "moi" and any(n.strip().casefold() == _MOI_UPLOADED.casefold() for n in names)
+        return _has_rung(key, level, names) or moi_uploaded
     prefix, sep, level = badge_name.partition(" – ")
     key = _ORDER_PREFIX_TO_BADGE.get(prefix)
     if not sep or not key:

@@ -432,7 +432,10 @@ def seed_stores(client, headers: dict) -> None:
             {"itemType": ref["noSizeItems"][0], "size": ""},
             {"itemType": sized[(n + 1) % len(sized)], "needSizing": True, "sizingDetails": "Growing fast"},
         ]})
-    post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 4, "items": [{"badgeName": "ATC"}]})
+    post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 4, "items": [
+        {"badgeName": "ATC"},
+        {"badgeName": "MOI Lanyard", "gainedWhere": "on_sqn", "gainedDateFrom": "2026-10-28", "gainedDateTo": "2026-10-28"},
+    ]})
     # Badges at each stage short of given, so the dashboard's "to give out"
     # list has something in every state.
     order = post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 11, "items": [

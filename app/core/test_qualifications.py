@@ -62,15 +62,28 @@ def test_order_badge_name_is_the_inverse_of_order_badge_held():
     # Road marching's top rung is named differently on the order form.
     assert order_badge_name("road_marching", "gold") == "Road Marching – Gold (Nijmegen)"
     # Every name produced must be one the order form actually offers.
+    assert order_badge_name("moi", "yes") == "MOI Lanyard"
     offered = {f"{c['prefix']} – {lvl}" for c in BADGE_CATEGORIES if "prefix" in c for lvl in c["levels"]}
+    offered |= {item for c in BADGE_CATEGORIES for item in c.get("items", [])}
     for key in ("leadership", "radio", "space", "first_aid", "road_marching"):
         for level in ("blue", "bronze", "silver", "gold"):
             assert order_badge_name(key, level) in offered
+    assert order_badge_name("moi", "yes") in offered
 
 
 def test_order_badge_name_is_none_for_badges_with_no_order_item():
     from core.qualifications import order_badge_name
 
-    assert order_badge_name("moi", "yes") is None
     assert order_badge_name("not_a_badge", "blue") is None
     assert order_badge_name("swimming", "basic") is None
+
+
+def test_an_moi_lanyard_is_held_once_the_moi_is_on_bader():
+    from core.qualifications import order_badge_held as held
+
+    # The upload puts the "(Training)" qual on Bader and orders the lanyard
+    # then, so that alone must not flag the order as unqualified.
+    assert held("MOI Lanyard", ["Methods of Instruction(Training)"], None) is True
+    assert held("MOI Lanyard", ["Instructor Cadet"], None) is True
+    assert held("MOI Lanyard", ["Blue Leadership"], None) is False
+    assert held("MOI Lanyard", [], None) is False

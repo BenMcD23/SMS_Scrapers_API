@@ -346,9 +346,7 @@ UNSEEDED_TABLES = {
 }
 UNSEEDED_COLUMNS = {
     ("Badge_Order_Items", "given_at"), ("Badge_Order_Items", "given_by"),
-    ("Badge_Order_Items", "gained_where"),
-    ("Badge_Order_Items", "gained_where_detail"), ("Badge_Order_Items", "gained_date_from"),
-    ("Badge_Order_Items", "gained_date_to"),
+    ("Badge_Order_Items", "gained_where_detail"),
     ("Cadet_Dietary", "details"),
     ("Cadet_Qualifications", "expiry_alert_sent_at"),
     ("Flying_Paperwork", "updated_at"), ("Flying_Paperwork", "updated_by"),

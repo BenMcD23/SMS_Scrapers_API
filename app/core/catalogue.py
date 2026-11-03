@@ -142,6 +142,7 @@ BADGE_CATEGORIES: list[BadgeCategory] = [
     {"id": "first-aid", "name": "First Aid Badges", "prefix": "First Aid", "levels": _STANDARD_LEVELS},
     {"id": "dofe", "name": "DofE Badges", "prefix": "DofE", "levels": _STANDARD_LEVELS},
     {"id": "flying", "name": "Flying Badge", "prefix": "Flying", "levels": _STANDARD_LEVELS},
+    {"id": "lanyards", "name": "Lanyards", "items": ["MOI Lanyard"]},
 ]
 
 # Replacement badges and the automatically-awarded Core/Classification badges

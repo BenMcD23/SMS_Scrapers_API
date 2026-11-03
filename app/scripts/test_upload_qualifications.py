@@ -83,9 +83,19 @@ def test_uploading_an_assessment_orders_the_badge_it_earns(db, bader, assessment
     assert any(badge in m for m in run.of("info"))
 
 
-def test_moi_has_no_badge_so_nothing_is_ordered(db, bader):
+def test_uploading_an_moi_orders_the_moi_lanyard(db, bader):
     _upload(db, _seed(db, "MOI", n=2))
-    assert len(bader) == 1 and _items(db) == []
+    [item] = _items(db)
+    assert len(bader) == 1
+    assert (item.badge_name, item.gained_where, item.gained_date_from) == (
+        "MOI Lanyard", "on_sqn", datetime(2026, 9, 14),
+    )
+
+
+def test_an_moi_upload_does_not_order_a_second_lanyard(db, bader):
+    _upload(db, _seed(db, "MOI"))
+    _upload(db, _seed(db, "MOI"))
+    assert [i.badge_name for i in _items(db)] == ["MOI Lanyard"]
 
 
 def test_a_cadet_who_already_has_the_badge_ordered_does_not_get_a_second(db, bader):
