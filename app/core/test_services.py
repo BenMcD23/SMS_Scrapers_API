@@ -187,7 +187,7 @@ def test_missing_openai_key(monkeypatch):
 def test_model_label():
     assert llm.model_label(None) == "Unknown"
     assert llm.model_label("something-new") == "something-new"
-    assert llm.model_label(llm.NVIDIA_MODEL) == "GLM 5.3"
+    assert llm.model_label(llm.NVIDIA_MODEL) == "Nemotron 3 Ultra"
 
 
 # ── calendar ──────────────────────────────────────────────────────────────────

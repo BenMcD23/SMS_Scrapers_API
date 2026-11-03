@@ -1,9 +1,10 @@
 """The squadron's LLM client — model preference chain and the calls behind it.
 
-Models are tried in order until one answers. GLM-5.3 on NVIDIA's free endpoint
-leads: it is joint-top of the open-weights models on Artificial Analysis's index
-(well ahead of Nemotron 3 Ultra, which led before), answers in ~10s, and NVIDIA's
-free tier caps requests per minute (~40, shared across the whole API key) rather
+Models are tried in order until one answers. Nemotron 3 Ultra on NVIDIA's free
+endpoint leads: GLM-5.3 led until NVIDIA retired it on 2026-10-28 (calls got a
+410 and everything quietly ran on Groq). Kimi K2.6 scores higher on paper but
+404s for our key despite being in NVIDIA's catalogue; Nemotron passed every
+assistant_eval case at ~10-15s an answer. NVIDIA's free tier caps requests per minute (~40, shared across the whole API key) rather
 than per day, so a month of texts never runs it dry — bursts just wait. Only one
 NVIDIA model is in the chain: they all share that one key's limit, so a second
 would fail at the same moment as the first. Gemini 3.8 Flash comes next but allows
@@ -32,8 +33,8 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 # NVIDIA and Groq both speak the OpenAI chat-completions API, so one caller does
 # both — only the base URL, key and payload extras differ.
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_MODEL = "z-ai/glm-5.3"
-# GLM reasons before it answers; 16k (NVIDIA's own example budget) keeps the
+NVIDIA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+# Nemotron reasons before it answers; 16k (NVIDIA's own example budget) keeps the
 # reasoning from eating the whole budget before the answer starts.
 NVIDIA_MAX_TOKENS = 16384
 
@@ -47,13 +48,13 @@ MODEL_PREFERENCE = [NVIDIA_MODEL, *GEMINI_MODELS, GROQ_MODEL]
 PRIMARY_MODEL = MODEL_PREFERENCE[0]
 
 MODEL_LABELS = {
-    NVIDIA_MODEL: "GLM 5.3",
+    NVIDIA_MODEL: "Nemotron 3 Ultra",
     "gemini-3.8-flash": "Gemini 3.8 Flash",
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     # No longer in the chain, but stored on rows generated before the switch.
-    "nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra",
     "gemini-3.5-flash": "Gemini 3.5 Flash",
     "z-ai/glm-5.2": "GLM 5.2",
+    "z-ai/glm-5.3": "GLM 5.3",
     "openai/gpt-oss-120b": "Groq gpt-oss-120b",
 }
 

@@ -44,6 +44,10 @@ MAX_CHARTS = 4
 MAX_TABLES = 4
 MAX_FOLLOW_UPS = 3
 MAX_CADET_LINKS = 50
+# Groq's free tier rejects any request whose prompt plus max_tokens passes 8,000
+# tokens a minute, and the prompt and tool definitions alone are ~4,000: 8,000 here
+# made every backup answer that had read anything fail as "Request too large".
+GROQ_MAX_TOKENS = 2000
 
 # Not the whole shared chain: Gemini's free tier lets Google use what it's sent
 # to improve its products, and these prompts carry cadets' dates of birth and
@@ -435,7 +439,7 @@ def ask_steps(db: Session, question: str, history: list[dict] | None = None, per
                                                         "the results above show."})
         yield Step(WRITING if any(c["ok"] for c in calls) else THINKING)
         message, model = chat(messages, [ANSWER_TOOL] if last else tools, models=MODELS, temperature=0.2,
-                              max_tokens=12000, groq_max_tokens=8000)
+                              max_tokens=12000, groq_max_tokens=GROQ_MAX_TOKENS)
         wanted, reply = _read_message(message)
 
         if wanted and not last:

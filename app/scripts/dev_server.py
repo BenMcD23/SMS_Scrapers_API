@@ -683,7 +683,7 @@ def seed_assistant(db, now: datetime | None = None) -> None:
                     "ok": True},
                    {"tool": "find_cadets", "args": {"min_age": 17}, "ok": True}],
          "cadets": [{"cin": c["cin"], "name": c["name"]} for c in oldest],
-         "model": "z-ai/glm-5.3"},
+         "model": "nvidia/nemotron-3-ultra-550b-a55b"},
         1,
     )], pinned=True)
     chat("How many NCOs are there?", timedelta(days=3), [(

@@ -62,7 +62,7 @@ def test_staff_get_an_answer_in_a_new_saved_chat(api, db, model, persona):
     assert answer["charts"][0]["title"] == "Cadets by flight" and answer["tables"] == []
     assert answer["follow_ups"] == ["And B?"]
     assert answer["calls"] == [{"tool": "find_cadets", "args": {"flight": "A"}, "ok": True}]
-    assert (answer["model_label"], answer["fallback"]) == ("GLM 5.3", False)
+    assert (answer["model_label"], answer["fallback"]) == ("Nemotron 3 Ultra", False)
     # Saved: the chat reopens with both messages.
     chat = api.get(f"/assistant/chats/{body['chat']['id']}", headers=api.as_(persona)).json()
     assert [m["role"] for m in chat["messages"]] == ["user", "assistant"]
