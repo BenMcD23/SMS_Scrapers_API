@@ -556,6 +556,24 @@ def seed_inspections(client, headers: dict, now: datetime | None = None) -> None
         })
         assert res.status_code < 300, f"/inspections: {res.status_code} {res.text}"
 
+    # Tonight's sheet half-marked and saved as a draft, as if the page had been
+    # reloaded partway through, so the preview shows it coming back. One
+    # scored with a fault, one scored clean, one marked absent by hand.
+    flight_a = [c for c in roster if c["flight"] == "A" and c["cin"] not in lapsed][:3]
+    today = (now or datetime.now()).date().isoformat()
+    draft_marks = {
+        str(flight_a[0]["cin"]): {"score": "7.5", "comments": [
+            {"id": "seed-1", "region": "Shoes", "type": "fault", "text": "Toes not bulled"}]},
+        str(flight_a[1]["cin"]): {"score": "9", "comments": []},
+        str(flight_a[2]["cin"]): {"score": "", "comments": [], "absent": True},
+    }
+    res = client.put("/inspections/draft", headers=headers, json={
+        "date": today, "uniform": "blues", "marks": draft_marks,
+        "order": [c["cin"] for c in reversed(flight_a)],
+        "saved_at": f"{today}T19:45:00.000Z",
+    })
+    assert res.status_code < 300, f"/inspections/draft: {res.status_code} {res.text}"
+
 
 _RECRUIT_ADDRESS = {"property": "14", "street": "Oldham Road", "town": "Failsworth",
                     "county": "Greater Manchester", "postcode": "M35 0AA", "mobile": "07700900900"}

@@ -50,7 +50,12 @@ def test_staff_and_snco_can_save_and_get_back_their_sheet(api, persona):
     assert api.put(PATH, json=_sheet(), headers=headers).status_code == 200
     res = api.get(PATH, headers=headers)
     assert res.status_code == 200
-    assert res.json()["data"] == _sheet()
+    data = res.json()["data"]
+    # Stored as validated: a mark that left "absent" out comes back as None
+    # (follow the absence log), which the page reads the same way.
+    expected = _sheet()
+    expected["marks"]["101"]["absent"] = None
+    assert data == expected
 
 
 # ── saving and restoring ──────────────────────────────────────────────────────
