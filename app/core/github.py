@@ -1,6 +1,7 @@
 """Helpers for committing files into our GitHub repos."""
 
 import base64
+import json
 
 import httpx
 from fastapi import HTTPException
@@ -15,6 +16,22 @@ def github_headers() -> dict:
     }
 
 
+async def fetch_repo_json(client: httpx.AsyncClient, repo: str, branch: str, path: str):
+    """A JSON file from a repo. Shared by the website publishers (gallery, people)
+    so a missing file always explains which one, rather than failing on a KeyError."""
+    url = f"https://api.github.com/repos/{repo}/contents/{path}"
+    try:
+        resp = await client.get(url, headers=github_headers(), params={"ref": branch})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't reach GitHub to read {path}: {e}") from e
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not fetch {path} from {repo}@{branch} (GitHub returned {resp.status_code}).",
+        )
+    return json.loads(base64.b64decode(resp.json()["content"]).decode("utf-8"))
+
+
 async def commit_files_to_github(
     client: httpx.AsyncClient,
     repo: str,
@@ -23,6 +40,15 @@ async def commit_files_to_github(
     files: list[dict],
     delete_paths: list[str] = None,
 ):
+    """Commit, or a 502 if GitHub can't be reached. Nothing lands on the branch
+    until the final ref update, so a failure part-way leaves it as it was."""
+    try:
+        await _commit_files(client, repo, branch, message, files, delete_paths)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't reach GitHub to commit: {e}") from e
+
+
+async def _commit_files(client, repo, branch, message, files, delete_paths):
     """Add/update `files` and remove `delete_paths` in a single commit via the Git Data API.
 
     `files` is a list of {"path": str, "content": bytes}. Using blobs + a tree + one

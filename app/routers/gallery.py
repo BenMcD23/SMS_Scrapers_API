@@ -5,7 +5,6 @@ images sit in `src/assets/gallery/`. The site groups photos into sections in
 the order each section first appears, so a new section is just a new name.
 """
 
-import base64
 import io
 import json
 import re
@@ -17,7 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.config import GITHUB_BRANCH, GITHUB_REPO
-from core.github import commit_files_to_github, github_headers
+from core.github import commit_files_to_github, fetch_repo_json
 from core.security import require_staff
 
 router = APIRouter()
@@ -30,15 +29,7 @@ MAX_SECTION_LEN = 40
 
 
 async def fetch_gallery(client: httpx.AsyncClient) -> list[dict]:
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GALLERY_JSON_PATH}"
-    resp = await client.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not fetch {GALLERY_JSON_PATH} from {GITHUB_REPO}@{GITHUB_BRANCH} "
-            f"(GitHub returned {resp.status_code}).",
-        )
-    return json.loads(base64.b64decode(resp.json()["content"]).decode("utf-8"))
+    return await fetch_repo_json(client, GITHUB_REPO, GITHUB_BRANCH, GALLERY_JSON_PATH)
 
 
 def gallery_json_bytes(photos: list[dict]) -> bytes:
