@@ -66,9 +66,8 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "BenMcD23/cadet-website"
 GITHUB_BRANCH = "master"
 
-NEWSLETTER_REPO = "BenMcD23/317_Newsletter"
-NEWSLETTER_BRANCH = "development"
-NEWSLETTER_JSON_PATH = "317_newsletter/lib/newsletters.json"
+# Newsletters live on the website: the issue list here, PDFs in public/newsletters/
+NEWSLETTER_JSON_PATH = "src/data/newsletters.json"
 
 PROGRAMME_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyqQbEdYxu53ARNzfcxdcm9cRieRVBC3cJ_TtdGVbpPQaMfpzD3XkreSmNSnJaHe1pM/exec"
 
