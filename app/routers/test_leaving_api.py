@@ -29,16 +29,28 @@ def squadron(db):
         Cadet(cin=3, first_name="Excused", last_name="Exams"),
         Cadet(cin=4, first_name="Brand", last_name="New"),
         Cadet(cin=5, first_name="Camp", last_name="Only"),
-        Cadet(cin=6, first_name="Seven", last_name="Weeks"),
+        Cadet(cin=6, first_name="Half", last_name="Way"),
+        Cadet(cin=7, first_name="Some", last_name="Nights"),
+        Cadet(cin=8, first_name="Joined", last_name="Lately"),
     ])
-    _parade(db, 1, 0)
-    _parade(db, 2, 63)                               # nine weeks
-    _parade(db, 2, 0, status="Absent")               # absences don't break the gap
-    _parade(db, 3, 0, status="Authorised Absence")   # authorised absence does
+    # Cadet 1 is there every week, which is what makes ten parade nights "held"
+    # (0..63 days back); the window covers the eight from tonight to 49 days ago.
+    for days in range(0, 64, 7):
+        _parade(db, 1, days)
+    _parade(db, 2, 63)                               # last seen nine weeks ago
+    _parade(db, 2, 0, status="Absent")               # absences count for nothing
+    for days in range(0, 50, 7):
+        _parade(db, 3, days, status="Authorised Absence")   # authorised absence counts as there
     _parade(db, 3, 80)
     _parade(db, 5, 0, register="Camp")               # other registers don't count
     _parade(db, 5, 70)
-    _parade(db, 6, 49)                               # seven weeks: not yet lapsed
+    for days in (0, 7, 14, 21):
+        _parade(db, 6, days)                         # 4 of 8: half, fine
+    _parade(db, 7, 63, status="Absent")              # on the register long before the window
+    for days in (0, 7, 14):
+        _parade(db, 7, days)                         # 3 of 8: 38%, under 40%
+    for days in (0, 7, 14):
+        _parade(db, 8, days)                         # joined two weeks ago: 3 of 3, not 3 of 8
     db.commit()
 
 
@@ -77,14 +89,18 @@ def test_no_token_is_401(api):
 
 # ---- listing ---------------------------------------------------------------
 
-def test_list_flags_only_cadets_absent_eight_weeks(api, squadron):
+def test_list_flags_only_cadets_under_forty_percent_over_eight_weeks(api, squadron):
     body = api.get("/leaving-process", headers=OC).json()
     assert body["currentParadeNight"] == TONIGHT.isoformat()
     rows = {c["cin"]: c for c in body["cadets"]}
-    # 6 (seven weeks) and 3 (excused) are not listed; 2 and 5 are.
-    assert set(rows) == {2, 5}
+    # 6 (50%), 3 (excused) and 8 (new, 3 of 3) are not listed; 2, 5 and 7 are.
+    assert set(rows) == {2, 5, 7}
     gone = rows[2]
     assert (gone["gapDays"], gone["weeksAbsent"], gone["status"], gone["returned"]) == (63, 9, "flagged", False)
+    assert (gone["attended"], gone["possible"], gone["attendancePct"]) == (0, 8, 0)
+    # Still comes on the odd night, so they're listed with no gap but a low rate.
+    assert (rows[7]["attended"], rows[7]["possible"], rows[7]["attendancePct"]) == (3, 8, 38)
+    assert rows[7]["weeksAbsent"] == 0
     assert gone["notifiedAt"] is None and gone["parentEmails"] == ["mum@x.co", "dad@x.co"]
     assert rows[5]["parentEmails"] == []
 
@@ -133,10 +149,15 @@ def test_notified_unknown_cadet(api):
 
 def test_a_returned_cadet_stays_listed_until_cancelled(api, db, squadron):
     api.post("/leaving-process/2/notified", headers=OC)
+    # One night back isn't enough (1 of 8): they stay flagged until they're at 40%.
     _parade(db, 2, 0, status="Present Incorrectly Dressed")
     db.commit()
+    assert _row(api, 2)["returned"] is False
+    for days in (7, 14, 21):
+        _parade(db, 2, days)
+    db.commit()
     row = _row(api, 2)
-    assert row["returned"] is True and row["gapDays"] == 0
+    assert row["returned"] is True and row["gapDays"] == 0 and row["attendancePct"] == 50
 
 
 # ---- asking the adjutant ---------------------------------------------------
@@ -153,7 +174,7 @@ def test_request_adj_emails_the_adjutant_once_notice_has_run_out(api, db, squadr
     mail = outbox[0]
     assert mail["to"] == ADJ and mail["reply_to"] == "oc@317atc.co.uk"
     assert "Gone Away" in mail["subject"] and "2" in mail["subject"]
-    assert "9 weeks" in mail["html"]
+    assert "9 weeks" in mail["html"] and "0 of the last 8 parade nights" in mail["html"]
     assert _row(api, 2)["adjRequestedAt"] is not None
     row = db.query(CadetLeavingProcess).one()
     assert row.adj_sent_to == ADJ and row.adj_requested_by == "oc@317atc.co.uk"
@@ -188,7 +209,8 @@ def test_request_adj_without_an_adjutant_address_sends_and_records_nothing(api, 
 def test_request_adj_refused_for_a_cadet_who_came_back(api, db, squadron, adj, outbox):
     api.post("/leaving-process/2/notified", headers=OC)
     _age_process(db, 2, 20)
-    _parade(db, 2, 0)
+    for days in (0, 7, 14, 21):
+        _parade(db, 2, days)
     db.commit()
     res = api.post("/leaving-process/2/request-adj", headers=OC)
     assert res.status_code == 409 and "back on parade" in res.json()["detail"]
@@ -204,8 +226,8 @@ def test_parent_emails_bcc_is_semicolon_separated_and_deduplicated(api, db, squa
     assert body["bcc"] == "here.parent@x.co;mum@x.co;dad@x.co;new@x.co" or \
         set(body["bcc"].split(";")) == {"here.parent@x.co", "mum@x.co", "dad@x.co", "new@x.co"}
     assert body["count"] == 4 and len(body["bcc"].split(";")) == 4
-    # Cadets 4, 5, 6 still have none.
-    assert body["missing"] == 3
+    # Cadets 4, 5, 6, 7 and 8 still have none.
+    assert body["missing"] == 5
 
 
 def test_parent_emails_with_nobody_on_file(api, db):

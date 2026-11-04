@@ -1,7 +1,7 @@
 """Leaving process — cadets who have stopped turning up to parade (OC only).
 
-A cadet whose last parade is eight weeks or more behind the current parade
-night is flagged. The site does not email parents: it hands the OC their
+A cadet who was at under 40% of the parade nights held in the eight weeks up to
+the current parade night is flagged. The site does not email parents: it hands the OC their
 addresses to BCC from their own account, and the OC then records that the query
 went out, which starts a two-week notice clock. When it runs out the OC can have
 the site email the adjutant to remove the cadet.
@@ -17,7 +17,15 @@ from core.attendance import ABSENT, attendance_state
 from core.config import ADJUTANT_EMAIL
 from core.db import get_db
 from core.emailer import leaver_removal_request_email_html, send_email
-from core.leaving import START_LEAVING, gap_days, is_lapsed, leaving_status, parse_emails
+from core.leaving import (
+    START_LEAVING,
+    attendance_in_window,
+    attendance_pct,
+    gap_days,
+    is_lapsed,
+    leaving_status,
+    parse_emails,
+)
 from core.security import require_oc
 from database.models import Cadet, CadetAttendance, CadetLeavingProcess
 
@@ -38,7 +46,7 @@ def parse_emails_leniently(raw: str | None) -> list[str]:
 
 def _current_parade_night(db: Session) -> datetime | None:
     """Most recent parade night anyone was registered on — the reference point
-    the four-week gap is measured back from."""
+    the eight-week window is measured back from."""
     return (
         db.query(func.max(CadetAttendance.date))
         .filter(CadetAttendance.register_type == PARADE_NIGHT)
@@ -46,23 +54,39 @@ def _current_parade_night(db: Session) -> datetime | None:
     )
 
 
-def _last_attended_by_cadet(db: Session) -> dict[int, datetime]:
-    """cadet_id -> last parade they were counted at. An authorised absence
-    counts: someone excused for exams hasn't drifted away, so it breaks the gap
-    the same way turning up does.
+def _attendance_by_cadet(db: Session, current_parade: datetime | None) -> dict[int, dict]:
+    """cadet_id -> last parade they were counted at, plus attended/possible
+    parade nights in the eight-week window. An authorised absence counts: someone
+    excused for exams hasn't drifted away, so it counts the same as turning up.
     """
     rows = (
         db.query(CadetAttendance.cadet_id, CadetAttendance.date, CadetAttendance.status)
         .filter(CadetAttendance.register_type == PARADE_NIGHT)
         .all()
     )
-    last: dict[int, datetime] = {}
+    nights = sorted({date for _, date, _ in rows})
+    first_seen: dict[int, datetime] = {}
+    counted: dict[int, set[datetime]] = {}
     for cadet_id, date, status in rows:
-        if attendance_state(status) == ABSENT:
-            continue
-        if cadet_id not in last or date > last[cadet_id]:
-            last[cadet_id] = date
-    return last
+        if cadet_id not in first_seen or date < first_seen[cadet_id]:
+            first_seen[cadet_id] = date
+        if attendance_state(status) != ABSENT:
+            counted.setdefault(cadet_id, set()).add(date)
+
+    result = {}
+    for cadet_id, first in first_seen.items():
+        attended_on = counted.get(cadet_id, set())
+        attended, possible = attendance_in_window(nights, attended_on, first, current_parade)
+        result[cadet_id] = {
+            "last": max(attended_on) if attended_on else None,
+            "attended": attended,
+            "possible": possible,
+        }
+    return result
+
+
+def _is_lapsed_for(stats: dict | None) -> bool:
+    return bool(stats) and is_lapsed(stats["attended"], stats["possible"])
 
 
 @router.get("/leaving-process")
@@ -73,14 +97,15 @@ def list_leaving_process(
     """Every cadet who is lapsed, plus anyone with an open process already."""
     now = datetime.now()
     current_parade = _current_parade_night(db)
-    last_attended = _last_attended_by_cadet(db)
+    attendance = _attendance_by_cadet(db, current_parade)
     open_processes = {p.cadet_id: p for p in db.query(CadetLeavingProcess).all()}
 
     cadets = []
     for cadet in db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all():
         process = open_processes.get(cadet.cin)
-        last = last_attended.get(cadet.cin)
-        lapsed = is_lapsed(last, current_parade)
+        stats = attendance.get(cadet.cin)
+        last = stats["last"] if stats else None
+        lapsed = _is_lapsed_for(stats)
 
         # Keep anyone with an open process on the list even once they're back,
         # so the OC can see the return and cancel it.
@@ -99,6 +124,9 @@ def list_leaving_process(
             "lastAttended": last.isoformat() if last else None,
             "gapDays": gap,
             "weeksAbsent": gap // 7 if gap is not None else None,
+            "attended": stats["attended"] if stats else 0,
+            "possible": stats["possible"] if stats else 0,
+            "attendancePct": attendance_pct(stats["attended"], stats["possible"]) if stats else None,
             "status": status,
             "daysLeft": days_left,
             "returned": bool(process) and not lapsed,
@@ -176,9 +204,10 @@ def request_adjutant_removal(
 
     cadet = db.query(Cadet).filter(Cadet.cin == cin).first()
     # A returned cadet shouldn't be removed: the register says they're back.
-    last = _last_attended_by_cadet(db).get(cin)
     current_parade = _current_parade_night(db)
-    if not is_lapsed(last, current_parade):
+    stats = _attendance_by_cadet(db, current_parade).get(cin)
+    last = stats["last"] if stats else None
+    if not _is_lapsed_for(stats):
         raise HTTPException(
             status_code=409,
             detail="This cadet has been back on parade — cancel the process instead.",
@@ -194,6 +223,7 @@ def request_adjutant_removal(
             name, cadet.cin,
             last.strftime("%d %b %Y") if last else None,
             gap // 7 if gap is not None else None,
+            stats["attended"], stats["possible"],
             process.sent_at.strftime("%d %b %Y"),
             requester,
         ),

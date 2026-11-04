@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from core import dashboard_query, programme
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.config import CHATBOT_URL
-from core.leaving import LAPSE_DAYS, leaving_status
+from core.leaving import LAPSE_BELOW_PCT, LAPSE_DAYS, leaving_status
 from core.qualifications import BADGE_TYPE_BY_KEY, BADGE_TYPES, held_level, qual_names_with_flights
 from core.ranks import nco_team
 from core.recruit_form import age_on
@@ -608,7 +608,8 @@ def leaving(db: Session, _args: NoArgs, personal: bool = False) -> dict:
         status, days_left = leaving_status(p.sent_at, now)
         rows.append({**_ref(p.cadet), "parents_told": _iso(p.sent_at), "status": status,
                      "days_left": days_left, "adjutant_asked": _iso(p.adj_requested_at)})
-    return _capped("cadets", rows, lapse_days=LAPSE_DAYS)
+    return _capped("cadets", rows, lapse_window_days=LAPSE_DAYS,
+                   lapse_below_attendance_pct=LAPSE_BELOW_PCT)
 
 
 class HistoryArgs(BaseModel):

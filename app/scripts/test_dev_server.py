@@ -223,13 +223,13 @@ def test_the_classifications_page_has_lessons_part_done_and_taught_subjects_whol
 
 def test_the_leaving_process_has_lapsed_cadets_and_parent_emails_to_show(db):
     seed(db, now=NOW)
-    from core.leaving import gap_days, is_lapsed
-    from routers.leaving import _current_parade_night, _last_attended_by_cadet
+    from core.leaving import gap_days
+    from routers.leaving import _attendance_by_cadet, _current_parade_night, _is_lapsed_for
 
-    current, last = _current_parade_night(db), _last_attended_by_cadet(db)
-    lapsed = [c.cin for c in db.query(Cadet) if is_lapsed(last.get(c.cin), current)]
+    current, stats = _current_parade_night(db), _attendance_by_cadet(db, _current_parade_night(db))
+    lapsed = [c.cin for c in db.query(Cadet) if _is_lapsed_for(stats.get(c.cin))]
     assert len(lapsed) == len(LAPSED_CADETS)
-    assert all(gap_days(last[cin], current) >= 56 for cin in lapsed)
+    assert all(gap_days(stats[cin]["last"], current) >= 56 for cin in lapsed)
 
     parents = [c.parent_emails for c in db.query(Cadet)]
     assert any(parents) and not all(parents)  # some on file, some missing

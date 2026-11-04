@@ -415,7 +415,8 @@ def session_plan_approved_html(plan_id: int, session_name: str, session_ic: str,
 
 
 def leaver_removal_request_email_html(cadet_name: str, cin: int, last_attended: str | None,
-                                      weeks_absent: int | None, notified_on: str,
+                                      weeks_absent: int | None,
+                                      attended: int, possible: int, notified_on: str,
                                       requested_by: str) -> str:
     """To the adjutant, asking them to remove a cadet who has stopped attending.
 
@@ -431,7 +432,7 @@ def leaver_removal_request_email_html(cadet_name: str, cin: int, last_attended: 
       <p>Please remove <strong>{_esc(cadet_name)}</strong> (CIN {cin}) from the squadron.</p>
       <ul>
         <li>Last on parade: {_esc(last_attended or "no parade on record")}</li>
-        <li>Not paraded for: {absent}</li>
+        <li>Last parade was {absent} ago; at {attended} of the last {possible} parade nights</li>
         <li>Parents were sent a leaver query on {_esc(notified_on)}, giving two weeks'
             notice, and the notice period has now passed.</li>
       </ul>
