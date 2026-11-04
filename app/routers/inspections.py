@@ -5,6 +5,7 @@ AI analysis of recurring uniform faults."""
 
 import io
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from core.db import get_db
 from core.llm import generate
 from core.security import require_staff, require_staff_or_snco
-from database.models import Cadet, CadetAbsence, InspectionSheet
+from database.models import Cadet, CadetAbsence, InspectionDraft, InspectionSheet
 
 router = APIRouter()
 
@@ -212,6 +213,90 @@ def submit_inspection(
         cin for cin in awol if flight_by_cin.get(cin) in incoming_flights
     )
     return {"id": sheet.id, "awol": incoming_awol, "flight_scores": flight_scores}
+
+
+# ── Drafts: the sheet while it is being marked ────────────────────────────────
+# The page saves its whole sheet here each time a cadet is recorded, so a
+# reload or a different phone carries on where the marker left off. A draft is
+# the marker's own: nobody else reads it, and it never counts towards history
+# or flight scores until "Complete inspection" posts it above.
+
+class DraftMark(BaseModel):
+    # The page keeps the score as the text in its box ("" until typed).
+    score: str | float | None = ""
+    comments: list[dict] = []
+    # None = follow the scraped absence log, as on the page.
+    absent: bool | None = None
+
+
+class InspectionDraftBody(BaseModel):
+    date: str
+    marks: dict[int, DraftMark] = {}
+    # Recorded cadets, most recent first.
+    order: list[int] = []
+    uniform: Literal["blues", "mtp"] = "blues"
+    # When the page last recorded a cadet, so it can tell which of its own
+    # copy and this one is newer.
+    saved_at: str | None = None
+
+
+def _owner(idinfo: dict) -> str:
+    return (idinfo.get("email") or "").strip().lower()
+
+
+def _draft_out(draft: InspectionDraft) -> dict:
+    return {"data": draft.data, "updated_at": draft.updated_at.isoformat()}
+
+
+@router.get("/inspections/draft")
+def get_draft(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_snco),
+):
+    """The caller's sheet in progress, or 404 when they have none."""
+    draft = db.query(InspectionDraft).filter(InspectionDraft.owner == _owner(idinfo)).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="No inspection in progress")
+    return _draft_out(draft)
+
+
+@router.put("/inspections/draft")
+def save_draft(
+    body: InspectionDraftBody,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_snco),
+):
+    """Replace the caller's sheet in progress with the one sent. The page sends
+    the whole sheet every time, so a save that failed is made good by the next."""
+    _parse_date(body.date)
+    owner = _owner(idinfo)
+    if not owner:
+        raise HTTPException(status_code=400, detail="No email on this sign-in")
+    draft = db.query(InspectionDraft).filter(InspectionDraft.owner == owner).first()
+    data = body.model_dump(mode="json")
+    if draft:
+        draft.data = data  # reassign so SQLAlchemy sees the JSON change
+        draft.updated_at = datetime.now()
+    else:
+        draft = InspectionDraft(owner=owner, data=data, updated_at=datetime.now())
+        db.add(draft)
+    db.commit()
+    return _draft_out(draft)
+
+
+@router.delete("/inspections/draft")
+def delete_draft(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_snco),
+):
+    """Throw away the caller's sheet in progress ("Clear draft")."""
+    deleted = (
+        db.query(InspectionDraft)
+        .filter(InspectionDraft.owner == _owner(idinfo))
+        .delete()
+    )
+    db.commit()
+    return {"deleted": bool(deleted)}
 
 
 # ── History & trends ──────────────────────────────────────────────────────────

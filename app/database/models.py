@@ -386,6 +386,20 @@ class InspectionSheet(Base):
     data         = Column(JSON,     nullable=False)
 
 
+class InspectionDraft(Base):
+    """One staff member's inspection sheet while they are still marking it,
+    saved each time they record a cadet. The sheet otherwise lived only in the
+    browser, so a reload, a cleared cache or a different phone lost a night's
+    marking. ``data`` is the page's own sheet state, kept as it sends it, and
+    is only read back by that same person."""
+    __tablename__ = "Inspection_Drafts"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    owner      = Column(Text,     nullable=False, unique=True)  # the marker's email
+    data       = Column(JSON,     nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+
 class Event317(Base):
     __tablename__ = "317_Events"
 
