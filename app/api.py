@@ -63,6 +63,7 @@ from routers import (
     texts,
     theory,
     volunteer_portal,
+    website_people,
 )
 from routers import usage as usage_router
 
@@ -216,6 +217,7 @@ app.include_router(programme.router)
 app.include_router(programme_record.router)
 app.include_router(newsletters.router)
 app.include_router(gallery.router)
+app.include_router(website_people.router)
 app.include_router(assessments.router)
 app.include_router(stats.router)
 app.include_router(stores.router)
