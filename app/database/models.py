@@ -876,6 +876,63 @@ class SessionPlanComment(Base):
     author = relationship("User")
 
 
+# ─── Session planner: task bank and kit ───────────────────────────────────────
+
+class SessionKit(Base):
+    """A piece of kit the squadron owns for running sessions (planks, barrels,
+    radios), with how many there are. The planner only runs tasks side by side
+    when their kit fits in what's here."""
+    __tablename__ = "Session_Kit"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    name       = Column(Text,     nullable=False, unique=True)
+    quantity   = Column(Integer,  nullable=False, default=1)
+    notes      = Column(Text,     nullable=False, default="", server_default="")
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    uses = relationship("SessionTaskKit", back_populates="kit")
+
+
+class SessionTask(Base):
+    """One task in the bank: a leadership command task, a radio exercise or any
+    other stand a session can run. Leadership assessments point at these
+    (``fields.task_id``) so the planner can tell who has already led which.
+    A task with assessments against it is retired (``active``), not deleted."""
+    __tablename__ = "Session_Tasks"
+
+    id               = Column(Integer,  primary_key=True, autoincrement=True)
+    kind             = Column(Text,     nullable=False, index=True)  # SESSION_KINDS in core/session_tasks.py
+    number           = Column(Text,     nullable=True)  # the squadron's own exercise number, e.g. "7"
+    name             = Column(Text,     nullable=False)
+    brief            = Column(Text,     nullable=False, default="", server_default="")
+    duration_minutes = Column(Integer,  nullable=False)
+    min_group        = Column(Integer,  nullable=True)
+    max_group        = Column(Integer,  nullable=True)
+    active           = Column(Boolean,  nullable=False, default=True, server_default="1")
+    created_at       = Column(DateTime, nullable=False)
+    updated_at       = Column(DateTime, nullable=False)
+
+    kit = relationship(
+        "SessionTaskKit", back_populates="task",
+        cascade="all, delete-orphan", order_by="SessionTaskKit.kit_id",
+    )
+
+
+class SessionTaskKit(Base):
+    """How much of one kit item a task needs."""
+    __tablename__ = "Session_Task_Kit"
+
+    task_id  = Column(Integer, ForeignKey("Session_Tasks.id", ondelete="CASCADE"), primary_key=True)
+    # RESTRICT: deleting kit a task still needs would quietly make the task look
+    # runnable alongside anything. The API refuses it with a 409 first.
+    kit_id   = Column(Integer, ForeignKey("Session_Kit.id", ondelete="RESTRICT"), primary_key=True, index=True)
+    quantity = Column(Integer, nullable=False, default=1)
+
+    task = relationship("SessionTask", back_populates="kit")
+    kit  = relationship("SessionKit", back_populates="uses")
+
+
 # ─── NCO appraisals ───────────────────────────────────────────────────────────
 
 # How far ahead the next review can be booked, in months. The appraisal form

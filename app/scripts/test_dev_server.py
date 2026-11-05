@@ -39,6 +39,7 @@ from scripts.dev_server import (
     seed_programme,
     seed_push,
     seed_recruits,
+    seed_session_bank,
     seed_stores,
     seed_stores_history,
 )
@@ -333,7 +334,7 @@ def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, mo
 # say why.) Both lists are checked both ways, so seeding one of these without
 # taking it off fails too, keeping the list honest.
 UNSEEDED_TABLES = {
-    "317_Events", "All_Events", "Assessment_Sheets", "Attachment_Check_Quals",
+    "317_Events", "All_Events", "Attachment_Check_Quals",
     "Bader_Credentials",  # secrets: a preview never scrapes
     "Badge_Grid_Cells", "Badge_Grid_Config", "Badge_Items",
     "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
@@ -372,6 +373,7 @@ def _seed_everything(api, db):
     seed_push(db, now=NOW)
     seed_assistant(db, now=NOW)
     seed_programme(db, now=NOW)
+    seed_session_bank(api, staff, now=NOW)
 
 
 def test_the_applications_show_one_of_each_state(api, db):
@@ -507,3 +509,20 @@ def test_the_seeded_programme_covers_every_parade_night_and_shows_turnout(api, d
     assert all(0 <= c["rate"] <= 100 for c in stats["categories"])
     assert stats["activities"] and all(isinstance(n["date"], str) for n in stats["nights"])
     assert date_type.fromisoformat(stats["nights"][-1]["date"]) <= NOW.date()
+
+
+def test_the_task_bank_has_runnable_short_retired_and_unlinked_to_show(api, db):
+    staff = api.as_("staff")
+    seed(db, now=NOW)
+    seed_session_bank(api, staff, now=NOW)
+    tasks = api.get("/session-planner/tasks?include_retired=true", headers=staff).json()
+    assert any(t["kit_short"] for t in tasks), "a task the kit can't cover"
+    assert any(not t["active"] for t in tasks), "a retired task"
+    assert any(t["led_count"] for t in tasks) and any(not t["led_count"] for t in tasks if t["active"])
+    assert {t["kind"] for t in tasks} >= {"leadership", "radio"}
+    # Old free-text sheets the bank can't place give the linking list rows.
+    assert len(api.get("/session-planner/unlinked-assessments", headers=staff).json()) == 2
+    # The form's picker has a cadet with a pass, a fail and tasks still to lead.
+    first = sorted(c["cin"] for c in api.get("/cadets", headers=staff).json())[1]
+    led = {t["led"] for t in api.get(f"/assessments/leadership/tasks?cin={first}", headers=staff).json()}
+    assert led == {"passed", "failed", None}

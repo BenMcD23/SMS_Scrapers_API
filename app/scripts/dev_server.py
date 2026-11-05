@@ -18,6 +18,7 @@ week. It never touches a database that already has cadets in it.
 """
 
 import argparse
+import base64
 import os
 import random
 import sys
@@ -879,6 +880,114 @@ def seed_applications(client, headers: dict, db) -> None:
                  json={"notes": "Appointed in 2024, before applications were tracked here."})
 
 
+# The session planner's kit list: (name, quantity, notes). One item is all out
+# of action (0), so the bank shows a task that can't run.
+SESSION_KIT = [
+    ("Plank (2 m)", 4, ""),
+    ("Oil drum", 2, ""),
+    ("Rope (10 m)", 6, ""),
+    ("Cargo net", 1, "Kept in the blue container"),
+    ("Tarpaulin", 2, ""),
+    ("Blindfold", 8, ""),
+    ("Cone", 20, ""),
+    ("Tennis ball", 12, ""),
+    ("Hand-held radio", 6, "Two need new batteries"),
+    ("First aid manikin", 0, "Both away for repair"),
+]
+# (kind, number, name, minutes, smallest, largest, active, [(kit, quantity)])
+SESSION_TASKS = [
+    ("leadership", "1", "Bridge the Gap", 15, 4, 6, True, [("Plank (2 m)", 2), ("Oil drum", 2)]),
+    ("leadership", "2", "Spider's Web", 15, 5, 8, True, [("Rope (10 m)", 2)]),
+    ("leadership", "3", "Toxic Barrel", 20, 4, 6, True, [("Oil drum", 1), ("Rope (10 m)", 4)]),
+    ("leadership", "4", "Minefield", 15, 4, 8, True, [("Blindfold", 4), ("Cone", 12)]),
+    ("leadership", "5", "Over the Wall", 20, 5, 7, True, [("Cargo net", 1), ("Tarpaulin", 1)]),
+    ("leadership", "6", "Ball Run", 10, 4, 6, True, [("Tennis ball", 6), ("Cone", 6)]),
+    ("leadership", None, "Stretcher Carry", 20, 6, 8, True, [("Tarpaulin", 1), ("Rope (10 m)", 2)]),
+    ("leadership", "7", "Pipeline", 15, 4, 6, False, []),  # retired
+    ("radio", "1", "Net Check-in", 20, 3, 6, True, [("Hand-held radio", 4)]),
+    ("radio", "2", "Phonetic Relay", 15, 4, 6, True, [("Hand-held radio", 2)]),
+    ("first_aid", None, "Casualty Scenario", 25, 3, 5, True, [("First aid manikin", 1)]),
+    ("general", None, "Kit Inspection Relay", 10, None, None, True, []),
+]
+# Leadership sheets: (cadet index, task, passed, weeks ago). A task given as a
+# number is picked from the bank (task_id); as a pair it's an old free-text
+# sheet, some of which match the bank and some don't, so "Unlinked" has rows.
+SESSION_LEADS = [
+    (0, "1", True, 10), (0, "2", True, 6),
+    (1, "1", False, 9), (1, "3", True, 5),
+    (2, ("4", "Minefield"), True, 14),          # old sheet, matches on its number
+    (3, ("", "spiders web"), False, 12),       # old sheet, matches on its name
+    (3, "5", True, 3),
+    (4, ("", "Swamp crossing"), True, 15),     # old sheet the bank can't place
+    (5, ("9", "Egg drop"), False, 13),         # nor this one
+    (6, "6", True, 2), (6, "4", True, 1),
+    (8, "Stretcher Carry", True, 4),
+]
+
+
+def seed_session_bank(client, headers: dict, now: datetime | None = None) -> None:
+    """The session planner's kit list and task bank, and leadership sheets
+    against them, through the real endpoints so the bank's lead counts and the
+    assessment form's "already led" marks come out of the same code."""
+    now = now or datetime.now()
+
+    def ok(res, what):
+        assert res.status_code < 300, f"{what}: {res.status_code} {res.text}"
+        return res.json()
+
+    kit = {}
+    for name, quantity, notes in SESSION_KIT:
+        kit[name] = ok(client.post("/session-planner/kit", headers=headers,
+                                   json={"name": name, "quantity": quantity, "notes": notes}), "kit")["id"]
+    tasks = {}
+    for kind, number, name, minutes, smallest, largest, active, needs in SESSION_TASKS:
+        task = ok(client.post("/session-planner/tasks", headers=headers, json={
+            "kind": kind, "number": number, "name": name, "duration_minutes": minutes,
+            "min_group": smallest, "max_group": largest, "active": active,
+            "brief": f"{name}: get the whole team across using only the kit listed." if kind == "leadership" else "",
+            "kit": [{"kit_id": kit[k], "quantity": q} for k, q in needs],
+        }), "task")
+        if kind == "leadership":
+            tasks[number or name] = task["id"]
+
+    roster = ok(client.get("/cadets", headers=headers), "cadets")
+    roster.sort(key=lambda c: c["cin"])
+    for i, task, passed, weeks in SESSION_LEADS:
+        cadet = roster[i]
+        scores = {str(q): 3 for q in range(1, 11)}
+        if not passed:
+            scores["4"] = 1
+        body = {
+            "cadet_cin": cadet["cin"], "scores": scores,
+            "date": (now - timedelta(weeks=weeks)).date().isoformat(),
+            "debriefing_notes": "Clear brief; check understanding before starting." if passed
+            else "Lost control of the team halfway; re-assess on another exercise.",
+        }
+        if isinstance(task, tuple):
+            body["exercise_no"], body["exercise_name"] = task
+        else:
+            body["task_id"] = tasks[task]
+        ok(client.post("/assessments/leadership/add-assessment", headers=headers, json=body), "leadership")
+
+    # One cadet's Blue Leadership is complete (uploaded to Bader), so the
+    # bank's counts include sheets that can no longer be edited.
+    ok(client.post(f"/assessments/{roster[0]['cin']}/Blue Leadership/mark-complete", headers=headers,
+                   json={"completed": True}), "mark complete")
+
+    # An MOI with its lesson plan attached, so every Assessment_Sheets column
+    # has something in it.
+    from assessment_builders.pdf_utils import merge_pdfs
+
+    lesson_plan = "data:application/pdf;base64," + base64.b64encode(merge_pdfs([])).decode()
+    ok(client.post("/assessments/moi/add-assessment", headers=headers, json={
+        "cadet_cin": roster[9]["cin"], "scores": {str(q): 3 for q in range(1, 14)},
+        "date": (now - timedelta(weeks=2)).date().isoformat(), "section_comments": {},
+        "strengths_summary": "Confident delivery", "improvements_summary": "More questions",
+        "general_comments": "A good first lesson", "lesson_plan_pdf": lesson_plan,
+        "lesson_plan_filename": "Lesson plan – navigation.pdf",
+    }), "moi")
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if an existing table lacks a column the models now have."""
     from sqlalchemy import inspect
@@ -957,6 +1066,7 @@ def main() -> None:
             seed_assistant(db)
         with SessionLocal() as db:
             seed_programme(db)
+        seed_session_bank(client, headers)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")
