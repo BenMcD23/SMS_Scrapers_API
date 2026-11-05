@@ -12,7 +12,7 @@ import pytest
 
 import routers.backups as backups
 import routers.programme as programme
-from core.config import GITHUB_REPO, NEWSLETTER_JSON_PATH, NEWSLETTER_REPO
+from core.config import GITHUB_REPO, NEWSLETTER_JSON_PATH
 from database.models import User, UserProfile
 
 STAFF = {"Authorization": "Bearer staff"}
@@ -20,16 +20,19 @@ OWNER = {"Authorization": "Bearer owner"}
 PDF = b"%PDF-1.4 newsletter"
 
 
+def _pdf(i):
+    return f"public/newsletters/issue-{i}.pdf"
+
+
 def _seed_newsletters(github, issues):
     entries = [{"id": f"issue-{i}", "issue": i, "title": f"Issue {i}"} for i in issues]
-    github.files[NEWSLETTER_REPO] = {NEWSLETTER_JSON_PATH: json.dumps(entries).encode()}
+    github.files[GITHUB_REPO] = {NEWSLETTER_JSON_PATH: json.dumps(entries).encode()}
     for i in issues:
-        github.files[NEWSLETTER_REPO][f"317_newsletter/public/newsletters/issue-{i}.pdf"] = PDF + str(i).encode()
-    github.files[GITHUB_REPO] = {f"public/newsletters/issue-{i}.pdf": b"%PDF old" for i in issues}
+        github.files[GITHUB_REPO][_pdf(i)] = PDF + str(i).encode()
 
 
 def _stored(github):
-    return json.loads(github.files[NEWSLETTER_REPO][NEWSLETTER_JSON_PATH])
+    return json.loads(github.files[GITHUB_REPO][NEWSLETTER_JSON_PATH])
 
 
 # ── access ────────────────────────────────────────────────────────────────────
@@ -55,23 +58,51 @@ def test_backups_are_owner_only(api, method, path):
 
 # ── newsletters ───────────────────────────────────────────────────────────────
 
+@pytest.mark.parametrize("persona,allowed", [
+    ("staff", True), ("owner", True), ("oc", True),
+    ("snco", False), ("nco", False), ("cadet", False),
+])
+def test_only_staff_can_see_or_change_newsletters(api, github, persona, allowed):
+    _seed_newsletters(github, [1])
+    headers = api.as_(persona)
+    calls = [
+        api.get("/newsletters", headers=headers),
+        api.put("/newsletters/1", headers=headers, data={"title": "x"}),
+        api.delete("/newsletters/1", headers=headers),
+    ]
+    assert [r.status_code for r in calls] == ([200] * 3 if allowed else [403] * 3)
+    assert bool(github.commits) is allowed
+
+
+def test_newsletters_need_a_token(api, github):
+    assert api.get("/newsletters").status_code == 401
+    assert api.delete("/newsletters/1").status_code == 401
+    assert github.commits == []
+
+
 def test_list_newsletters_newest_first(api, github):
     _seed_newsletters(github, [1, 3, 2])
     assert [n["issue"] for n in api.get("/newsletters", headers=STAFF).json()] == [3, 2, 1]
 
 
+def test_an_empty_list_is_an_empty_list(api, github):
+    github.files[GITHUB_REPO] = {NEWSLETTER_JSON_PATH: b"[]"}
+    assert api.get("/newsletters", headers=STAFF).json() == []
+
+
 def test_list_when_the_json_is_missing_explains_why(api, github):
     res = api.get("/newsletters", headers=STAFF)
     assert res.status_code == 500 and "Make sure the file is pushed" in res.json()["detail"]
+    assert GITHUB_REPO in res.json()["detail"]
 
 
-def _upload(api, issue, content=PDF, mime="application/pdf"):
+def _upload(api, issue, content=PDF, mime="application/pdf", title="Summer"):
     return api.post("/upload-newsletter", headers=STAFF,
                     files={"file": ("n.pdf", content, mime)},
-                    data={"title": "Summer", "date": "2026-07", "issue": str(issue), "description": "Camp news"})
+                    data={"title": title, "date": "2026-07", "issue": str(issue), "description": "Camp news"})
 
 
-def test_upload_new_current_issue_mirrors_to_the_website(api, github):
+def test_upload_commits_the_list_and_pdf_to_the_website_in_one_commit(api, github):
     _seed_newsletters(github, [1, 2])
     res = _upload(api, 3)
     assert res.json() == {"status": "success", "id": "issue-3", "filename": "issue-3.pdf"}
@@ -79,21 +110,43 @@ def test_upload_new_current_issue_mirrors_to_the_website(api, github):
     stored = _stored(github)
     assert [n["issue"] for n in stored] == [3, 2, 1]  # written highest first
     assert stored[0]["pdfPath"] == "/newsletters/issue-3.pdf" and stored[0]["coverColor"] == "#1F2E4A"
-    assert github.files[NEWSLETTER_REPO]["317_newsletter/public/newsletters/issue-3.pdf"] == PDF
+    assert github.files[GITHUB_REPO][_pdf(3)] == PDF
 
+    # One commit, one repo: the website is the only home for newsletters now.
+    assert len(github.commits) == 1
+    assert github.commits[0]["repo"] == GITHUB_REPO
+    assert set(github.commits[0]["paths"]) == {NEWSLETTER_JSON_PATH, _pdf(3)}
+    assert github.commits[0]["deleted"] == []
+
+
+def test_a_new_issue_keeps_every_back_issue_pdf(api, github):
+    # The old mirror pruned all but the current PDF from the website; the
+    # archive lives there now, so nothing may be deleted on upload.
+    _seed_newsletters(github, [1, 2])
+    _upload(api, 3)
     site = github.files[GITHUB_REPO]
-    assert set(site) == {"public/newsletters/issue-3.pdf", "src/data/currentNewsletter.json"}
-    assert json.loads(site["src/data/currentNewsletter.json"])["issue"] == 3
-    assert [c["repo"] for c in github.commits] == [NEWSLETTER_REPO, GITHUB_REPO]
+    assert site[_pdf(1)] == PDF + b"1" and site[_pdf(2)] == PDF + b"2"
 
 
-def test_uploading_an_older_issue_keeps_the_current_one_on_the_site(api, github):
+def test_uploading_an_older_issue_slots_it_in_by_number(api, github):
     _seed_newsletters(github, [5])
     _upload(api, 4)
-    site = github.files[GITHUB_REPO]
-    assert json.loads(site["src/data/currentNewsletter.json"])["issue"] == 5
-    # The current PDF is re-fetched from the newsletter repo, not the upload.
-    assert site["public/newsletters/issue-5.pdf"] == PDF + b"5"
+    assert [n["issue"] for n in _stored(github)] == [5, 4]
+    assert github.files[GITHUB_REPO][_pdf(5)] == PDF + b"5"
+
+
+def test_the_first_ever_issue_can_be_uploaded(api, github):
+    github.files[GITHUB_REPO] = {NEWSLETTER_JSON_PATH: b"[]"}
+    assert _upload(api, 1).status_code == 200
+    assert [n["issue"] for n in _stored(github)] == [1]
+
+
+def test_non_ascii_titles_are_stored_as_written(api, github):
+    _seed_newsletters(github, [1])
+    _upload(api, 2, title="Café crème — Ōtautahi")
+    raw = github.files[GITHUB_REPO][NEWSLETTER_JSON_PATH].decode("utf-8")
+    assert "Café crème — Ōtautahi" in raw  # not \u-escaped
+    assert _stored(github)[0]["title"] == "Café crème — Ōtautahi"
 
 
 def test_upload_rejects_duplicates_and_non_pdfs(api, github):
@@ -109,16 +162,22 @@ def test_upload_needs_every_field(api, github):
     assert res.status_code == 422
 
 
-def test_edit_metadata_only_and_replace_pdf(api, github):
+def test_edit_metadata_only_leaves_the_pdfs_alone(api, github):
     _seed_newsletters(github, [1, 2])
     assert api.put("/newsletters/1", headers=STAFF, data={"title": "Renamed"}).json()["status"] == "success"
     stored = {n["issue"]: n for n in _stored(github)}
     assert stored[1]["title"] == "Renamed" and stored[2]["title"] == "Issue 2"
+    assert github.commits[-1]["paths"] == [NEWSLETTER_JSON_PATH]
 
-    api.put("/newsletters/2", headers=STAFF, data={"cover_color": "#000"},
+
+def test_edit_can_replace_the_pdf(api, github):
+    _seed_newsletters(github, [1, 2])
+    api.put("/newsletters/1", headers=STAFF, data={"cover_color": "#000"},
             files={"file": ("new.pdf", b"%PDF new", "application/pdf")})
-    assert github.files[NEWSLETTER_REPO]["317_newsletter/public/newsletters/issue-2.pdf"] == b"%PDF new"
-    assert github.files[GITHUB_REPO]["public/newsletters/issue-2.pdf"] == b"%PDF new"
+    site = github.files[GITHUB_REPO]
+    assert site[_pdf(1)] == b"%PDF new" and site[_pdf(2)] == PDF + b"2"
+    assert {n["issue"]: n for n in _stored(github)}[1]["coverColor"] == "#000"
+    assert len(github.commits) == 1
 
 
 def test_edit_errors(api, github):
@@ -126,28 +185,25 @@ def test_edit_errors(api, github):
     assert api.put("/newsletters/9", headers=STAFF, data={"title": "x"}).status_code == 404
     res = api.put("/newsletters/1", headers=STAFF, files={"file": ("x.png", b"png", "image/png")})
     assert res.status_code == 400
+    assert github.commits == []
 
 
-def test_delete_current_promotes_the_next(api, github):
+def test_delete_removes_only_that_issue(api, github):
     _seed_newsletters(github, [1, 2])
     assert api.delete("/newsletters/2", headers=STAFF).status_code == 200
     assert [n["issue"] for n in _stored(github)] == [1]
-    assert "317_newsletter/public/newsletters/issue-2.pdf" not in github.files[NEWSLETTER_REPO]
-    assert json.loads(github.files[GITHUB_REPO]["src/data/currentNewsletter.json"])["issue"] == 1
+    site = github.files[GITHUB_REPO]
+    assert _pdf(2) not in site and site[_pdf(1)] == PDF + b"1"
+    assert github.commits[0]["deleted"] == [_pdf(2)]
     assert api.delete("/newsletters/2", headers=STAFF).status_code == 404
 
 
-def test_deleting_the_last_issue_leaves_the_website_alone(api, github):
+def test_deleting_the_last_issue_leaves_an_empty_list(api, github):
+    # The website shows "first issue on its way" for an empty list, so this is
+    # a valid state rather than something to refuse.
     _seed_newsletters(github, [1])
-    api.delete("/newsletters/1", headers=STAFF)
-    assert [c["repo"] for c in github.commits] == [NEWSLETTER_REPO]
-
-
-def test_missing_current_pdf_is_a_clear_error(api, github):
-    _seed_newsletters(github, [5])
-    del github.files[NEWSLETTER_REPO]["317_newsletter/public/newsletters/issue-5.pdf"]
-    res = _upload(api, 4)
-    assert res.status_code == 500 and "issue-5.pdf" in res.json()["detail"]
+    assert api.delete("/newsletters/1", headers=STAFF).status_code == 200
+    assert _stored(github) == []
 
 
 @pytest.mark.parametrize("step", ["ref", "base", "blob", "tree", "commit", "update_ref"])
@@ -157,6 +213,17 @@ def test_any_failed_github_step_is_reported(api, github, step):
     res = api.put("/newsletters/1", headers=STAFF, data={"title": "x"})
     assert res.status_code == 500
     assert github.commits == []
+    assert _stored(github)[0]["title"] == "Issue 1"
+
+
+@pytest.mark.parametrize("method,path", [("get", "/newsletters"), ("delete", "/newsletters/1")])
+def test_github_timing_out_is_a_clear_502_not_a_crash(api, http, method, path):
+    def handler(request):
+        raise httpx.ReadTimeout("GitHub too slow", request=request)
+
+    http.handler = handler
+    res = getattr(api, method)(path, headers=STAFF)
+    assert res.status_code == 502 and "GitHub did not answer" in res.json()["detail"]
 
 
 # ── programme ─────────────────────────────────────────────────────────────────

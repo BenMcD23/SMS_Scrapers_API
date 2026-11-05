@@ -195,8 +195,8 @@ def test_an_oversized_newsletter_upload_is_refused_before_anything_is_committed(
 def test_a_newsletter_at_the_cap_is_accepted(api, github):
     import json
 
-    from core.config import NEWSLETTER_JSON_PATH, NEWSLETTER_REPO
+    from core.config import GITHUB_REPO, NEWSLETTER_JSON_PATH
     from routers.newsletters import MAX_PDF_BYTES
 
-    github.files[NEWSLETTER_REPO] = {NEWSLETTER_JSON_PATH: json.dumps([]).encode()}
+    github.files[GITHUB_REPO] = {NEWSLETTER_JSON_PATH: json.dumps([]).encode()}
     assert _upload(api, "/upload-newsletter", b"x" * MAX_PDF_BYTES).status_code == 200

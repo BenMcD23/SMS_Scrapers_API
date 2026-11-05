@@ -1,4 +1,7 @@
-"""Newsletter management — PDFs and metadata live in the newsletter repo on GitHub."""
+"""Newsletter management. Every issue lives in the cadet website repo: the list
+in src/data/newsletters.json and each PDF in public/newsletters/. The website
+shows the highest issue as current and the rest as back issues, so one commit
+per change is all it takes."""
 
 import base64
 import json
@@ -6,22 +9,11 @@ import json
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from core.config import (
-    GITHUB_BRANCH,
-    GITHUB_REPO,
-    NEWSLETTER_BRANCH,
-    NEWSLETTER_JSON_PATH,
-    NEWSLETTER_REPO,
-)
+from core.config import GITHUB_BRANCH, GITHUB_REPO, NEWSLETTER_JSON_PATH
 from core.github import commit_files_to_github, github_headers
 from core.security import require_staff
 
 router = APIRouter()
-
-# Where the current issue is mirrored on the main cadet website repo so the
-# /newsletter page can embed it. Website public/ is served at the site root.
-WEBSITE_CURRENT_JSON_PATH = "src/data/currentNewsletter.json"
-
 
 MAX_PDF_BYTES = 25 * 1024 * 1024
 
@@ -40,90 +32,23 @@ async def _read_pdf(file: UploadFile) -> bytes:
 
 
 def _newsletter_pdf_path(issue: int) -> str:
-    return f"317_newsletter/public/newsletters/issue-{issue}.pdf"
-
-
-def _website_pdf_path(issue: int) -> str:
+    """Repo path of an issue's PDF; the website serves public/ at its root."""
     return f"public/newsletters/issue-{issue}.pdf"
 
 
-def current_newsletter(newsletters: list[dict]) -> dict | None:
-    """The homepage/current issue = highest issue number. None if list is empty."""
-    if not newsletters:
-        return None
-    return max(newsletters, key=lambda n: n.get("issue", 0))
-
-
-async def fetch_newsletter_pdf(client: httpx.AsyncClient, issue: int) -> bytes:
-    """Download an issue's PDF bytes from the newsletter repo (raw, size-independent)."""
-    url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{_newsletter_pdf_path(issue)}"
-    resp = await client.get(
-        url,
-        headers={**github_headers(), "Accept": "application/vnd.github.raw"},
-        params={"ref": NEWSLETTER_BRANCH},
-    )
-    if resp.status_code != 200 or resp.content[:4] != b"%PDF":
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not fetch issue-{issue}.pdf from {NEWSLETTER_REPO}@{NEWSLETTER_BRANCH}",
-        )
-    return resp.content
-
-
-async def list_old_website_pdfs(client: httpx.AsyncClient, keep_issue: int) -> list[str]:
-    """Repo paths of newsletter PDFs on the website other than the current issue."""
-    keep = f"issue-{keep_issue}.pdf"
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/public/newsletters"
-    resp = await client.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
-    if resp.status_code != 200 or not isinstance(resp.json(), list):
-        return []
-    return [
-        f"public/newsletters/{f['name']}"
-        for f in resp.json()
-        if f.get("name", "").endswith(".pdf") and f["name"] != keep
-    ]
-
-
-async def sync_current_to_website(
-    client: httpx.AsyncClient,
-    current: dict,
-    pdf_bytes: bytes | None = None,
-):
-    """Mirror the current issue (metadata + PDF) into the cadet website repo.
-
-    `pdf_bytes` is passed through when the caller already holds them (the common
-    case: the issue being uploaded/edited IS the current one); otherwise the PDF
-    is fetched from the newsletter repo. Older newsletter PDFs on the website are
-    pruned so only the current issue is kept.
-    """
-    issue = current["issue"]
-    if pdf_bytes is None:
-        pdf_bytes = await fetch_newsletter_pdf(client, issue)
-
-    json_bytes = (json.dumps(current, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    old_pdfs = await list_old_website_pdfs(client, keep_issue=issue)
-
-    await commit_files_to_github(
-        client,
-        GITHUB_REPO,
-        GITHUB_BRANCH,
-        f"Sync current newsletter (issue-{issue}) to website",
-        files=[
-            {"path": WEBSITE_CURRENT_JSON_PATH, "content": json_bytes},
-            {"path": _website_pdf_path(issue), "content": pdf_bytes},
-        ],
-        delete_paths=old_pdfs,
-    )
-
-
 async def fetch_newsletters_json(client: httpx.AsyncClient) -> list[dict]:
-    url = f"https://api.github.com/repos/{NEWSLETTER_REPO}/contents/{NEWSLETTER_JSON_PATH}"
-    resp = await client.get(url, headers=github_headers(), params={"ref": NEWSLETTER_BRANCH})
+    """Read the issue list from the website repo. Every endpoint starts here,
+    so GitHub not answering is turned into a clear 502 rather than a crash."""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{NEWSLETTER_JSON_PATH}"
+    try:
+        resp = await client.get(url, headers=github_headers(), params={"ref": GITHUB_BRANCH})
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub did not answer ({type(exc).__name__}). Try again.")
     if resp.status_code != 200:
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Could not fetch {NEWSLETTER_JSON_PATH} from {NEWSLETTER_REPO}@{NEWSLETTER_BRANCH} "
+                f"Could not fetch {NEWSLETTER_JSON_PATH} from {GITHUB_REPO}@{GITHUB_BRANCH} "
                 f"(GitHub returned {resp.status_code}). Make sure the file is pushed to that branch."
             ),
         )
@@ -133,8 +58,8 @@ async def fetch_newsletters_json(client: httpx.AsyncClient) -> list[dict]:
 def newsletters_json_bytes(newsletters: list[dict]) -> bytes:
     """Serialise newsletters sorted by issue (descending) to JSON bytes.
 
-    The first entry is the homepage 'current' issue, so the highest issue
-    number is always written first.
+    The website sorts again itself, but newest first keeps the file readable
+    and its diffs small.
     """
     ordered = sorted(newsletters, key=lambda n: n.get("issue", 0), reverse=True)
     return (json.dumps(ordered, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
@@ -185,19 +110,13 @@ async def upload_newsletter(
 
         await commit_files_to_github(
             client,
-            NEWSLETTER_REPO,
-            NEWSLETTER_BRANCH,
+            GITHUB_REPO,
+            GITHUB_BRANCH,
             f"Add newsletter {newsletter_id}: {title}",
             files=[
                 {"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)},
                 {"path": _newsletter_pdf_path(issue), "content": pdf_bytes},
             ],
-        )
-
-        # Mirror the current issue onto the website (pass bytes if we just uploaded it)
-        current = current_newsletter(newsletters)
-        await sync_current_to_website(
-            client, current, pdf_bytes if current["issue"] == issue else None
         )
 
     return {"status": "success", "id": newsletter_id, "filename": f"issue-{issue}.pdf"}
@@ -232,26 +151,17 @@ async def update_newsletter(
         files = [{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(newsletters)}]
 
         # Optionally replace the PDF (overwrites issue-{issue}.pdf)
-        new_pdf_bytes = None
         if file is not None and file.filename:
             if file.content_type != "application/pdf":
                 raise HTTPException(status_code=400, detail="File must be a PDF")
-            new_pdf_bytes = await _read_pdf(file)
-            files.append({"path": _newsletter_pdf_path(issue), "content": new_pdf_bytes})
+            files.append({"path": _newsletter_pdf_path(issue), "content": await _read_pdf(file)})
 
         await commit_files_to_github(
             client,
-            NEWSLETTER_REPO,
-            NEWSLETTER_BRANCH,
+            GITHUB_REPO,
+            GITHUB_BRANCH,
             f"Update newsletter issue-{issue}",
             files=files,
-        )
-
-        # Re-mirror the current issue to the website. Only reuse the new PDF
-        # bytes if the issue we just edited is the current one.
-        current = current_newsletter(newsletters)
-        await sync_current_to_website(
-            client, current, new_pdf_bytes if current["issue"] == issue else None
         )
 
     return {"status": "success", "id": f"issue-{issue}"}
@@ -268,18 +178,11 @@ async def delete_newsletter(issue: int, idinfo: dict = Depends(require_staff)):
 
         await commit_files_to_github(
             client,
-            NEWSLETTER_REPO,
-            NEWSLETTER_BRANCH,
+            GITHUB_REPO,
+            GITHUB_BRANCH,
             f"Delete newsletter issue-{issue}",
             files=[{"path": NEWSLETTER_JSON_PATH, "content": newsletters_json_bytes(remaining)}],
             delete_paths=[_newsletter_pdf_path(issue)],
         )
-
-        # Re-mirror the new current issue to the website (fetches its PDF).
-        # ponytail: if the last issue was deleted there's no current issue; we
-        # leave the website's stale copy in place rather than blanking the page.
-        current = current_newsletter(remaining)
-        if current is not None:
-            await sync_current_to_website(client, current)
 
     return {"status": "success", "id": f"issue-{issue}"}
