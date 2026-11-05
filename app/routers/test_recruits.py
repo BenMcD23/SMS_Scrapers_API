@@ -425,3 +425,78 @@ def test_link_tokens_are_kept_out_of_the_request_log():
     assert _loggable("/recruit-form/s3cr3t-token/submit") == "/recruit-form/…/submit"
     assert _loggable("/recruit-form/s3cr3t-token") == "/recruit-form/…"
     assert _loggable("/recruits/4/pdf") == "/recruits/4/pdf"
+
+
+# ── the parent's confirmation email ──────────────────────────────────────────
+
+def test_submitting_emails_the_parent_the_signed_3822a_with_fs_gill_to_contact(api, outbox, recruit):
+    _, token = recruit
+    assert _submit(api, token).status_code == 200
+    assert len(outbox) == 1
+    mail = outbox[0]
+    assert mail["to"] == "jane@example.com"
+    assert "Alex" in mail["subject"]
+    # No medical conditions, so no health declaration to send.
+    assert [name for name, _, _ in mail["attachments"]] == ["3822A Alex Smith.pdf"]
+    assert all(data.startswith(b"%PDF") and mime == "application/pdf" for _, data, mime in mail["attachments"])
+    assert mail["reply_to"] == "joseph.gill100@rafac.mod.gov.uk"
+    assert "FS Gill" in mail["html"] and "joseph.gill100@rafac.mod.gov.uk" in mail["html"]
+    assert "do not reply" not in mail["html"]   # replies reach FS Gill
+
+
+def test_the_confirmation_carries_the_3822h_when_there_is_a_health_declaration(api, outbox, recruit):
+    _, token = recruit
+    _submit(api, token, complete_form(medical={"has": True, "diet": ["halal"], "ehcPlan": False}))
+    names = [name for name, _, _ in outbox[0]["attachments"]]
+    assert names == ["3822A Alex Smith.pdf", "3822H Alex Smith.pdf"]
+    assert "3822A and RAFAC 3822H" in outbox[0]["html"]
+
+
+def test_the_confirmation_also_goes_to_a_different_email_the_parent_gave_on_the_form(api, outbox, recruit):
+    # The link went to the address staff typed; the parent may prefer another.
+    _, token = recruit
+    _submit(api, token, complete_form(nok={**COMPLETE["nok"], "email": "Jane.Work@example.org"}))
+    assert outbox[0]["to"] == "Jane.Work@example.org, jane@example.com"
+
+
+def test_the_same_address_in_a_different_case_is_emailed_once(api, outbox, recruit):
+    _, token = recruit
+    _submit(api, token, complete_form(nok={**COMPLETE["nok"], "email": "JANE@example.com"}))
+    assert outbox[0]["to"] == "JANE@example.com"
+
+
+def test_a_refused_submission_sends_no_email(api, outbox, recruit):
+    _, token = recruit
+    assert _submit(api, token, complete_form(signer={"forename": "Jane", "surname": ""})).status_code == 422
+    assert api.post(f"/recruit-form/{token}/submit", json={"data": COMPLETE}).status_code == 422
+    assert outbox == []
+
+
+def test_a_pdf_failure_still_keeps_the_submission_and_sends_nothing_broken(api, db, outbox, recruit, monkeypatch):
+    # The forms are saved before the email; staff still have them on SMS.
+    _, token = recruit
+    def boom(*a, **kw):
+        raise RuntimeError("pdf broke")
+    monkeypatch.setattr(recruits, "build_pdf", boom)
+    assert _submit(api, token).status_code == 200
+    assert db.query(RecruitApplication).one().submitted_at is not None
+    assert outbox == []
+
+
+def test_the_confirmation_escapes_the_cadets_name(api, outbox):
+    body = api.post("/recruits", json={**NEW, "cadetFirstName": "<b>Zoë</b>"}, headers=STAFF).json()
+    _submit(api, body["link"].rsplit("/", 1)[1])
+    assert "&lt;b&gt;Zoë&lt;/b&gt;" in outbox[0]["html"] and "<b>Zoë</b>" not in outbox[0]["html"]
+
+
+def test_a_cadet_who_signs_the_health_declaration_has_their_signature_in_the_emailed_3822h(api, outbox, recruit, monkeypatch):
+    _, token = recruit
+    calls = []
+    real = recruits.build_pdf
+    monkeypatch.setattr(recruits, "build_pdf", lambda *a, **kw: calls.append(a) or real(*a, **kw))
+    sixteen = f"{london_now().year - 17}-01-01"
+    data = complete_form(cadet={**COMPLETE["cadet"], "dob": sixteen},
+                         medical={"has": True, "diet": ["vegan"], "ehcPlan": False})
+    assert _submit(api, token, data, cadetSignature=_sig()).status_code == 200
+    h = next(a for a in calls if a[1] == "3822H")
+    assert h[3].startswith(b"\x89PNG")

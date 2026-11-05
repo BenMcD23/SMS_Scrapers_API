@@ -492,3 +492,31 @@ def activity_log_complete_email_html(cadet_name: str, section: str, level: str, 
       {FOOTER}
     </div>
     """
+
+
+def recruit_form_confirmation_html(cadet_first_name: str, forms: list[str],
+                                   contact_name: str, contact_email: str) -> str:
+    """To the parent once they submit a recruit's joining form, carrying a copy
+    of what they signed (the 3822A, and the 3822H when there is one).
+
+    Drops the shared FOOTER: it goes out with the recruiting contact as
+    Reply-To, so a parent who spots a mistake can just reply.
+    """
+    attached = " and ".join(f"RAFAC {f}" for f in forms)
+    name = _esc(cadet_first_name)
+    contact = f'{_esc(contact_name)} at <a href="mailto:{_esc(contact_email)}">{_esc(contact_email)}</a>'
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Joining form received</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>Hello,</p>
+      <p>Thank you for completing {name}'s joining form for 317 Squadron RAF Air Cadets.
+         It has reached the squadron.</p>
+      <p>A copy of the signed {attached} is attached for your records. Staff will add
+         {name} to the Cadet Forces system and set up their Cadet Portal account.</p>
+      <p>If anything on the forms is wrong, or you have any problems, please contact {contact}.
+         If anything changes later, especially anything medical, let the squadron know.</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">
+        Replies to this email go to {_esc(contact_name)}.</p>
+    </div>
+    """
