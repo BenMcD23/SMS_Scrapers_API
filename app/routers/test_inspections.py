@@ -40,7 +40,9 @@ def _call(api, method, path, headers):
 
 
 # What the inspection sheet itself needs: SNCOs run inspections.
-@pytest.mark.parametrize("method,path", [("get", "/absences"), ("post", "/inspections")])
+@pytest.mark.parametrize("method,path", [
+    ("get", "/absences"), ("post", "/inspections"), ("get", "/inspections/comments"),
+])
 def test_staff_and_snco_only(api, method, path):
     assert _call(api, method, path, {}).status_code == 401
     for persona in ("nco", "cadet"):
@@ -260,6 +262,38 @@ def test_history_tolerates_legacy_sheets(api, db, squadron):
     db.commit()
     rows = {r["cin"]: r for r in api.get("/inspections/history", headers=STAFF).json()["cadets"]}
     assert rows[1]["timeline"][0]["uniform"] == "blues"
+
+
+# ── comment quick-pick ────────────────────────────────────────────────────────
+
+def _c(region, text, type="fault"):
+    return {"region": region, "type": type, "text": text}
+
+
+def test_comment_suggestions_merge_spellings_and_rank_by_use(api, db, squadron):
+    _submit(api, [
+        {"cin": 1, "comments": [_c("Shoes", "Uppers"), _c("Trousers", "Press")]},
+        {"cin": 3, "comments": [_c("Shoes", "uppers "), _c("Shoes", "Uppers", "positive")]},
+    ])
+    _submit(api, [{"cin": 4, "comments": [_c("Shoes", "Uppers"), _c("Hair / Face", "Wispy hair ✂")]}],
+            date="2026-03-11")
+    got = api.get("/inspections/comments", headers=SNCO).json()
+    assert got[0] == {"region": "Shoes", "type": "fault", "text": "Uppers", "count": 3}
+    # The same words as praise, or on another region, stay their own entry.
+    assert {"region": "Shoes", "type": "positive", "text": "Uppers", "count": 1} in got
+    assert {"region": "Hair / Face", "type": "fault", "text": "Wispy hair ✂", "count": 1} in got
+    assert len(got) == 4
+
+
+def test_comment_suggestions_tolerate_empty_and_legacy_sheets(api, db):
+    assert api.get("/inspections/comments", headers=STAFF).json() == []
+    db.add(InspectionSheet(date=datetime(2025, 1, 1), submitted_at=datetime(2025, 1, 1), data={
+        "marks": [{"cin": 1}, {"cin": 2, "comments": None},
+                  {"cin": 3, "comments": [_c("Shoes", "  "), {"text": "no region"}, _c("Shoes", None)]}],
+    }))
+    db.add(InspectionSheet(date=datetime(2025, 1, 2), submitted_at=datetime(2025, 1, 2), data={}))
+    db.commit()
+    assert api.get("/inspections/comments", headers=STAFF).json() == []
 
 
 # ── sheets ────────────────────────────────────────────────────────────────────

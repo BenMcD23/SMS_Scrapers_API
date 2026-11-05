@@ -214,6 +214,37 @@ def submit_inspection(
     return {"id": sheet.id, "awol": incoming_awol, "flight_scores": flight_scores}
 
 
+@router.get("/inspections/comments")
+def comment_suggestions(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_snco),
+):
+    """Every comment ever left on a submitted sheet, for the marking sheet's
+    quick-pick list: one entry per region, type and text (case and surrounding
+    spaces ignored, the most used spelling shown), most used first.
+
+    Read from the sheets rather than kept in a table of its own, so every
+    comment already given is in it and each new one joins when its sheet is
+    submitted. No cadet is named, so SNCOs marking the sheet can have it."""
+    # ponytail: scans every sheet per call; a few sheets a week, fine for years.
+    counts: dict[tuple, dict[str, int]] = {}
+    for (data,) in db.query(InspectionSheet.data).all():
+        for m in (data or {}).get("marks", []):
+            for c in m.get("comments") or []:
+                text = (c.get("text") or "").strip()
+                if not text or not c.get("region"):
+                    continue
+                spellings = counts.setdefault((c["region"], c.get("type"), text.casefold()), {})
+                spellings[text] = spellings.get(text, 0) + 1
+    out = [
+        {"region": region, "type": kind,
+         "text": max(spellings, key=spellings.get), "count": sum(spellings.values())}
+        for (region, kind, _), spellings in counts.items()
+    ]
+    out.sort(key=lambda s: (-s["count"], s["text"].casefold()))
+    return out
+
+
 # ── History & trends ──────────────────────────────────────────────────────────
 
 def _ordinal(n: int) -> str:
