@@ -5,6 +5,7 @@ AI analysis of recurring uniform faults."""
 
 import io
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -216,6 +217,9 @@ def submit_inspection(
 
 @router.get("/inspections/comments")
 def comment_suggestions(
+    # Only that order of dress's comments: an MTP night shouldn't offer Blues
+    # faults like "Jumper fluffy". Sheets from before MTP count as Blues.
+    uniform: Literal["blues", "mtp"] = "blues",
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_snco),
 ):
@@ -229,7 +233,10 @@ def comment_suggestions(
     # ponytail: scans every sheet per call; a few sheets a week, fine for years.
     counts: dict[tuple, dict[str, int]] = {}
     for (data,) in db.query(InspectionSheet.data).all():
-        for m in (data or {}).get("marks", []):
+        data = data or {}
+        if data.get("uniform", "blues") != uniform:
+            continue
+        for m in data.get("marks", []):
             for c in m.get("comments") or []:
                 text = (c.get("text") or "").strip()
                 if not text or not c.get("region"):
