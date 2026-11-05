@@ -122,4 +122,12 @@ validation.
   main: GitHub runs no `pull_request` workflows for it. Removing the label,
   merging or closing tears it down. Never add the label unasked: at most
   three stacks run at once.
+- Whenever you label a pull request `preview`, or are asked about one, give
+  the links in your reply, worked out from the branch name: lower-case it,
+  turn each run of characters other than `a-z0-9` into `-`, trim `-` from
+  both ends, cut it to 40 characters and trim a trailing `-` (the same slug
+  as `preview-image.yml`). Then:
+  `https://pv-<slug>-sms.tail02e471.ts.net` (the SMS site) and
+  `https://pv-<slug>-portal.tail02e471.ts.net` (the cadet portal). They are
+  on the tailnet and come up a few minutes after the image builds.
 - Before pushing: `ruff check app && pytest`.
