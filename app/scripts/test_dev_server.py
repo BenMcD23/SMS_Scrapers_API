@@ -352,7 +352,6 @@ UNSEEDED_COLUMNS = {
     ("Flying_Paperwork", "updated_at"), ("Flying_Paperwork", "updated_by"),
     ("Recruit_Applications", "cadet_signature"),
     ("Staff", "address"),
-    ("Stores_Item_Issuances", "user_id"),
     ("Stores_Order_Items", "ready_to_collect"),
     ("Stores_Orders", "user_id"),
 }

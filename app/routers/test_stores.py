@@ -12,7 +12,7 @@ import openpyxl
 import pytest
 
 import routers.stores as stores
-from core import stock_events
+from core import given_events, stock_events
 from database.models import (
     Cadet,
     LogsForm,
@@ -51,6 +51,10 @@ STAFF_ONLY = [
     ("get", "/stores/issuances/user/1", None),
     ("post", "/stores/issuances/user/1", {}),
     ("delete", "/stores/issuances/1", None),
+    ("post", "/stores/issuances/1/undo", None),
+    ("get", "/stores/issuances/1/history", None),
+    ("get", "/stores/issuances/user/1/history", None),
+    ("get", "/stores/issuances/recent", None),
     ("get", "/stores/logs-forms", None),
     ("post", "/stores/logs-forms/entries", {}),
     ("delete", "/stores/logs-forms/entries/1", None),
@@ -1023,9 +1027,10 @@ def test_undo_leaves_the_issuance_alone_when_a_later_give_has_moved_it_on(api, d
 
     assert _undo(api, order, first).status_code == 200
     assert _issuances(db)["Beret"] == (datetime(2026, 10, 8, 18), "56")
-    # And the later one can still be undone back to the first give's record.
+    # Undoing the later one too leaves no give standing. Before the history it
+    # fell back to the first give's record, though that give had been undone.
     assert _undo(api, order, second).status_code == 200
-    assert _issuances(db)["Beret"] == (datetime(2026, 10, 1, 18), "55")
+    assert "Beret" not in _issuances(db)
 
 
 def test_an_item_given_before_history_existed_can_still_be_undone(api, db):
@@ -1119,3 +1124,214 @@ def test_the_give_event_carries_the_same_instant_as_the_stamp(api, db):
     given = _item_of(api, order["id"], item["id"])
     assert given["givenAt"] == "2026-10-01T18:00:00"
     assert given["givenEvents"][0]["timestamp"] == given["givenAt"]
+
+
+# ── issuance history and undoing the last give ───────────────────────────────
+
+def _hand_over(api, cin, category, size, when, who=None):
+    row = {"itemCategory": category, "sizeGiven": size, "lastGiven": when}
+    body = {"items": [row], **({"givenBy": who} if who else {})}
+    res = api.post(f"/stores/issuances/{cin}", json=body, headers=STAFF)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _history(api, cin=1001):
+    res = api.get(f"/stores/issuances/{cin}/history", headers=STAFF)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def _undo_last(api, issuance_id, **kw):
+    return api.post(f"/stores/issuances/{issuance_id}/undo", headers=STAFF, **kw)
+
+
+def test_a_give_no_longer_overwrites_the_one_before(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01", who="QM A")
+    _hand_over(api, 1001, "Beret", "55", "2026-10-01", who="QM B")
+    assert _issuances(db)["Beret"] == (datetime(2026, 10, 1), "55")
+    history = _history(api)
+    assert [(h["sizeGiven"], h["recordedBy"], h["current"]) for h in history] == [
+        ("55", "QM B", True), ("54", "QM A", False)]
+
+
+def test_undoing_the_last_give_steps_back_to_the_one_before_and_keeps_both(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
+    issued = _hand_over(api, 1001, "Beret", "55", "2026-10-01")
+
+    res = _undo_last(api, issued[0]["id"])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["issuance"]["sizeGiven"] == "54" and body["issuance"]["lastGiven"] == "2025-03-01T00:00:00"
+    assert body["undone"]["sizeGiven"] == "55" and body["undone"]["undoneBy"] == "Sam Staff"
+    assert _issuances(db)["Beret"] == (datetime(2025, 3, 1), "54")
+    history = _history(api)
+    assert [(h["sizeGiven"], h["undoneAt"] is not None, h["current"]) for h in history] == [
+        ("55", True, False), ("54", False, True)]
+
+
+def test_undoing_every_give_removes_the_record_but_not_the_history(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
+    issued = _hand_over(api, 1001, "Beret", "55", "2026-10-01")
+    rid = issued[0]["id"]
+    assert _undo_last(api, rid).status_code == 200
+    res = _undo_last(api, rid)
+    assert res.status_code == 200 and res.json()["issuance"] is None
+    assert "Beret" not in _issuances(db)
+    assert len(_history(api)) == 2 and all(h["undoneAt"] for h in _history(api))
+    # The record has gone, so there's nothing left to undo through it.
+    assert _undo_last(api, rid).status_code == 404
+
+
+def test_a_record_from_before_the_history_can_be_undone_and_is_kept(api, db):
+    _cadet(db)
+    db.add(StoresItemIssuance(cadet_id=1001, item_category="Tie", last_given=datetime(2024, 9, 1), size_given=None))
+    db.commit()
+    rid = db.query(StoresItemIssuance).one().id
+    res = _undo_last(api, rid)
+    assert res.status_code == 200 and res.json()["issuance"] is None
+    [kept] = _history(api)
+    assert kept["itemCategory"] == "Tie" and kept["recordedBy"] is None and kept["undoneAt"]
+
+
+def test_a_correction_to_an_earlier_date_takes_effect(api, db):
+    # The newest *recorded* give wins, not the newest date, so fixing a typo'd
+    # date isn't ignored because the wrong one was later.
+    _cadet(db)
+    _hand_over(api, 1001, "Jumper", "M", "2026-12-01")
+    _hand_over(api, 1001, "Jumper", "M", "2026-10-01")
+    assert _issuances(db)["Jumper"] == (datetime(2026, 10, 1), "M")
+
+
+def test_a_give_with_no_name_is_credited_to_the_signed_in_person(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Belt", None, "2026-10-01")
+    assert _history(api)[0]["recordedBy"] == "Sam Staff"
+
+
+def test_undoing_the_last_give_from_the_record_puts_the_order_item_back_to_waiting(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item, size="55", who="QM Smith")
+    rid = db.query(StoresItemIssuance).one().id
+
+    assert _undo_last(api, rid).status_code == 200
+    back = _item_of(api, order["id"], item["id"])
+    assert back["givenAt"] is None
+    assert [e["action"] for e in back["givenEvents"]] == ["given", "undone"]
+    assert "Beret" not in _issuances(db)
+
+
+def test_undoing_from_the_record_refuses_on_a_completed_order_and_changes_nothing(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item)
+    api.patch(f"/stores/orders/{order['id']}", json={"completed": True}, headers=STAFF)
+    rid = db.query(StoresItemIssuance).one().id
+
+    res = _undo_last(api, rid)
+    assert res.status_code == 409 and "Reopen" in res.json()["detail"]
+    assert _item_of(api, order["id"], item["id"])["givenAt"] is not None
+    assert "Beret" in _issuances(db)
+    assert _history(api)[0]["undoneAt"] is None
+
+
+def test_undoing_an_order_give_marks_its_history_entry_undone(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    _give(api, 1001, item)
+    _undo(api, order, item, json={"by": "QM Jones"})
+    [entry] = _history(api)
+    assert entry["orderItemId"] == item["id"] and entry["undoneBy"] == "QM Jones"
+
+
+# A give made after given_events existed but before this history: the order
+# item's log is the only thing that says what it replaced.
+def test_undoing_an_order_give_from_before_the_history_still_restores_the_record(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]
+    row = db.get(StoresOrderItem, int(item["id"]))
+    row.given_at, row.given_by = datetime(2026, 10, 1, 18), "Old QM"
+    row.given_events = given_events.dump([given_events.new_event(
+        given_events.GIVEN, "Old QM", timestamp="2026-10-01T18:00:00", category="Beret",
+        lastGiven="2026-10-01T18:00:00", sizeGiven="55",
+        previous={"lastGiven": "2025-03-01T00:00:00", "sizeGiven": "54"})])
+    db.add(StoresItemIssuance(cadet_id=1001, item_category="Beret", last_given=datetime(2026, 10, 1, 18),
+                              size_given="55"))
+    db.commit()
+
+    assert _undo(api, order, item).status_code == 200
+    assert _issuances(db)["Beret"] == (datetime(2025, 3, 1), "54")
+    assert [(h["sizeGiven"], h["current"]) for h in _history(api)] == [("54", True), ("55", False)]
+
+
+def test_clearing_a_record_keeps_every_give_in_the_history(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
+    issued = _hand_over(api, 1001, "Beret", "55", "2026-10-01")
+    assert api.delete(f"/stores/issuances/{issued[0]['id']}", headers=STAFF).status_code == 204
+    assert "Beret" not in _issuances(db)
+    assert [h["undoneBy"] for h in _history(api)] == ["Sam Staff", "Sam Staff"]
+
+
+def test_issuance_history_needs_the_person_to_exist(api, db):
+    assert api.get("/stores/issuances/1001/history", headers=STAFF).status_code == 404
+    assert api.get("/stores/issuances/user/1/history", headers=STAFF).status_code == 404
+    assert _undo_last(api, 999).status_code == 404
+    _cadet(db)
+    assert _history(api) == []
+
+
+def test_adult_history_is_kept_separately_from_cadets(api, db):
+    _cadet(db)
+    user = User(google_id="g-1", email="adult@317atc.co.uk", first_name="Al", last_name="Adult")
+    db.add(user)
+    db.commit()
+    api.post(f"/stores/issuances/user/{user.id}", headers=STAFF, json={"items": [
+        {"itemCategory": "Tie", "lastGiven": "2026-01-01"}]})
+    _hand_over(api, 1001, "Tie", None, "2026-02-01")
+    adult = api.get(f"/stores/issuances/user/{user.id}/history", headers=STAFF).json()
+    assert len(adult) == 1 and adult[0]["current"] is True
+    assert len(_history(api)) == 1
+
+
+def test_recent_lists_gives_across_everyone_newest_first(api, db):
+    _cadet(db, first_name="Zoë", last_name="Ó Briain")
+    user = User(google_id="g-1", email="adult@317atc.co.uk")
+    db.add(user)
+    db.commit()
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
+    issued = _hand_over(api, 1001, "Beret", "55", "2026-10-01")
+    api.post(f"/stores/issuances/user/{user.id}", headers=STAFF, json={"items": [{"itemCategory": "Tie"}]})
+    _undo_last(api, issued[0]["id"])
+
+    recent = api.get("/stores/issuances/recent", headers=STAFF).json()
+    assert [(r["subjectName"], r["itemCategory"], r["sizeGiven"]) for r in recent] == [
+        ("adult@317atc.co.uk", "Tie", None), ("Zoë Ó Briain", "Beret", "55"), ("Zoë Ó Briain", "Beret", "54")]
+    assert [r["current"] for r in recent] == [True, False, True]
+    assert recent[0]["subjectType"] == "user" and recent[1]["cadetCin"] == 1001
+    assert len(api.get("/stores/issuances/recent?limit=1", headers=STAFF).json()) == 1
+
+
+def test_recent_flags_an_older_entry_current_even_when_it_is_off_the_page(api, db):
+    _cadet(db)
+    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
+    _hand_over(api, 1001, "Jumper", "M", "2025-03-01")
+    [only] = api.get("/stores/issuances/recent?limit=1", headers=STAFF).json()
+    assert only["itemCategory"] == "Jumper" and only["current"] is True
+
+
+@pytest.mark.parametrize("limit", [0, 501, "x"])
+def test_recent_rejects_a_bad_limit(api, limit):
+    assert api.get(f"/stores/issuances/recent?limit={limit}", headers=STAFF).status_code == 422
+
+
+def test_recent_is_empty_when_nothing_has_been_given(api):
+    assert api.get("/stores/issuances/recent", headers=STAFF).json() == []

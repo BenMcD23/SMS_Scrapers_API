@@ -501,6 +501,43 @@ def seed_stores_history(client, headers: dict, db, now: datetime | None = None) 
         # Commit per order: the next API call writes through its own
         # connection, and SQLite won't let it while this one holds the lock.
         db.commit()
+    seed_issuance_history(client, headers, db, now)
+
+
+def seed_issuance_history(client, headers: dict, db, now: datetime) -> None:
+    """Uniform history the Uniform tab and the stores History page can show: a
+    give made against an open order (linked to it), a give that was taken
+    back (undone, so the record steps back to the one before), and an adult's
+    own kit, which is recorded against their account rather than a CIN."""
+    from database.models import User
+
+    def post(path, body):
+        res = client.post(path, json=body, headers=headers)
+        assert res.status_code < 300, f"{path}: {res.status_code} {res.text}"
+        return res.json()
+
+    recent = (now - timedelta(days=7)).date().isoformat()
+    cin = FIRST_CIN + 32
+    order = post("/stores/orders", {"cadetCin": cin, "items": [{"itemType": "Beret", "size": "56"}]})
+    item = order["items"][0]
+    post(f"/stores/issuances/{cin}", {"givenBy": "Dev Owner", "items": [
+        {"itemType": "Beret", "sizeGiven": "56", "orderItemId": item["id"], "lastGiven": recent}]})
+
+    # FIRST_CIN + 4 already has a 2025 record from seed_stores; give them a
+    # bigger one by mistake and take it back, so both show in the history.
+    wrong = post(f"/stores/issuances/{FIRST_CIN + 4}", {"givenBy": "Dev Owner", "items": [
+        {"itemCategory": "Jumper", "sizeGiven": "XL", "lastGiven": recent}]})
+    post(f"/stores/issuances/{wrong[0]['id']}/undo", {})
+
+    adult = db.query(User).filter(User.google_id == "dev-seed-adult").first()
+    if not adult:
+        adult = User(google_id="dev-seed-adult", email="flt.lt.morgan@317atc.co.uk",
+                     first_name="Rhian", last_name="Morgan")
+        db.add(adult)
+        db.commit()
+    post(f"/stores/issuances/user/{adult.id}", {"givenBy": "Dev Owner", "items": [
+        {"itemCategory": "Tie", "lastGiven": "2025-09-04"},
+        {"itemCategory": "Beret", "sizeGiven": "57", "lastGiven": recent}]})
 
 
 INSPECTION_NIGHTS = 8

@@ -1250,6 +1250,29 @@ class StoresItemIssuance(Base):
     user  = relationship("User",  back_populates="item_issuances")
 
 
+class StoresIssuanceHistory(Base):
+    """Every time uniform was recorded as given, newest last — never edited or
+    deleted, only marked undone. StoresItemIssuance above is the "last issued"
+    summary for each category, worked out from the newest entry here that
+    hasn't been undone (core/issuance_history.py), so an undo steps back to the
+    give before it instead of losing it."""
+    __tablename__ = "Stores_Issuance_History"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=True, index=True)
+    user_id       = Column(Integer,    ForeignKey("Users.id",   ondelete="CASCADE"), nullable=True, index=True)
+    item_category = Column(Text,       nullable=False)
+    given_at      = Column(DateTime,   nullable=False)  # the date it was given (may be back-dated)
+    size_given    = Column(Text,       nullable=True)
+    recorded_at   = Column(DateTime,   nullable=False)  # when someone recorded it
+    recorded_by   = Column(Text,       nullable=True)   # null for records from before this history
+    # The order item it was handed out against, if any, so undoing that order
+    # item undoes this entry (and the reverse).
+    order_item_id = Column(Integer,    ForeignKey("Stores_Order_Items.id", ondelete="SET NULL"), nullable=True, index=True)
+    undone_at     = Column(DateTime,   nullable=True)
+    undone_by     = Column(Text,       nullable=True)
+
+
 # ─── Badge Orders ─────────────────────────────────────────────────────────────
 
 class BadgeOrder(Base):
