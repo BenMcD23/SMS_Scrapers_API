@@ -386,6 +386,24 @@ class InspectionSheet(Base):
     data         = Column(JSON,     nullable=False)
 
 
+class AssessmentDraft(Base):
+    """An assessment or inspection sheet someone is still filling in, one per
+    person per kind of sheet. The sheets otherwise lived only in the browser,
+    so a cleared cache, an iPhone home-screen app losing its storage or a
+    different phone lost the work. ``data`` is the page's own form state, kept
+    as it sends it and only read back by the same person. ``saved_at`` is the
+    page's clock when it saved, compared against the phone's own copy."""
+    __tablename__ = "Assessment_Drafts"
+    __table_args__ = (UniqueConstraint("owner", "kind", name="uq_assessment_draft_owner_kind"),)
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    owner      = Column(Text,     nullable=False)  # the assessor's email, lower-cased
+    kind       = Column(Text,     nullable=False)  # "inspection", "leadership", "radio", "space", "moi"
+    data       = Column(JSON,     nullable=False)
+    saved_at   = Column(Text,     nullable=True)
+    updated_at = Column(DateTime, nullable=False)
+
+
 class Event317(Base):
     __tablename__ = "317_Events"
 
