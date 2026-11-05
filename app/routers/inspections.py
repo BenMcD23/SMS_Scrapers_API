@@ -158,6 +158,11 @@ def submit_inspection(
     )
     for c in roster:
         flight_by_cin.setdefault(c.cin, c.flight)
+    # A mark keeps the flight the cadet was in when it was first recorded, so a
+    # cadet who has since moved flight or left still counts for that flight.
+    for cin, m in real.items():
+        if m.get("flight"):
+            flight_by_cin[cin] = m["flight"]
 
     # AWOL = absent with no scraped absence log for the date.
     awol: set[int] = set()
@@ -181,6 +186,8 @@ def submit_inspection(
         })
 
     marks = list(real.values()) + auto_marks
+    for m in marks:
+        m["flight"] = flight_by_cin.get(m["cin"])
     flight_scores = _flight_scores(marks, awol, flight_by_cin)
     data = {"marks": marks, "flight_scores": flight_scores, "uniform": body.uniform}
 
@@ -437,7 +444,9 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
     for m in marks:
         cin = m.get("cin")
         cadet = cadet_by_cin.get(cin)
-        flight = (cadet.flight if cadet else None) or "Unassigned"
+        # The flight stored on the mark (the one they were in that night) wins;
+        # sheets from before it was stored fall back to the cadet's flight now.
+        flight = m.get("flight") or (cadet.flight if cadet else None) or "Unassigned"
         faults, positives = _split_comments(m.get("comments") or [])
         fl = flights.setdefault(
             flight,
@@ -454,8 +463,10 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
                 fl["score_total"] += score
         fl["cadets"].append({
             "cin":        cin,
-            "first_name": cadet.first_name if cadet else "Unknown",
-            "last_name":  cadet.last_name if cadet else str(cin),
+            # A cadet removed since keeps their whole mark and still counts in
+            # the flight's figures; only their name is gone ("Cadet Left, <CIN>").
+            "first_name": cadet.first_name if cadet else str(cin),
+            "last_name":  cadet.last_name if cadet else "Cadet Left",
             "rank":       cadet.rank if cadet else None,
             "flight":     flight,
             "score":      score,
