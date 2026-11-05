@@ -32,6 +32,12 @@ UNIFORM_ITEM_TYPES: tuple[str, ...] = (
     "Belt",
 )
 
+# Held in stock but never ordered: polos aren't issued through orders, so they
+# stay out of UNIFORM_ITEM_TYPES (which the order forms and the cadet portal
+# list) and only the stores stock pages offer them.
+STOCK_ONLY_ITEM_TYPES: tuple[str, ...] = ("Polo",)
+STOCK_ITEM_TYPES: tuple[str, ...] = UNIFORM_ITEM_TYPES + STOCK_ONLY_ITEM_TYPES
+
 # Items issued without a size. Ties are the exception: they have a length
 # variant (Short/Standard) that stores treat as the size on the demand form.
 NO_SIZE_ITEMS: frozenset[str] = frozenset({"Tie", "Brassard", "Belt"})
@@ -89,6 +95,7 @@ UNIFORM_SIZES: dict[str, tuple[str, ...]] = {
     "Trousers": _TROUSERS,
     "Slacks": _SLACKS,
     "Skirt": _SKIRTS,
+    "Polo": ("XS", "S", "M", "L", "XL"),
     "Tie": TIE_VARIANTS,
 }
 
@@ -164,6 +171,7 @@ def reference_payload() -> dict:
     return {
         "uniform": {
             "itemTypes": list(UNIFORM_ITEM_TYPES),
+            "stockItemTypes": list(STOCK_ITEM_TYPES),
             "noSizeItems": sorted(NO_SIZE_ITEMS),
             "sizes": {k: list(v) for k, v in UNIFORM_SIZES.items()},
             "sizingFields": {k: list(v) for k, v in SIZING_FIELDS.items()},
