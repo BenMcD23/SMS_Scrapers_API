@@ -285,6 +285,17 @@ def test_comment_suggestions_merge_spellings_and_rank_by_use(api, db, squadron):
     assert len(got) == 4
 
 
+def test_comment_suggestions_are_only_for_the_uniform_asked_for(api, db, squadron):
+    _submit(api, [{"cin": 1, "comments": [_c("Trousers", "Press")]}])  # Blues by default
+    _submit(api, [{"cin": 1, "comments": [_c("Trousers", "Pockets undone")]}],
+            date="2026-03-11", uniform="mtp")
+    texts = lambda q: [s["text"] for s in api.get(f"/inspections/comments{q}", headers=STAFF).json()]  # noqa: E731
+    assert texts("") == ["Press"]
+    assert texts("?uniform=blues") == ["Press"]
+    assert texts("?uniform=mtp") == ["Pockets undone"]
+    assert api.get("/inspections/comments?uniform=tracksuit", headers=STAFF).status_code == 422
+
+
 def test_comment_suggestions_tolerate_empty_and_legacy_sheets(api, db):
     assert api.get("/inspections/comments", headers=STAFF).json() == []
     db.add(InspectionSheet(date=datetime(2025, 1, 1), submitted_at=datetime(2025, 1, 1), data={
