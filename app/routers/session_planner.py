@@ -367,6 +367,7 @@ def link_assessment(
 @router.get("/assessments/leadership/tasks")
 def leadership_task_picker(
     cin: int | None = Query(None, description="Mark the tasks this cadet has already led"),
+    except_assessment: int | None = Query(None, description="The sheet being edited, which doesn't count"),
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
@@ -376,7 +377,8 @@ def leadership_task_picker(
     mine: dict[int, list[st.Lead]] = defaultdict(list)
     if cin is not None:
         for lead in _leads(db).get(cin, []):
-            mine[lead.task_id].append(lead)
+            if lead.sheet_id != except_assessment:
+                mine[lead.task_id].append(lead)
     tasks = _load_tasks(db).filter(SessionTask.kind == st.LEADERSHIP, SessionTask.active.is_(True))
     out = []
     for t in sorted(tasks, key=_task_order):

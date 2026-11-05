@@ -375,3 +375,13 @@ def test_the_picker_marks_what_this_cadet_has_already_led(api, db, cadets):
 def test_the_picker_for_a_cadet_with_no_sheets_marks_nothing(api, cadets):
     _task(api)
     assert [t["led"] for t in api.get("/assessments/leadership/tasks?cin=2", headers=api.as_("nco")).json()] == [None]
+
+
+def test_the_sheet_being_edited_doesnt_count_as_having_led_its_own_task(api, db, cadets):
+    bridge = _task(api)
+    editing = _sheet(db, 1, passed=True, task_id=bridge["id"])
+    url = f"/assessments/leadership/tasks?cin=1&except_assessment={editing}"
+    assert [t["led"] for t in api.get(url, headers=api.as_("nco")).json()] == [None]
+    # Another sheet for the same task still counts.
+    _sheet(db, 1, passed=False, task_id=bridge["id"])
+    assert [t["led"] for t in api.get(url, headers=api.as_("nco")).json()] == ["failed"]
