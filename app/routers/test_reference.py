@@ -1,6 +1,3 @@
-from fastapi.testclient import TestClient
-
-from api import app
 from core.catalogue import (
     BADGE_CATEGORIES,
     NO_SIZE_ITEMS,
@@ -8,26 +5,26 @@ from core.catalogue import (
     UNIFORM_ITEM_TYPES,
     UNIFORM_SIZES,
 )
-from core.security import require_user
-
-client = TestClient(app)
 
 
-def test_reference_requires_a_token():
-    assert client.get("/reference").status_code == 401
+def test_reference_requires_a_token(api):
+    assert api.get("/reference").status_code == 401
 
 
-def test_reference_returns_the_catalogue(monkeypatch):
-    app.dependency_overrides[require_user] = lambda: {"email": "cadet@317atc.co.uk"}
-    try:
-        res = client.get("/reference")
-    finally:
-        app.dependency_overrides.clear()
-    assert res.status_code == 200
+def test_every_signed_in_role_can_read_the_reference(api):
+    # The cadet portal reads it too, so it is not staff-only.
+    for persona in ("cadet", "nco", "snco", "staff"):
+        res = api.get("/reference", headers=api.as_(persona))
+        assert res.status_code == 200, persona
+        assert res.json()["uniform"]["itemTypes"] == list(UNIFORM_ITEM_TYPES)
+
+
+def test_reference_returns_the_catalogue_briefly_cached(api):
+    res = api.get("/reference", headers=api.as_("cadet"))
     body = res.json()
-    assert body["uniform"]["itemTypes"] == list(UNIFORM_ITEM_TYPES)
     assert body["badges"]["categories"][0]["id"] == "core"
-    assert "max-age" in res.headers["cache-control"]
+    # Staff can edit it now, so it may only be cached for a minute, not an hour.
+    assert "max-age=60" in res.headers["cache-control"]
 
 
 def test_every_sized_item_has_sizes_and_sizing_fields():

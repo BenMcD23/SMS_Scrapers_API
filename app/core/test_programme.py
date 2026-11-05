@@ -231,6 +231,26 @@ def test_turnout_by_category_activity_and_night(squadron):
     assert {"period": 1, "flights": "B", "activity": "Drill", "category": "drill"} in nine
 
 
+def test_a_new_d_flight_counts_towards_the_night_like_the_others(squadron):
+    # Flights come from Bader: a fourth one must not silently drop out of turnout.
+    squadron.add(Cadet(cin=6, first_name="Dee", last_name="D", flight="D"))
+    squadron.add(CadetAttendance(cadet_id=6, date=datetime(2026, 10, 7), status="Present"))
+    squadron.add(CadetAttendance(cadet_id=6, date=datetime(2026, 10, 9), status="Absent"))
+    squadron.commit()
+    out = pg.programme_stats(squadron, days=60, today=date(2026, 10, 31))
+    assert [(n["date"], n["present"], n["total"]) for n in out["nights"]] == [
+        ("2026-10-07", 3, 5), ("2026-10-09", 4, 5)]
+
+
+@pytest.mark.parametrize("flight", [None, "", "NCO", "Unknown", "AB"])
+def test_cadets_without_a_lettered_flight_are_not_counted(squadron, flight):
+    squadron.add(Cadet(cin=7, first_name="Zed", last_name="Z", flight=flight))
+    squadron.add(CadetAttendance(cadet_id=7, date=datetime(2026, 10, 7), status="Absent"))
+    squadron.commit()
+    out = pg.programme_stats(squadron, days=60, today=date(2026, 10, 31))
+    assert out["nights"][0]["total"] == 4
+
+
 def test_activities_need_two_nights_to_be_a_pattern(squadron):
     out = pg.programme_stats(squadron, days=60, today=date(2026, 10, 31))
     assert out["activities"] == []  # nothing ran twice

@@ -464,7 +464,9 @@ def test_kit_flight_creates_one_kitting_order_per_eligible_c_flight_cadet(api, d
     orders = created.json()
     assert [o["cadetCin"] for o in orders] == [1]
     assert orders[0]["kitting"] is True
-    assert [i["itemType"] for i in orders[0]["items"]] == list(stores.KIT_FLIGHT_ITEMS)
+    # The items ticked for kitting in the catalogue, which starts as the original list.
+    from core.catalogue import KIT_FLIGHT_ITEMS
+    assert sorted(i["itemType"] for i in orders[0]["items"]) == sorted(KIT_FLIGHT_ITEMS)
 
     # Running it again is idempotent.
     assert api.post("/stores/orders/kit-flight", headers=STAFF).json() == []

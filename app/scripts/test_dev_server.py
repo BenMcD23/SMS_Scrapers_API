@@ -163,6 +163,22 @@ def test_stores_seed_goes_through_the_api(api, db):
     assert sum(1 for i in issued if i) == 3
 
 
+def test_the_catalogue_seed_shows_every_state_the_catalogue_page_has(api, db):
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_stores(api, staff)
+
+    items = {i["name"]: i for i in api.get("/catalogue/uniform", headers=staff).json()}
+    assert items["Jumper"]["lowStockLevel"] == 6 and items["Beret"]["lowStockLevel"] is None
+    assert items["Fleece"]["stockRows"] > 0
+    assert items["Cravat"]["active"] is False
+    badges = {c["slug"]: c for c in api.get("/catalogue/badges", headers=staff).json()}
+    assert badges["band-badges"]["active"] and badges["old-scheme"]["active"] is False
+    # Retired entries stay out of the pickers the seeded stock was chosen from.
+    ref = api.get("/reference", headers=staff).json()
+    assert "Cravat" not in ref["uniform"]["itemTypes"] and "Fleece" in ref["uniform"]["itemTypes"]
+
+
 def test_stores_history_gives_the_insights_page_past_demand(api, db):
     seed(db, now=NOW)
     staff = api.as_("staff")
