@@ -572,7 +572,7 @@ def test_remove_then_return_keeps_count_and_history_in_step(api, db):
     assert removed.json()["stockItem"]["quantity"] == 0
     history = removed.json()["order"]["items"][0]["stockEvents"]
     assert [e["action"] for e in history] == ["removed"]
-    assert history[0]["by"] == "staff@317atc.co.uk"
+    assert history[0]["by"] == "Sam Staff"
     # Location keys are internal and never reach the UI.
     assert set(history[0]) == {"id", "action", "timestamp", "by"}
 
@@ -582,7 +582,7 @@ def test_remove_then_return_keeps_count_and_history_in_step(api, db):
     returned = _stock_call(api, order, {"action": "return", "by": "QM Bob"})
     assert returned.json()["stockItem"]["quantity"] == 1
     events = returned.json()["order"]["items"][0]["stockEvents"]
-    assert [(e["action"], e["by"]) for e in events] == [("removed", "staff@317atc.co.uk"), ("returned", "QM Bob")]
+    assert [(e["action"], e["by"]) for e in events] == [("removed", "Sam Staff"), ("returned", "QM Bob")]
 
     # ...and can't return what isn't out.
     assert _stock_call(api, order, {"action": "return"}).status_code == 400

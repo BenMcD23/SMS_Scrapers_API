@@ -47,3 +47,21 @@ def test_upgrade_matches_the_model_backfills_every_record_and_downgrade_removes_
 
     _run(engine, "downgrade")
     assert "Stores_Issuance_History" not in sa.inspect(engine).get_table_names()
+
+
+def test_stock_changes_and_deleted_records_migration_matches_the_models():
+    from database.models import StoresDeletedRecord, StoresStockChange
+
+    migration = Path(__file__).parent / "alembic/versions/s1t2o3r4e5h6_stock_changes_and_deleted_records.py"
+    spec = importlib.util.spec_from_file_location("stores_history_migration", migration)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+        module.upgrade()
+    insp = sa.inspect(engine)
+    for model in (StoresStockChange, StoresDeletedRecord):
+        assert {c["name"] for c in insp.get_columns(model.__tablename__)} == {c.name for c in model.__table__.columns}
+    with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+        module.downgrade()
+    assert not sa.inspect(engine).get_table_names()

@@ -11,7 +11,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import given_events, issuance_history, push, stock_events, stock_insights
+from core import given_events, issuance_history, push, stock_changes, stock_events, stock_insights, stores_archive
+from core.actor import actor_name
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
@@ -24,12 +25,14 @@ from database.models import (
     LogsForm,
     LogsFormEntry,
     StoresBox,
+    StoresDeletedRecord,
     StoresIssuanceHistory,
     StoresItem,
     StoresItemIssuance,
     StoresOrder,
     StoresOrderItem,
     StoresSection,
+    StoresStockChange,
     User,
 )
 
@@ -213,6 +216,9 @@ def stores_post_structure(
         if not box:
             raise HTTPException(status_code=404, detail="Box not found")
         old_level = box.shelf_level if box.shelf_level is not None else 1
+        for item in box.items:
+            stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo),
+                                         change=-item.quantity, gone=True, note=f"Box {box.label} deleted")
         db.delete(box)
         db.commit()
         # Compact shelf_position on that level
@@ -251,6 +257,10 @@ def stores_post_structure(
         if not section:
             raise HTTPException(status_code=404, detail="Section not found")
         box_id = box.id
+        for item in section.items:
+            stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo),
+                                         change=-item.quantity, gone=True,
+                                         note=f"Section {box.label} / {section.label} deleted")
         db.delete(section)
         db.commit()
         # Compact section positions for this box
@@ -444,6 +454,8 @@ def stores_create_stock(
     if existing:
         logger.info("stock add: topping up existing item %s", existing.id)
         existing.quantity += int(quantity)
+        stock_changes.record_uniform(db, existing, stock_changes.TOPPED_UP, actor_name(idinfo),
+                                     change=int(quantity))
         db.commit()
         db.refresh(existing)
         return _item_to_dict(existing)
@@ -457,9 +469,23 @@ def stores_create_stock(
         section_id = section.id,
     )
     db.add(item)
+    stock_changes.record_uniform(db, item, stock_changes.ADDED, actor_name(idinfo), change=int(quantity))
     db.commit()
     db.refresh(item)
     return _item_to_dict(item)
+
+
+def _log_stock_edit(db: Session, item: StoresItem, before: dict, by: str | None) -> None:
+    """One history line per kind of change an edit made: count, name, place."""
+    name = f"{item.item_type} {item.size}".strip()
+    if item.quantity != before["quantity"]:
+        stock_changes.record_uniform(db, item, stock_changes.COUNTED, by, change=item.quantity - before["quantity"],
+                                     note=f"Was {before['quantity']}")
+    if name != before["name"]:
+        stock_changes.record_uniform(db, item, stock_changes.RENAMED, by, note=f"Was {before['name']}")
+    location = stock_changes.uniform_location(item)
+    if location != before["location"]:
+        stock_changes.record_uniform(db, item, stock_changes.MOVED, by, note=f"From {before['location']}")
 
 
 @router.patch("/stores/stock/{item_id}")
@@ -474,6 +500,9 @@ def stores_update_stock(
     if not item:
         logger.warning("stock update: item %s not found", item_id)
         raise HTTPException(status_code=404, detail="Item not found")
+    by = actor_name(idinfo)
+    before = {"name": f"{item.item_type} {item.size}".strip(), "location": stock_changes.uniform_location(item),
+              "quantity": item.quantity}
 
     if "quantity" in body:
         item.quantity = int(body["quantity"])
@@ -496,6 +525,10 @@ def stores_update_stock(
             raise HTTPException(status_code=404, detail="Section not found")
         item.section_id = section.id
 
+    db.flush()
+    db.refresh(item)  # box / section relationships, after an id-only move
+    _log_stock_edit(db, item, before, by)
+
     # If the edited item now matches another existing item, merge them
     duplicate = db.query(StoresItem).filter(
         StoresItem.id         != item.id,
@@ -508,6 +541,8 @@ def stores_update_stock(
     if duplicate:
         logger.info("stock %s merged into duplicate %s", item.id, duplicate.id)
         duplicate.quantity += item.quantity
+        stock_changes.record_uniform(db, duplicate, stock_changes.MERGED, by, change=item.quantity,
+                                     note="Edited to match this line, so the two were combined")
         db.delete(item)
         db.commit()
         db.refresh(duplicate)
@@ -530,8 +565,54 @@ def stores_delete_stock(
         raise HTTPException(status_code=404, detail="Item not found")
     logger.info("stock delete: %s (%s %s x%s) by %s",
                 item_id, item.item_type, item.size, item.quantity, idinfo.get("email"))
+    stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo), change=-item.quantity,
+                                 gone=True)
     db.delete(item)
     db.commit()
+
+
+# ── History: stock changes and recently deleted ───────────────────────────────
+
+@router.get("/stores/stock/changes")
+def stores_stock_changes(
+    kind: str | None = Query(None, pattern="^(uniform|badge)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Every change to a stock count, newest first: uniform, badges or both."""
+    query = db.query(StoresStockChange)
+    if kind:
+        query = query.filter(StoresStockChange.kind == kind)
+    rows = query.order_by(StoresStockChange.id.desc()).limit(limit).all()
+    return [stock_changes.to_dict(r) for r in rows]
+
+
+@router.get("/stores/deleted")
+def stores_deleted_records(
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Stores orders and list entries that were deleted, newest first, restored ones included."""
+    rows = db.query(StoresDeletedRecord).order_by(StoresDeletedRecord.id.desc()).limit(limit).all()
+    return [stores_archive.to_dict(r) for r in rows]
+
+
+@router.post("/stores/deleted/{record_id}/restore")
+def stores_restore_deleted(
+    record_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Put a deleted order or list entry back, as it was when it was deleted."""
+    record = db.get(StoresDeletedRecord, record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Deleted record not found")
+    stores_archive.restore(db, record, actor_name(idinfo))
+    db.commit()
+    logger.info("restored %s %s as %s by %s", record.kind, record_id, record.restored_id, idinfo.get("email"))
+    return stores_archive.to_dict(record)
 
 
 # ── Insights ──────────────────────────────────────────────────────────────────
@@ -790,6 +871,7 @@ def stores_delete_order(
         logger.warning("order delete: order %s not found", order_id)
         raise HTTPException(status_code=404, detail="Order not found")
     logger.info("order delete: %s by %s", order_id, idinfo.get("email"))
+    stores_archive.archive(db, order, actor_name(idinfo))
     db.delete(order)
     db.commit()
 
@@ -835,7 +917,7 @@ def stores_order_item_stock(
     order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
 
     events = stock_events.events_list(item.stock_events)
-    by = body.get("by") or idinfo.get("email")
+    by = body.get("by") or actor_name(idinfo)
 
     if action == "remove":
         if stock_events.is_removed(events):
@@ -846,6 +928,8 @@ def stores_order_item_stock(
         if stock_item.quantity <= 0:
             raise HTTPException(status_code=400, detail="Out of stock")
         stock_item.quantity -= 1
+        stock_changes.record_uniform(db, stock_item, stock_changes.TAKEN, by, change=-1, order_id=order.id,
+                                     note=f"For {_order_subject(order)[0]}")
         events.append(stock_events.new_event(
             stock_events.REMOVED, by,
             stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
@@ -868,6 +952,8 @@ def stores_order_item_stock(
                 detail="That stock entry no longer exists — add the item back on the stock page",
             )
         stock_item.quantity += 1
+        stock_changes.record_uniform(db, stock_item, stock_changes.RETURNED, by, change=1, order_id=order.id,
+                                     note=f"From {_order_subject(order)[0]}'s order")
         events.append(stock_events.new_event(
             stock_events.RETURNED, by,
             stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
@@ -929,7 +1015,7 @@ def stores_undo_given(
     any history existed is cleared the same way, but the issuance record is
     left as it is (there is nothing to restore it from)."""
     order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
-    by = (body or {}).get("by") or idinfo.get("email")
+    by = (body or {}).get("by") or actor_name(idinfo)
     given = undo_given(order, item, by, noun="an item")
     _restore_issuance(db, order, item, given, by)
     db.commit()
@@ -995,16 +1081,10 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
     return updated
 
 
-def _actor(idinfo: dict) -> str | None:
-    """The signed-in person's name for a history line, else their email."""
-    name = f"{idinfo.get('given_name') or ''} {idinfo.get('family_name') or ''}".strip()
-    return name or idinfo.get("name") or idinfo.get("email")
-
-
 def _given_by(body: dict, idinfo: dict) -> str:
     """Who to credit: the name the page sends, else the signed-in account, so
     an edit on the Uniform tab (which sends no name) isn't logged as "Unknown"."""
-    return body.get("givenBy") or _actor(idinfo) or "Unknown"
+    return body.get("givenBy") or actor_name(idinfo) or "Unknown"
 
 
 def _subject_name(entry: StoresIssuanceHistory, cadets: dict, users: dict) -> str:
@@ -1159,7 +1239,7 @@ def stores_undo_issuance(
     issuance = db.get(StoresItemIssuance, issuance_id)
     if not issuance:
         raise HTTPException(status_code=404, detail="Issuance record not found")
-    by = (body or {}).get("by") or _actor(idinfo)
+    by = (body or {}).get("by") or actor_name(idinfo)
     subject = ({"cadet_cin": issuance.cadet_id} if issuance.cadet_id is not None
                else {"user_id": issuance.user_id})
     category = issuance.item_category
@@ -1194,7 +1274,7 @@ def stores_delete_issuance(
     logger.info("issuance delete: %s (%s) by %s", issuance_id, issuance.item_category, idinfo.get("email"))
     subject = ({"cadet_cin": issuance.cadet_id} if issuance.cadet_id is not None
                else {"user_id": issuance.user_id})
-    by = _actor(idinfo)
+    by = actor_name(idinfo)
     while issuance_history.undo_latest(db, issuance.item_category, by, **subject):
         pass
     db.commit()
@@ -1314,6 +1394,7 @@ def logs_forms_delete_entry(
     if entry.form.ordered_at is not None:
         raise HTTPException(status_code=400, detail="Form has been ordered and cannot be edited")
     logger.info("logs form entry delete: %s by %s", entry_id, idinfo.get("email"))
+    stores_archive.archive(db, entry, actor_name(idinfo))
     db.delete(entry)
     db.commit()
 

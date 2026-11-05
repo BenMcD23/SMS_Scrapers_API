@@ -539,6 +539,41 @@ def seed_issuance_history(client, headers: dict, db, now: datetime) -> None:
         {"itemCategory": "Tie", "lastGiven": "2025-09-04"},
         {"itemCategory": "Beret", "sizeGiven": "57", "lastGiven": recent}]})
 
+    # Stores > Deleted: one order deleted and left there, one deleted and put
+    # back, so the page shows both states. The stock history gets a line taken
+    # for an order and a line deleted, alongside the adds the seed already made.
+    for n in (40, 41):
+        gone = post("/stores/orders", {"cadetCin": FIRST_CIN + n, "items": [
+            {"itemType": "Beret", "size": "57"}, {"itemType": "Tie"}]})
+        res = client.delete(f"/stores/orders/{gone['id']}", headers=headers)
+        assert res.status_code == 204, res.text
+    deleted = client.get("/stores/deleted", headers=headers).json()
+    post(f"/stores/deleted/{deleted[0]['id']}/restore", {})
+
+    stock = client.get("/stores/stock", headers=headers).json()
+    beret = next(s for s in stock if s["itemType"] == "Beret" and s["quantity"] > 1)
+    post(f"/stores/orders/{order['id']}/items/{item['id']}/stock", {"action": "remove", "stockItemId": beret["id"]})
+    res = client.delete(f"/stores/stock/{stock[-1]['id']}", headers=headers)
+    assert res.status_code == 204, res.text
+
+    # A small badge grid, so Badges > Stock has something on it and the badge
+    # History page has stock changes (an add, a recount, one taken for an
+    # order) and gives (one standing, one given and taken back).
+    grid = client.patch("/stores/badges/config", json={"numRows": 2, "numCols": 2}, headers=headers).json()
+    cells = sorted(grid["cells"], key=lambda c: (c["row"], c["col"]))
+    client.patch(f"/stores/badges/cells/{cells[0]['id']}", json={"label": "Core"}, headers=headers)
+    atc = post(f"/stores/badges/cells/{cells[0]['id']}/items", {"name": "ATC", "quantity": 6})
+    post(f"/stores/badges/cells/{cells[1]['id']}/items", {"name": "Radio – Bronze", "quantity": 3})
+    client.patch(f"/stores/badges/items/{atc['id']}", json={"quantity": 5}, headers=headers)
+    badges = post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 33, "items": [
+        {"badgeName": "ATC"}, {"badgeName": "Radio – Bronze"}]})
+    atc_item, radio_item = (i["id"] for i in badges["items"])
+    base = f"/stores/badges/orders/{badges['id']}/items"
+    post(f"{base}/{atc_item}/stock", {"action": "remove", "itemId": atc["id"]})
+    post(f"{base}/{atc_item}/mark-given", {})
+    post(f"{base}/{radio_item}/mark-given", {})
+    post(f"{base}/{radio_item}/undo-given", {})
+
 
 INSPECTION_NIGHTS = 8
 # Each flight gets a pattern for the inspection audit to find: B's shoes are a

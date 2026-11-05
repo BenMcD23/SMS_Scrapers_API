@@ -372,7 +372,7 @@ def test_order_list_lifecycle_and_audit_trail(api, db):
     assert entry.status_code == 201
     entry = entry.json()
     assert (entry["badgeName"], entry["cadetName"], entry["addedBy"]) == (
-        "Leadership – Blue", "Amy Adams", "staff@317atc.co.uk")
+        "Leadership – Blue", "Amy Adams", "Sam Staff")
     assert api.post("/stores/badges/order-lists/entries", json={"orderItemId": item}, headers=STAFF).status_code == 409
 
     eid = entry["id"]
@@ -385,7 +385,7 @@ def test_order_list_lifecycle_and_audit_trail(api, db):
     assert api.delete(f"/stores/badges/order-lists/entries/{eid}", headers=STAFF).status_code == 400
 
     received = api.post(f"/stores/badges/order-lists/entries/{eid}/mark-received", json={}, headers=STAFF).json()
-    assert received["receivedBy"] == "staff@317atc.co.uk"
+    assert received["receivedBy"] == "Sam Staff"
     assert api.post(f"/stores/badges/order-lists/entries/{eid}/mark-received", json={}, headers=STAFF).status_code == 400
 
     # Deleting the order leaves the audit entry with a null link.
