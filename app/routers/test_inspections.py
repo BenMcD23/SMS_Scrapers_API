@@ -153,6 +153,45 @@ def test_unmarked_cadet_without_a_log_is_awol(api, squadron):
     assert body["flight_scores"]["A"]["total"] == 5 - 2 * insp.AWOL_PENALTY
 
 
+def _remove(db, *cins):
+    # What the old scraper did to leavers: the row goes, the sheets don't.
+    db.query(Cadet).filter(Cadet.cin.in_(cins)).delete(synchronize_session=False)
+    db.commit()
+
+
+def test_a_cadet_who_leaves_keeps_their_mark_and_counts_for_their_flight(api, db, squadron):
+    sid = _submit(api, [{"cin": 1, "score": 8, "comments": [_c("Shoes", "Uppers")]},
+                        {"cin": 3, "absent": True}]).json()["id"]
+    before = api.get(f"/inspections/sheets/{sid}", headers=STAFF).json()["flights"]
+    _remove(db, 1, 3)
+
+    flights = api.get(f"/inspections/sheets/{sid}", headers=STAFF).json()["flights"]
+    assert [f["flight"] for f in flights] == ["A"]
+    # Same figures as the night it was marked: Amy's 8, Cal's AWOL penalty.
+    for key in ("present", "awol", "penalty", "average", "total"):
+        assert flights[0][key] == before[0][key]
+    amy = next(c for c in flights[0]["cadets"] if c["cin"] == 1)
+    assert (amy["first_name"], amy["last_name"]) == ("1", "Cadet Left")
+    assert amy["score"] == 8 and amy["faults"] == [{"region": "Shoes", "text": "Uppers"}]
+    assert api.get(f"/inspections/sheets/{sid}/pdf", headers=STAFF).content.startswith(b"%PDF")
+
+
+def test_a_later_submission_still_counts_a_leaver_for_their_flight(api, db, squadron):
+    _submit(api, [{"cin": 1, "score": 8}, {"cin": 3, "absent": True}])
+    _remove(db, 1)
+    body = _submit(api, [{"cin": 4, "score": 7}], headers=SNCO).json()
+    assert body["flight_scores"]["A"] == {"total": 3.0, "present_count": 1, "awol_count": 1}
+    assert "Unassigned" not in body["flight_scores"]
+
+
+def test_a_cadet_who_changes_flight_stays_in_the_old_one_on_old_sheets(api, db, squadron):
+    sid = _submit(api, [{"cin": 1, "score": 8}]).json()["id"]
+    db.get(Cadet, 1).flight = "B"
+    db.commit()
+    flights = {f["flight"]: f for f in api.get(f"/inspections/sheets/{sid}", headers=STAFF).json()["flights"]}
+    assert set(flights) == {"A"} and 1 in {c["cin"] for c in flights["A"]["cadets"]}
+
+
 def test_second_submitter_merges_and_wins_on_overlap(api, db, squadron):
     first = _submit(api, [{"cin": 1, "score": 4}, {"cin": 3, "score": 6}]).json()
     second = _submit(api, [{"cin": 1, "score": 9}, {"cin": 4, "score": 7}], headers=SNCO).json()
@@ -349,7 +388,7 @@ def test_mtp_pdf_and_unknown_cadet_in_detail(api, db):
     detail = api.get("/inspections/sheets/1", headers=STAFF).json()
     cadet = detail["flights"][0]["cadets"][0]
     assert detail["flights"][0]["flight"] == "Unassigned"
-    assert (cadet["first_name"], cadet["last_name"]) == ("Unknown", "77")
+    assert (cadet["first_name"], cadet["last_name"]) == ("77", "Cadet Left")
     assert api.get("/inspections/sheets/1/pdf", headers=STAFF).content.startswith(b"%PDF")
 
 
