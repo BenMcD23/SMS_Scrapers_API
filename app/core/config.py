@@ -103,6 +103,11 @@ SITE_BASE_URL = os.getenv("SITE_BASE_URL", "https://sms.317atc.co.uk").rstrip("/
 # The public joining form on the squadron website. A recruit's link is this plus
 # their token; parents fill it in at home before their first parade night.
 RECRUIT_FORM_URL = os.getenv("RECRUIT_FORM_URL", "https://www.317atc.co.uk/enrol").rstrip("/")
+# Who parents contact about a joining form: named in the confirmation email (and
+# its Reply-To) sent with their filled 3822A/H. The website's thank-you screen
+# shows the same address (cadet-website src/pages/enrol.jsx); change both.
+RECRUIT_CONTACT_NAME = os.getenv("RECRUIT_CONTACT_NAME", "FS Gill")
+RECRUIT_CONTACT_EMAIL = os.getenv("RECRUIT_CONTACT_EMAIL", "joseph.gill100@rafac.mod.gov.uk")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")

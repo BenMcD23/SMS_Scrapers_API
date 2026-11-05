@@ -13,25 +13,30 @@ The public half answers every bad link — unknown, expired, deleted — with th
 same 404, so a link can't be probed for whether it ever existed. It never sends
 answers back once the form is submitted.
 
+Once submitted, the parent is emailed a copy of the signed forms, with the
+recruiting contact (RECRUIT_CONTACT_EMAIL) as Reply-To for any problems.
+
 Times are UK local time: "aged 16 at the date of signature" is a UK date, and
 the server's clock isn't on UK time.
 """
 
 import base64
 import binascii
+import logging
 import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy.orm import Session
 
 from core import recruit_form
-from core.config import RECRUIT_FORM_URL
+from core.config import RECRUIT_CONTACT_EMAIL, RECRUIT_CONTACT_NAME, RECRUIT_FORM_URL
 from core.db import get_db
+from core.emailer import EMAIL_RE, recruit_form_confirmation_html, send_email
 from core.http import content_disposition
 from core.recruit_form import RecruitFormData, london_now
 from core.security import require_staff
@@ -39,6 +44,7 @@ from database.models import RecruitApplication
 from form_generators.recruit_pdf import build_pdf
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 LINK_DAYS = 14
 BAD_LINK = "This link is invalid or has expired. Ask the squadron for a new one."
@@ -138,6 +144,47 @@ def _prefill(cadet_name: str, parent_name: str, parent_email: str) -> dict:
         "nok": {"fullName": parent_name, "email": parent_email},
         "signer": {"forename": forename, "surname": surname},
     }).model_dump(mode="json")
+
+
+def _confirmation_recipients(form: RecruitFormData, link_email: str) -> list[str]:
+    """The email the parent gave on the form, plus the one staff sent the link
+    to if that's different (it's known to reach them). Order kept, no repeats."""
+    out: list[str] = []
+    for addr in (form.nok.email, link_email):
+        addr = (addr or "").strip()
+        if EMAIL_RE.match(addr) and addr.lower() not in (a.lower() for a in out):
+            out.append(addr)
+    return out
+
+
+def _send_confirmation(form: RecruitFormData, link_email: str, cadet_first: str, cadet_last: str,
+                       parent_sig: bytes, cadet_sig: bytes | None, submitted_at: datetime) -> None:
+    """Email the parent a copy of the forms they just signed.
+
+    Runs after the response: the submission is already saved, so a PDF or Gmail
+    failure is logged and never undoes it (staff still have the forms on SMS).
+    """
+    to = _confirmation_recipients(form, link_email)
+    if not to:
+        return
+    forms = ["3822A", "3822H"] if form.medical.has else ["3822A"]
+    try:
+        attachments = [
+            (f"{f} {cadet_first} {cadet_last}.pdf",
+             build_pdf(form, f, parent_sig, cadet_sig, submitted_at, cadet_name=(cadet_first, cadet_last)),
+             "application/pdf")
+            for f in forms
+        ]
+    except Exception:
+        logger.exception("couldn't build the joining form PDFs for the confirmation email")
+        return
+    send_email(
+        ", ".join(to),
+        f"{cadet_first}'s joining form for 317 Squadron",
+        recruit_form_confirmation_html(cadet_first, forms, RECRUIT_CONTACT_NAME, RECRUIT_CONTACT_EMAIL),
+        attachments=attachments,
+        reply_to=RECRUIT_CONTACT_EMAIL,
+    )
 
 
 # ── staff ────────────────────────────────────────────────────────────────────
@@ -302,7 +349,7 @@ def save_progress(token: str, body: SaveBody, db: Session = Depends(get_db)):
 
 
 @router.post("/recruit-form/{token}/submit")
-def submit_form(token: str, body: SubmitBody, db: Session = Depends(get_db)):
+def submit_form(token: str, body: SubmitBody, background: BackgroundTasks, db: Session = Depends(get_db)):
     app = _open_for_editing(db, token)
     form = body.data
     now = london_now()
@@ -329,4 +376,6 @@ def submit_form(token: str, body: SubmitBody, db: Session = Depends(get_db)):
     app.cadet_signature = cadet_sig
     app.submitted_at = now
     db.commit()
+    background.add_task(_send_confirmation, recruit_form.parse(app.data), app.parent_email,
+                        app.cadet_first_name, app.cadet_last_name, parent_sig, cadet_sig, now)
     return _public_view(app)
