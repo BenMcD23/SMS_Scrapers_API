@@ -285,6 +285,14 @@ def test_reorder_unknown_box_404(api):
 
 # ── stock ─────────────────────────────────────────────────────────────────────
 
+def test_polo_can_be_stocked_as_unisex(api, db):
+    _box(db)
+    res = api.post("/stores/stock", json={"itemType": "Polo", "size": "XL", "box": "A",
+                                          "section": "1", "quantity": 4}, headers=STAFF)
+    assert res.status_code == 201
+    assert res.json()["gender"] == "unisex" and res.json()["size"] == "XL"
+
+
 def test_create_stock_and_top_up(api, db):
     _box(db)
     body = {"itemType": "Trousers", "size": "80/76/92", "box": "a", "section": "1", "quantity": 2}

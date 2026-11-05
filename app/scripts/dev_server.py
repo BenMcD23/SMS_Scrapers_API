@@ -425,6 +425,10 @@ def seed_stores(client, headers: dict) -> None:
             post("/stores/stock", {"itemType": item, "size": size, "box": "ABC"[i % 3],
                                    "section": str(i % 2 + 1), "quantity": 2 + i % 4})
 
+    # Polos are stock-only (never ordered), so they're seeded here and not in `sized`.
+    for size in ref["sizes"]["Polo"][1:4]:
+        post("/stores/stock", {"itemType": "Polo", "size": size, "box": "A", "section": "1", "quantity": 3})
+
     for n, cin in enumerate((FIRST_CIN + 4, FIRST_CIN + 11, FIRST_CIN + 18, FIRST_CIN + 25)):
         item = sized[n % len(sized)]
         post("/stores/orders", {"cadetCin": cin, "items": [

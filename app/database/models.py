@@ -1124,6 +1124,7 @@ ITEM_GENDER_MAP: dict[str, str] = {
     "Tie":                "unisex",
     "Brassard":           "unisex",
     "Belt":               "unisex",
+    "Polo":               "unisex",
 }
 
 
