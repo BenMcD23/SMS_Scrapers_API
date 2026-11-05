@@ -567,12 +567,22 @@ def seed_inspections(client, headers: dict, now: datetime | None = None) -> None
         str(flight_a[1]["cin"]): {"score": "9", "comments": []},
         str(flight_a[2]["cin"]): {"score": "", "comments": [], "absent": True},
     }
-    res = client.put("/inspections/draft", headers=headers, json={
-        "date": today, "uniform": "blues", "marks": draft_marks,
-        "order": [c["cin"] for c in reversed(flight_a)],
+    res = client.put("/assessment-drafts/inspection", headers=headers, json={
+        "data": {"date": today, "uniform": "blues", "marks": draft_marks,
+                 "order": [c["cin"] for c in reversed(flight_a)]},
         "saved_at": f"{today}T19:45:00.000Z",
     })
-    assert res.status_code < 300, f"/inspections/draft: {res.status_code} {res.text}"
+    assert res.status_code < 300, f"/assessment-drafts/inspection: {res.status_code} {res.text}"
+
+    # A radio assessment started and left, saved before the page sent its
+    # clock: the empty saved_at a draft from an older page has.
+    cadet = flight_a[1]
+    res = client.put("/assessment-drafts/radio", headers=headers, json={"data": {
+        "cadetCin": cadet["cin"], "cadetName": f"{cadet['first_name']} {cadet['last_name']}",
+        "criteria": {"callsigns": True, "auth_1a": True}, "cyberSecDate": "", "comments": "Clear voice procedure, rushed the phonetics.",
+        "assessorName": "", "assessorRole": "", "date": today,
+    }})
+    assert res.status_code < 300, f"/assessment-drafts/radio: {res.status_code} {res.text}"
 
 
 _RECRUIT_ADDRESS = {"property": "14", "street": "Oldham Road", "town": "Failsworth",

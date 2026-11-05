@@ -28,6 +28,7 @@ from database.database import engine
 from routers import (
     activity_logs,
     appointments,
+    assessment_drafts,
     assessments,
     assistant,
     attendance,
@@ -206,6 +207,7 @@ app.include_router(activity_logs.router)
 app.include_router(theory.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
+app.include_router(assessment_drafts.router)
 app.include_router(inspection_audit.router)
 app.include_router(scrapers.router)
 app.include_router(volunteer_portal.router)
