@@ -481,7 +481,11 @@ def test_the_seeded_assistant_chats_open_for_the_dev_staff_login(api, db):
     # Pinned, rated and linked, so each of those shows in the preview.
     assert chats[0]["pinned"] is True and answer["feedback"] == 1
     assert [c["name"] for c in answer["cadets"]] == [r[0] for r in answer["tables"][0]["rows"]]
-    usage = api.get("/assistant/usage", headers=staff).json()
+    # The endpoint looks back from the real clock but the seed sits at the fixed
+    # NOW, so the window is widened by however long ago NOW was; the default 30
+    # days made this test fail once the calendar moved on.
+    days = (datetime.now() - NOW).days + 30
+    usage = api.get(f"/assistant/usage?days={days}", headers=staff).json()
     assert usage["thumbs_down"] == 1 and usage["rated_down"][0]["question"] == "How many NCOs are there?"
 
 
