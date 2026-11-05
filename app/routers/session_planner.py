@@ -12,22 +12,39 @@ Nothing here refuses a task for needing more kit than there is: a radio breaks
 and the stock goes down, and that shouldn't stop anyone editing the task. A
 task that can't run with what's in stock says so in ``kit_short`` instead.
 
+The planner itself (``/session-planner/cadets`` and ``/session-planner/plan``)
+lists who could be in on a night and turns the cadets, tasks, times and stands
+picked into groups, rounds and leaders. The rules are in core/session_plan.py;
+a plan is worked out fresh on each request and nothing is saved.
+
 The leadership task picker (``/assessments/leadership/tasks``) is also open to
 NCOs, since they write leadership assessments.
 """
 
 from collections import defaultdict
+from datetime import date as Date
 from datetime import datetime
+from datetime import time as Time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from core import session_plan as sp
 from core import session_tasks as st
 from core.db import get_db
+from core.night_outlook import night_outlooks
+from core.qualifications import BADGE_TYPE_BY_KEY, held_level
 from core.security import require_staff, require_staff_or_nco
-from database.models import AssessmentSheet, Cadet, SessionKit, SessionTask, SessionTaskKit
+from database.models import (
+    AssessmentSheet,
+    Cadet,
+    CadetQualification,
+    SessionKit,
+    SessionTask,
+    SessionTaskKit,
+)
 
 router = APIRouter()
 
@@ -389,3 +406,141 @@ def leadership_task_picker(
         out.append({"id": t.id, "number": t.number, "name": t.name,
                     "duration_minutes": t.duration_minutes, "led": led})
     return out
+
+
+# ── planning a session ────────────────────────────────────────────────────────
+
+@router.get("/session-planner/cadets")
+def planner_cadets(
+    date: Date = Query(..., description="The night being planned"),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Everyone on the roster with what the planner shows when ticking them:
+    how likely they are to be in that night, and their leadership so far."""
+    cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
+    outlooks = night_outlooks(db, date, [c.cin for c in cadets])
+    leads = _leads(db)
+    quals: dict[int, list[str]] = defaultdict(list)
+    for cin, name in db.query(CadetQualification.cadet_id, CadetQualification.qual_type):
+        quals[cin].append(name)
+    badge = BADGE_TYPE_BY_KEY["leadership"]
+    return [
+        {
+            "cin": c.cin, "first_name": c.first_name, "last_name": c.last_name,
+            "rank": c.rank, "flight": c.flight,
+            "attendance": outlooks[c.cin],
+            "leadership": {
+                "level": held_level(badge, quals.get(c.cin, ())),
+                "led": len(leads.get(c.cin, [])),
+                "passes": sum(1 for lead in leads.get(c.cin, []) if lead.passed),
+            },
+        }
+        for c in cadets
+    ]
+
+
+class PlanBody(BaseModel):
+    kind: str
+    date: Date
+    start: Time
+    end: Time
+    changeover_minutes: int = Field(default=5, ge=0, le=60)
+    stands: int = Field(ge=1, le=20)
+    task_ids: list[int] = Field(min_length=1, max_length=100)
+    cins: list[int] = Field(min_length=1, max_length=500)
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        if v not in st.SESSION_KINDS:
+            raise ValueError(f"Kind must be one of: {', '.join(st.SESSION_KINDS)}")
+        return v
+
+    @model_validator(mode="after")
+    def _times(self):
+        if self.end <= self.start:
+            raise ValueError("The session has to end after it starts")
+        return self
+
+
+def _hhmm(when: datetime) -> str:
+    return when.strftime("%H:%M")
+
+
+@router.post("/session-planner/plan")
+def plan_a_session(body: PlanBody, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """Groups, rounds and (for leadership) leaders for one session. Saves
+    nothing: the page asks again whenever the inputs change."""
+    tasks = _load_tasks(db).filter(SessionTask.id.in_(set(body.task_ids))).all()
+    if len(tasks) != len(set(body.task_ids)):
+        raise HTTPException(status_code=404, detail="Some of those tasks aren't in the bank")
+    wrong = [t.name for t in tasks if t.kind != body.kind or not t.active]
+    if wrong:
+        raise HTTPException(status_code=400, detail=f"Not {body.kind} tasks in use: {', '.join(sorted(wrong))}")
+    cadets = db.query(Cadet).filter(Cadet.cin.in_(set(body.cins))).all()
+    if len(cadets) != len(set(body.cins)):
+        raise HTTPException(status_code=404, detail="Some of those cadets aren't on the roster")
+
+    leadership = body.kind == st.LEADERSHIP
+    leads = _leads(db) if leadership else {}
+    quals: dict[int, list[str]] = defaultdict(list)
+    if leadership:
+        for cin, name in db.query(CadetQualification.cadet_id, CadetQualification.qual_type).filter(
+            CadetQualification.cadet_id.in_(set(body.cins))
+        ):
+            quals[cin].append(name)
+    badge = BADGE_TYPE_BY_KEY["leadership"]
+    plan_cadets = [
+        sp.PlanCadet(
+            cin=c.cin, name=f"{c.first_name} {c.last_name}", rank=c.rank, flight=c.flight,
+            led_tasks=frozenset(lead.task_id for lead in leads.get(c.cin, [])),
+            passes=sum(1 for lead in leads.get(c.cin, []) if lead.passed),
+            has_blue=held_level(badge, quals.get(c.cin, ())) is not None,
+        )
+        for c in cadets
+    ]
+    order = {tid: i for i, tid in enumerate(body.task_ids)}
+    plan_tasks = [
+        sp.PlanTask(t.id, t.name, t.number, t.duration_minutes, t.min_group, t.max_group,
+                    tuple((u.kit_id, u.quantity) for u in t.kit))
+        for t in sorted(tasks, key=lambda t: order[t.id])
+    ]
+    stock = {k.id: k.quantity for k in db.query(SessionKit)}
+    plan = sp.plan_session(
+        plan_cadets, plan_tasks, stock,
+        start=datetime.combine(body.date, body.start), end=datetime.combine(body.date, body.end),
+        stands=body.stands, changeover=body.changeover_minutes, leadership=leadership,
+    )
+
+    by_cin = {c.cin: c for c in cadets}
+    by_task = {t.id: t for t in tasks}
+
+    def who(cin: int) -> dict:
+        c = by_cin[cin]
+        return {"cin": c.cin, "first_name": c.first_name, "last_name": c.last_name, "rank": c.rank, "flight": c.flight}
+
+    return {
+        "kind": body.kind,
+        "leadership": leadership,
+        "groups": [{"number": i + 1, "cadets": [who(cin) for cin in g]} for i, g in enumerate(plan.groups)],
+        "rounds": [
+            {
+                "number": r.number, "start": _hhmm(r.start), "end": _hhmm(r.end),
+                "runs": [
+                    {
+                        "group": run.group, "task_id": run.task_id,
+                        "task_name": by_task[run.task_id].name, "task_number": by_task[run.task_id].number,
+                        "leader": who(run.leader) if run.leader is not None else None,
+                    }
+                    for run in r.runs
+                ],
+                "idle_groups": r.idle,
+            }
+            for r in plan.rounds
+        ],
+        "leads": [{"cin": cin, "count": n} for cin, n in sorted(plan.leads.items())],
+        "not_leading": [who(c.cin) for c in sorted(cadets, key=lambda c: (c.last_name, c.first_name))
+                        if leadership and plan.rounds and not plan.leads.get(c.cin)],
+        "warnings": plan.warnings,
+    }

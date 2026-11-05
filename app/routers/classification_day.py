@@ -6,20 +6,18 @@ marks, Volunteer Portal exam results, the parade-night register and booked
 absences — in one query each rather than one per cadet.
 """
 
-from collections import defaultdict
 from datetime import date as Date
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from core import classification_plan as plan
 from core.db import get_db
+from core.night_outlook import night_outlooks
 from core.security import require_staff
 from core.theory_lessons import THEORY_LESSON_BY_KEY
 from core.theory_progress import lessons_had, taught_and_passed
-from database.models import Cadet, CadetAbsence, CadetAttendance
+from database.models import Cadet
 
 router = APIRouter()
 
@@ -58,19 +56,7 @@ def classification_day(
     taught, passed = taught_and_passed(db)
     had = lessons_had(db)
 
-    since = datetime.combine(date - plan.LOOKBACK, datetime.min.time())
-    register: dict[int, list] = defaultdict(list)
-    for cin, when, status in db.query(
-        CadetAttendance.cadet_id, CadetAttendance.date, CadetAttendance.status
-    ).filter(CadetAttendance.register_type == PARADE_NIGHT, CadetAttendance.date >= since):
-        register[cin].append((when.date(), status))
-
-    night = datetime.combine(date, datetime.min.time())
-    absent = {
-        cin for (cin,) in db.query(CadetAbsence.cadet_id).filter(
-            and_(CadetAbsence.date_from <= night, CadetAbsence.date_to >= night)
-        )
-    }
+    outlooks = night_outlooks(db, date, [c.cin for c in cadets])
 
     rows = []
     for c in cadets:
@@ -93,6 +79,6 @@ def classification_day(
             "lesson_name": subject.name if subject else None,
             "lesson_part": part,
             "lesson_parts": subject.parts if subject else None,
-            "attendance": plan.attendance_outlook(register[c.cin], date, c.cin in absent),
+            "attendance": outlooks[c.cin],
         })
     return {"date": date.isoformat(), "weekday": date.strftime("%A"), "cadets": rows}

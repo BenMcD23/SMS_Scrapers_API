@@ -385,3 +385,122 @@ def test_the_sheet_being_edited_doesnt_count_as_having_led_its_own_task(api, db,
     # Another sheet for the same task still counts.
     _sheet(db, 1, passed=False, task_id=bridge["id"])
     assert [t["led"] for t in api.get(url, headers=api.as_("nco")).json()] == ["failed"]
+
+
+# ── planning a session ────────────────────────────────────────────────────────
+
+def _plan_body(**over):
+    return {"kind": "leadership", "date": "2026-11-09", "start": "19:00", "end": "20:00",
+            "changeover_minutes": 5, "stands": 2, "task_ids": [1], "cins": [1, 2], **over}
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("get", "/session-planner/cadets?date=2026-11-09", None),
+    ("post", "/session-planner/plan", _plan_body()),
+])
+def test_planning_needs_a_sign_in_and_is_staff_only(api, method, path, body):
+    kw = {"json": body} if body else {}
+    assert getattr(api, method)(path, **kw).status_code == 401
+    for persona in ("snco", "nco", "cadet"):
+        assert getattr(api, method)(path, headers=api.as_(persona), **kw).status_code == 403
+
+
+def test_the_planner_lists_cadets_with_their_outlook_and_leadership(api, db, cadets):
+    from database.models import CadetAbsence, CadetQualification
+    t = _task(api)
+    _sheet(db, 1, passed=True, task_id=t["id"])
+    _sheet(db, 1, passed=False, exercise_name="Swamp")
+    db.add(CadetQualification(cadet_id=2, qual_type="Blue Leadership", status="true"))
+    db.add(CadetAbsence(cadet_id=2, date_from=datetime(2026, 11, 1), date_to=datetime(2026, 11, 20),
+                        scraped_at=datetime(2026, 11, 1)))
+    db.commit()
+    rows = {r["cin"]: r for r in api.get("/session-planner/cadets?date=2026-11-09", headers=api.as_("staff")).json()}
+    # Sheets the bank can't place don't count as leads.
+    assert rows[1]["leadership"] == {"level": None, "led": 1, "passes": 1}
+    assert rows[2]["leadership"]["level"] == "blue"
+    assert any(f["code"] == "absence_booked" for f in rows[2]["attendance"]["flags"])
+    assert rows[2]["first_name"] == "Zoë"
+
+
+def test_the_planner_needs_a_date(api):
+    assert api.get("/session-planner/cadets", headers=api.as_("staff")).status_code == 422
+
+
+def test_the_planner_with_nobody_on_the_roster_lists_nobody(api):
+    assert api.get("/session-planner/cadets?date=2026-11-09", headers=api.as_("staff")).json() == []
+
+
+def _squad(db, n=8):
+    db.add_all([Cadet(cin=100 + i, first_name=f"C{i}", last_name=f"Surname{i:02d}", rank="Cadet",
+                      flight="AB"[i % 2]) for i in range(n)])
+    db.commit()
+    return [100 + i for i in range(n)]
+
+
+def test_a_plan_gives_groups_rounds_and_leaders_who_havent_led_the_task(api, db, cadets):
+    cins = _squad(db)
+    tasks = [_task(api, number=str(n), name=f"Task {n}")["id"] for n in (1, 2, 3)]
+    _sheet(db, 100, task_id=tasks[0])  # cadet 100 has led task 1 already
+    res = api.post("/session-planner/plan", headers=api.as_("staff"),
+                   json=_plan_body(task_ids=tasks, cins=cins, stands=2, end="20:30"))
+    assert res.status_code == 200, res.text
+    plan = res.json()
+    assert plan["leadership"] is True
+    assert sorted(c["cin"] for g in plan["groups"] for c in g["cadets"]) == cins
+    assert [r["start"] for r in plan["rounds"]] == ["19:00", "19:20", "19:40"]
+    runs = [run for r in plan["rounds"] for run in r["runs"]]
+    assert all(run["leader"] for run in runs)
+    assert not any(run["leader"]["cin"] == 100 and run["task_id"] == tasks[0] for run in runs)
+    assert runs[0]["task_name"].startswith("Task")
+    assert len(plan["not_leading"]) == len(cins) - len(runs)
+
+
+def test_a_session_that_isnt_leadership_has_no_leaders(api, db):
+    cins = _squad(db, 4)
+    radio = [_task(api, kind="radio", number=str(n), name=f"Net {n}")["id"] for n in (1, 2)]
+    plan = api.post("/session-planner/plan", headers=api.as_("staff"),
+                    json=_plan_body(kind="radio", task_ids=radio, cins=cins)).json()
+    assert plan["leadership"] is False and plan["not_leading"] == []
+    assert all(run["leader"] is None for r in plan["rounds"] for run in r["runs"])
+
+
+def test_a_plan_respects_the_kit_list(api, db):
+    cins = _squad(db, 6)
+    net = _kit(api, "Cargo net", 1)
+    a = _task(api, number="1", name="Wall", kit=[{"kit_id": net["id"], "quantity": 1}])["id"]
+    b = _task(api, number="2", name="Swamp", kit=[{"kit_id": net["id"], "quantity": 1}])["id"]
+    plan = api.post("/session-planner/plan", headers=api.as_("staff"),
+                    json=_plan_body(task_ids=[a, b], cins=cins, end="21:00")).json()
+    for r in plan["rounds"]:
+        assert len(r["runs"]) == 1, "both need the one cargo net"
+
+
+@pytest.mark.parametrize("over", [
+    {"kind": "knitting"},
+    {"start": "20:00", "end": "19:00"},
+    {"start": "19:00", "end": "19:00"},
+    {"stands": 0},
+    {"changeover_minutes": -1},
+    {"task_ids": []},
+    {"cins": []},
+    {"date": "not a date"},
+    {"start": "7pm"},
+])
+def test_bad_plan_requests_are_refused(api, over):
+    assert api.post("/session-planner/plan", headers=api.as_("staff"), json=_plan_body(**over)).status_code == 422
+
+
+def test_a_plan_with_unknown_tasks_or_cadets_is_404(api, db, cadets):
+    t = _task(api)["id"]
+    staff = api.as_("staff")
+    assert api.post("/session-planner/plan", headers=staff, json=_plan_body(task_ids=[t, 999])).status_code == 404
+    assert api.post("/session-planner/plan", headers=staff, json=_plan_body(task_ids=[t], cins=[1, 999])).status_code == 404
+
+
+def test_a_plan_cant_mix_kinds_or_use_retired_tasks(api, db, cadets):
+    lead = _task(api)["id"]
+    radio = _task(api, kind="radio", name="Net")["id"]
+    old = _task(api, number="9", name="Old", active=False)["id"]
+    staff = api.as_("staff")
+    assert api.post("/session-planner/plan", headers=staff, json=_plan_body(task_ids=[lead, radio])).status_code == 400
+    assert api.post("/session-planner/plan", headers=staff, json=_plan_body(task_ids=[old])).status_code == 400
