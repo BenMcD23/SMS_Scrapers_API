@@ -521,3 +521,32 @@ def recruit_form_confirmation_html(cadet_first_name: str, forms: list[str],
         Replies to this email go to {_esc(contact_name)}.</p>
     </div>
     """
+
+
+def recruit_form_link_html(cadet_first_name: str, link: str, expires: str,
+                           contact_name: str, contact_email: str) -> str:
+    """To a parent who signed their child up on the recruitment-evening page:
+    the link to the full joining form, to finish at home.
+
+    Drops the shared FOOTER, like the confirmation: it goes out with the
+    recruiting contact as Reply-To.
+    """
+    name = _esc(cadet_first_name)
+    contact = f'{_esc(contact_name)} at <a href="mailto:{_esc(contact_email)}">{_esc(contact_email)}</a>'
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">{name}'s joining form</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p>Hello,</p>
+      <p>Thank you for signing {name} up to join 317 Squadron RAF Air Cadets.</p>
+      <p>The next step is the joining form (RAFAC 3822A, and the health declaration if it applies).
+         It takes about 20 minutes and saves as you go, so you can come back to it.</p>
+      <p style="margin:24px 0">
+        <a href="{_esc(link)}" style="background:#1565c0;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold">Fill in the joining form</a>
+      </p>
+      <p>The link works until {_esc(expires)}. It is for {name}'s form only, so please don't share it.</p>
+      <p>Any problems or questions, contact {contact}.</p>
+      <p style="margin:20px 0 0;font-size:12px;color:#999">
+        Replies to this email go to {_esc(contact_name)}.</p>
+    </div>
+    """

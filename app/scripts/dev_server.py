@@ -426,6 +426,10 @@ def seed_stores(client, headers: dict) -> None:
             post("/stores/stock", {"itemType": item, "size": size, "box": "ABC"[i % 3],
                                    "section": str(i % 2 + 1), "quantity": 2 + i % 4})
 
+    # Polos are stock-only (never ordered), so they're seeded here and not in `sized`.
+    for size in ref["sizes"]["Polo"][1:4]:
+        post("/stores/stock", {"itemType": "Polo", "size": size, "box": "A", "section": "1", "quantity": 3})
+
     for n, cin in enumerate((FIRST_CIN + 4, FIRST_CIN + 11, FIRST_CIN + 18, FIRST_CIN + 25)):
         item = sized[n % len(sized)]
         post("/stores/orders", {"cadetCin": cin, "items": [
@@ -817,7 +821,8 @@ def seed_oc_dashboard(client, headers: dict) -> None:
 def seed_recruits(client, headers: dict, db) -> None:
     """Recruits at each stage of the joining form, through the real endpoints:
     one submitted (so the PDFs open), one part-way, one never opened, and one
-    whose link has run out (backdated directly — nothing in the API does that)."""
+    whose link has run out (backdated directly — nothing in the API does that),
+    plus one who signed up on the recruitment-evening page."""
     from database.models import RecruitApplication
 
     def add(first, last, parent, email):
@@ -843,6 +848,16 @@ def seed_recruits(client, headers: dict, db) -> None:
     expired_id, _ = add("Oscar", "Lee", "Mei Lee", "mei.lee@example.com")
     db.get(RecruitApplication, expired_id).expires_at = datetime.now() - timedelta(days=2)
     db.commit()
+
+    # The recruitment-evening sign-up page, open (until midnight, so a preview
+    # started later shows it shut, the normal state), with one family signed up.
+    res = client.put("/recruits/sign-up", headers=headers, json={"open": True})
+    assert res.status_code == 200, f"/recruits/sign-up: {res.status_code} {res.text}"
+    res = client.post("/recruit-signup", json={
+        "cadetFirstName": "Ruby", "cadetLastName": "O'Neill", "cadetDob": "2013-03-14",
+        "parentName": "Gráinne O'Neill", "parentEmail": "grainne.oneill@example.com",
+        "parentMobile": "07700 900456"})
+    assert res.status_code == 201, f"/recruit-signup: {res.status_code} {res.text}"
 
 
 def seed_applications(client, headers: dict, db) -> None:

@@ -247,7 +247,10 @@ def test_the_same_name_can_be_staff_and_an_nco(api, github):
     assert _add(api, "ncos", "Cpl", "Ben McDonald").status_code == 200
 
 
-@pytest.mark.parametrize("group,rank", [("ncos", "Flt Lt"), ("staff", "CWO"), ("staff", "ci"), ("staff", "")])
+# Adult staff have no corporals; Cpl is a cadet NCO rank only.
+@pytest.mark.parametrize(
+    "group,rank", [("ncos", "Flt Lt"), ("staff", "CWO"), ("staff", "Cpl"), ("staff", "ci"), ("staff", "")]
+)
 def test_a_rank_the_website_doesnt_list_is_rejected(api, github, group, rank):
     _seed(github)
     assert _add(api, group, rank, "Someone").status_code in (400, 422)

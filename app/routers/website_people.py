@@ -36,7 +36,7 @@ PLACEHOLDER = "Placeholder.webp"
 # Pinned to STAFF_RANKS and NCO_RANKS in the website's src/data/people.js: a
 # rank the site doesn't list sorts to the bottom (staff) or isn't shown at all
 # (NCOs, whose page has one section per rank). Change them together.
-STAFF_RANKS = ["Sqn Ldr", "Flt Lt", "Wg Cdr (Ret'd)", "Fg Off", "Plt Off", "WO", "FS", "Sgt", "Cpl", "CI"]
+STAFF_RANKS = ["Sqn Ldr", "Flt Lt", "Wg Cdr (Ret'd)", "Fg Off", "Plt Off", "WO", "FS", "Sgt", "CI"]
 NCO_RANKS = ["CWO", "FS", "Sgt", "Cpl"]
 RANKS = {"staff": STAFF_RANKS, "ncos": NCO_RANKS}
 

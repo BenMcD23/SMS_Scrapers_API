@@ -9,6 +9,12 @@ Two halves:
   /recruits/...         staff only, behind the usual Google sign-in
   /recruit-form/{token} public; the token in the link is the only credential
 
+Recruits can also sign themselves up on a recruitment evening, from a QR code
+on the night (/recruit-signup, the website's /enrol). It replaces the paper or
+Google sheet parents used to fill in: they give what staff would have typed into
+"Add recruit", and the joining-form link is emailed to them. The page is shut
+unless staff open it from SMS, and it shuts itself again at midnight.
+
 The public half answers every bad link — unknown, expired, deleted — with the
 same 404, so a link can't be probed for whether it ever existed. It never sends
 answers back once the form is submitted.
@@ -25,22 +31,24 @@ import binascii
 import logging
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from core import recruit_form
 from core.config import RECRUIT_CONTACT_EMAIL, RECRUIT_CONTACT_NAME, RECRUIT_FORM_URL
 from core.db import get_db
-from core.emailer import EMAIL_RE, recruit_form_confirmation_html, send_email
+from core.emailer import EMAIL_RE, recruit_form_confirmation_html, recruit_form_link_html, send_email
 from core.http import content_disposition
+from core.ratelimit import limiter
 from core.recruit_form import RecruitFormData, london_now
 from core.security import require_staff
-from database.models import RecruitApplication
+from database.models import RecruitApplication, RecruitSignupSettings
 from form_generators.recruit_pdf import build_pdf
 
 router = APIRouter()
@@ -136,14 +144,31 @@ def _decode_signature(data_url: str | None, who: str) -> bytes:
     return png
 
 
-def _prefill(cadet_name: str, parent_name: str, parent_email: str) -> dict:
-    """What staff already know, so the parent doesn't type it twice."""
+def _prefill(cadet_name: str, parent_name: str, parent_email: str,
+             dob: date | None = None, mobile: str = "") -> dict:
+    """What's already known (from staff, or the sign-up page), so the parent
+    doesn't type it twice."""
     forename, _, surname = parent_name.partition(" ")
     return RecruitFormData.model_validate({
-        "cadet": {"fullName": cadet_name},
-        "nok": {"fullName": parent_name, "email": parent_email},
+        "cadet": {"fullName": cadet_name, "dob": dob},
+        "nok": {"fullName": parent_name, "email": parent_email, "mobile": mobile},
         "signer": {"forename": forename, "surname": surname},
     }).model_dump(mode="json")
+
+
+def _new_application(first: str, last: str, parent_name: str, parent_email: str, now: datetime,
+                     created_by: str | None, dob: date | None = None, mobile: str = "") -> RecruitApplication:
+    return RecruitApplication(
+        cadet_first_name=first,
+        cadet_last_name=last,
+        parent_name=parent_name,
+        parent_email=parent_email,
+        token=secrets.token_urlsafe(32),
+        expires_at=now + timedelta(days=LINK_DAYS),
+        data=_prefill(f"{first} {last}", parent_name, parent_email, dob, mobile),
+        created_by=created_by,
+        created_at=now,
+    )
 
 
 def _confirmation_recipients(form: RecruitFormData, link_email: str) -> list[str]:
@@ -187,6 +212,152 @@ def _send_confirmation(form: RecruitFormData, link_email: str, cadet_first: str,
     )
 
 
+# ── recruitment-evening sign-up ──────────────────────────────────────────────
+
+# created_by on a recruit who signed up themselves, where staff would be named.
+SIGNUP_CREATED_BY = "sign-up page"
+SIGNUP_CLOSED = "Sign-ups aren't open at the moment. Ask a member of staff."
+# A child old enough to join soon, up to the last chance to join: anything
+# outside this is a mistyped year, not a recruit.
+SIGNUP_AGES = (9, 18)
+
+
+def _signup_settings(db: Session) -> RecruitSignupSettings:
+    row = db.query(RecruitSignupSettings).first()
+    if not row:
+        row = RecruitSignupSettings()
+        db.add(row)
+        db.flush()
+    return row
+
+
+def _signup_open(row: RecruitSignupSettings, now: datetime) -> bool:
+    return bool(row.open_until and row.open_until > now)
+
+
+def _signup_view(row: RecruitSignupSettings, now: datetime) -> dict:
+    is_open = _signup_open(row, now)
+    return {
+        "open": is_open,
+        "openUntil": _iso(row.open_until) if is_open else None,
+        "openedBy": row.opened_by if is_open else None,
+        # The QR code's target: the joining form's address without a token.
+        "url": RECRUIT_FORM_URL,
+    }
+
+
+class SignupSwitch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    open: bool
+
+
+@router.get("/recruits/sign-up")
+def get_signup(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    row = _signup_settings(db)
+    db.commit()
+    return _signup_view(row, london_now())
+
+
+@router.put("/recruits/sign-up")
+def set_signup(body: SignupSwitch, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """Open the sign-up page until midnight tonight (UK), or close it now."""
+    now = london_now()
+    row = _signup_settings(db)
+    if body.open:
+        row.open_until = datetime.combine(now.date() + timedelta(days=1), time.min)
+        row.opened_by = idinfo.get("email")
+    else:
+        row.open_until = None
+    db.commit()
+    return _signup_view(row, now)
+
+
+class Signup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cadetFirstName: Name
+    cadetLastName: Name
+    cadetDob: date
+    parentName: Name
+    parentEmail: Name
+    parentMobile: Name
+    # A field people never see: a bot fills every input, a parent leaves it blank.
+    website: str = ""
+
+
+def _send_link(to: str, cadet_first: str, link: str, expires: datetime) -> None:
+    """Runs after the response, so it takes plain values: the request's
+    database session is closed by then."""
+    send_email(
+        to,
+        f"{cadet_first}'s joining form for 317 Squadron",
+        recruit_form_link_html(cadet_first, link, f"{expires.day} {expires:%B %Y}",
+                               RECRUIT_CONTACT_NAME, RECRUIT_CONTACT_EMAIL),
+        reply_to=RECRUIT_CONTACT_EMAIL,
+    )
+
+
+def _queue_link(background: BackgroundTasks, app: RecruitApplication) -> None:
+    background.add_task(_send_link, app.parent_email, app.cadet_first_name, _link(app), app.expires_at)
+
+
+@router.get("/recruit-signup")
+def signup_status(db: Session = Depends(get_db)):
+    """Whether the page should show the form or say it's shut. Nothing else."""
+    row = _signup_settings(db)
+    db.commit()
+    return {"open": _signup_open(row, london_now())}
+
+
+@router.post("/recruit-signup", status_code=201)
+# Public, and every request arrives through the same proxy, so this caps the
+# whole page rather than one phone: well above a busy evening's families, far
+# below what a script would want.
+@limiter.limit("30/minute")
+def signup(request: Request, body: Signup, background: BackgroundTasks, db: Session = Depends(get_db)):
+    """Add a recruit from the sign-up page and email the parent their link.
+
+    The response carries the link so the parent can start straight away, but
+    only for a new recruit: if this child is already waiting under the same
+    email, the link is emailed again and not shown, so typing someone's name
+    and email can't open a form with their answers in.
+    """
+    now = london_now()
+    if not _signup_open(_signup_settings(db), now):
+        db.commit()
+        raise HTTPException(status_code=409, detail=SIGNUP_CLOSED)
+    if body.website:
+        return {"cadetFirstName": body.cadetFirstName, "link": None, "email": body.parentEmail}
+    if not _EMAIL.match(body.parentEmail):
+        raise HTTPException(status_code=422, detail="Enter your email address, like name@example.com.")
+    if not recruit_form._phone_ok(body.parentMobile):
+        raise HTTPException(status_code=422, detail="Enter your mobile number, like 07700 900123.")
+    age = recruit_form.age_on(body.cadetDob, now.date())
+    if age is None or not SIGNUP_AGES[0] <= age <= SIGNUP_AGES[1]:
+        raise HTTPException(status_code=422, detail="Check your child's date of birth.")
+
+    existing = (db.query(RecruitApplication)
+                .filter(RecruitApplication.submitted_at.is_(None))
+                .filter(func.lower(RecruitApplication.cadet_first_name) == body.cadetFirstName.lower())
+                .filter(func.lower(RecruitApplication.cadet_last_name) == body.cadetLastName.lower())
+                .filter(func.lower(RecruitApplication.parent_email) == body.parentEmail.lower())
+                .first())
+    if existing:
+        # A second go (a double tap, or the email didn't arrive): one recruit,
+        # with a live link, sent again.
+        if existing.expires_at <= now:
+            existing.expires_at = now + timedelta(days=LINK_DAYS)
+        db.commit()
+        _queue_link(background, existing)
+        return {"cadetFirstName": existing.cadet_first_name, "link": None, "email": existing.parent_email}
+
+    app = _new_application(body.cadetFirstName, body.cadetLastName, body.parentName, body.parentEmail,
+                           now, SIGNUP_CREATED_BY, body.cadetDob, body.parentMobile)
+    db.add(app)
+    db.commit()
+    _queue_link(background, app)
+    return {"cadetFirstName": app.cadet_first_name, "link": _link(app), "email": app.parent_email}
+
+
 # ── staff ────────────────────────────────────────────────────────────────────
 
 class NewRecruit(BaseModel):
@@ -209,17 +380,8 @@ def add_recruit(body: NewRecruit, db: Session = Depends(get_db), idinfo: dict = 
     if not _EMAIL.match(body.parentEmail):
         raise HTTPException(status_code=422, detail="Enter the parent's email address, like name@example.com.")
     now = london_now()
-    app = RecruitApplication(
-        cadet_first_name=body.cadetFirstName,
-        cadet_last_name=body.cadetLastName,
-        parent_name=body.parentName,
-        parent_email=body.parentEmail,
-        token=secrets.token_urlsafe(32),
-        expires_at=now + timedelta(days=LINK_DAYS),
-        data=_prefill(f"{body.cadetFirstName} {body.cadetLastName}", body.parentName, body.parentEmail),
-        created_by=idinfo.get("email"),
-        created_at=now,
-    )
+    app = _new_application(body.cadetFirstName, body.cadetLastName, body.parentName, body.parentEmail,
+                           now, idinfo.get("email"))
     db.add(app)
     db.commit()
     return _summary(app, now)
