@@ -422,6 +422,22 @@ def test_the_planner_lists_cadets_with_their_outlook_and_leadership(api, db, cad
     assert rows[2]["first_name"] == "Zoë"
 
 
+def test_the_planner_ticks_who_has_checked_in_that_night_and_no_other(api, db, cadets):
+    from datetime import date
+
+    from database.models import CadetAttendance, CadetCheckIn
+    db.add(CadetCheckIn(cadet_id=1, date=date(2026, 11, 9), checked_in_at=datetime(2026, 11, 9, 19, 2)))
+    # Checked in the week before, and on the scraped register that night: neither
+    # is a check-in for the night being planned.
+    db.add(CadetCheckIn(cadet_id=2, date=date(2026, 11, 2), checked_in_at=datetime(2026, 11, 2, 19, 0)))
+    db.add(CadetAttendance(cadet_id=2, date=datetime(2026, 11, 9), register_type="Parade Night",
+                           status="Present Correctly Dressed"))
+    db.commit()
+    rows = {r["cin"]: r for r in api.get("/session-planner/cadets?date=2026-11-09", headers=api.as_("staff")).json()}
+    assert rows[1]["checked_in"] is True
+    assert rows[2]["checked_in"] is False
+
+
 def test_the_planner_needs_a_date(api):
     assert api.get("/session-planner/cadets", headers=api.as_("staff")).status_code == 422
 

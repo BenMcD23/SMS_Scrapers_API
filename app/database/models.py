@@ -59,6 +59,7 @@ class Cadet(Base):
     theory_lessons    = relationship("CadetTheoryLesson", back_populates="cadet", cascade="all, delete-orphan")
     absences          = relationship("CadetAbsence",         back_populates="cadet", cascade="all, delete-orphan")
     attendance        = relationship("CadetAttendance",      back_populates="cadet", cascade="all, delete-orphan")
+    check_ins         = relationship("CadetCheckIn",         back_populates="cadet", cascade="all, delete-orphan")
     whts              = relationship("CadetWht",             back_populates="cadet", cascade="all, delete-orphan")
     leaving_process   = relationship("CadetLeavingProcess",  back_populates="cadet", uselist=False, cascade="all, delete-orphan")
     appointment_application = relationship("AppointmentApplication", back_populates="cadet", uselist=False,
@@ -300,6 +301,42 @@ class CadetAttendance(Base):
     unit          = Column(Text,       nullable=True)  # unit attended
 
     cadet = relationship("Cadet", back_populates="attendance")
+
+
+class CadetCheckIn(Base):
+    """A cadet marked in on a night before the Bader register is done: they
+    scanned the squadron's check-in QR code or tapped its NFC tag on the
+    portal, or an NCO ticked them in on the SMS site.
+
+    Kept apart from CadetAttendance on purpose. That table is Bader's register,
+    full-replaced by the scraper; this is only a head count for the night (the
+    session planner ticks these cadets), and the scraped register stays the
+    record of who attended."""
+    __tablename__ = "Cadet_Check_Ins"
+    __table_args__ = (UniqueConstraint("cadet_id", "date", name="uq_cadet_check_in_night"),)
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    date          = Column(Date,       nullable=False, index=True)  # the UK night
+    checked_in_at = Column(DateTime,   nullable=False)              # UK local time, naive like the rest
+    # Name of the NCO or staff member who ticked them in; None when the cadet
+    # checked themselves in with the code.
+    checked_in_by = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="check_ins")
+
+
+class CheckInSettings(Base):
+    """The squadron's check-in code: what the printed QR code and the NFC tag
+    on the door open (the portal's /check-in/<code>). One row, made on first
+    use. Staff change it if it gets passed round, which retires every printed
+    copy at once."""
+    __tablename__ = "Check_In_Settings"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    code       = Column(Text,     nullable=False)
+    changed_at = Column(DateTime, nullable=False)
+    changed_by = Column(Text,     nullable=True)  # email of the staff member who last made a new one
 
 
 class CadetWht(Base):

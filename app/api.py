@@ -37,6 +37,7 @@ from routers import (
     cadets,
     catalogue,
     chat,
+    check_ins,
     classification_day,
     committee,
     events,
@@ -207,6 +208,7 @@ def health_check(idinfo: dict = Depends(require_user)):
 app.include_router(portal.router)
 app.include_router(activity_logs.router)
 app.include_router(theory.router)
+app.include_router(check_ins.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)
 app.include_router(assessment_drafts.router)
