@@ -351,7 +351,6 @@ def test_activity_logs_give_the_portal_and_the_dashboard_every_state(api, db, mo
 UNSEEDED_TABLES = {
     "317_Events", "All_Events", "Assessment_Sheets", "Attachment_Check_Quals",
     "Bader_Credentials",  # secrets: a preview never scrapes
-    "Badge_Grid_Cells", "Badge_Grid_Config", "Badge_Items",
     "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
     "Cadet_Portal_Data", "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
     "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders", "NCO_Appraisals",
@@ -361,14 +360,12 @@ UNSEEDED_TABLES = {
     "Stats_Snapshots", "Stats_Targets", "Text_Settings", "User_Profiles", "User_Signatures",
 }
 UNSEEDED_COLUMNS = {
-    ("Badge_Order_Items", "given_at"), ("Badge_Order_Items", "given_by"),
     ("Badge_Order_Items", "gained_where_detail"),
     ("Cadet_Dietary", "details"),
     ("Cadet_Qualifications", "expiry_alert_sent_at"),
     ("Flying_Paperwork", "updated_at"), ("Flying_Paperwork", "updated_by"),
     ("Recruit_Applications", "cadet_signature"),
     ("Staff", "address"),
-    ("Stores_Item_Issuances", "user_id"),
     ("Stores_Order_Items", "ready_to_collect"),
     ("Stores_Orders", "user_id"),
 }

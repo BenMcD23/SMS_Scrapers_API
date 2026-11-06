@@ -1250,6 +1250,29 @@ class StoresItemIssuance(Base):
     user  = relationship("User",  back_populates="item_issuances")
 
 
+class StoresIssuanceHistory(Base):
+    """Every time uniform was recorded as given, newest last — never edited or
+    deleted, only marked undone. StoresItemIssuance above is the "last issued"
+    summary for each category, worked out from the newest entry here that
+    hasn't been undone (core/issuance_history.py), so an undo steps back to the
+    give before it instead of losing it."""
+    __tablename__ = "Stores_Issuance_History"
+
+    id            = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id      = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=True, index=True)
+    user_id       = Column(Integer,    ForeignKey("Users.id",   ondelete="CASCADE"), nullable=True, index=True)
+    item_category = Column(Text,       nullable=False)
+    given_at      = Column(DateTime,   nullable=False)  # the date it was given (may be back-dated)
+    size_given    = Column(Text,       nullable=True)
+    recorded_at   = Column(DateTime,   nullable=False)  # when someone recorded it
+    recorded_by   = Column(Text,       nullable=True)   # null for records from before this history
+    # The order item it was handed out against, if any, so undoing that order
+    # item undoes this entry (and the reverse).
+    order_item_id = Column(Integer,    ForeignKey("Stores_Order_Items.id", ondelete="SET NULL"), nullable=True, index=True)
+    undone_at     = Column(DateTime,   nullable=True)
+    undone_by     = Column(Text,       nullable=True)
+
+
 # ─── Badge Orders ─────────────────────────────────────────────────────────────
 
 class BadgeOrder(Base):
@@ -1286,6 +1309,28 @@ class BadgeOrderItem(Base):
     gained_date_to      = Column(DateTime, nullable=True)
 
     order = relationship("BadgeOrder", back_populates="order_items")
+
+
+class StoresStockChange(Base):
+    """One change to a stock count, uniform shelf or badge grid: who, when, by
+    how much and what it left. Stock rows themselves only hold the current
+    count, so without this a wrong number can't be traced. Not linked by
+    foreign key: the line it describes may since have been deleted."""
+    __tablename__ = "Stores_Stock_Changes"
+
+    id             = Column(Integer,  primary_key=True, autoincrement=True)
+    kind           = Column(Text,     nullable=False)  # "uniform" | "badge"
+    stock_item_id  = Column(Integer,  nullable=True, index=True)  # Stores_Items.id / Badge_Items.id at the time
+    item_name      = Column(Text,     nullable=False)  # item type, or badge name
+    size           = Column(Text,     nullable=True)
+    location       = Column(Text,     nullable=True)   # "A / 1" (box / section) or the badge cell's label
+    action         = Column(Text,     nullable=False)  # core/stock_changes.py ACTIONS
+    change         = Column(Integer,  nullable=False, default=0)
+    quantity_after = Column(Integer,  nullable=True)   # null once the line is gone
+    note           = Column(Text,     nullable=True)
+    order_id       = Column(Integer,  nullable=True)   # the order it went to or came back from
+    changed_at     = Column(DateTime, nullable=False, index=True)
+    changed_by     = Column(Text,     nullable=True)
 
 
 # ─── Supplier order batches (Logs Form / badge order list) ───────────────────
@@ -1333,6 +1378,10 @@ class BadgeOrderListEntry(Base):
     ordered_by    = Column(Text,     nullable=True)
     received_at   = Column(DateTime, nullable=True)
     received_by   = Column(Text,     nullable=True)
+    # Every step and undo, oldest first: JSON [{id, action, timestamp, by}]
+    # (routers/badges.py LIST_ACTIONS). The stamps above are the current state;
+    # this keeps what an undo cleared.
+    history       = Column(Text,     nullable=False, default="[]", server_default="[]")
 
 
 # ─── Parade Night Texts ───────────────────────────────────────────────────────

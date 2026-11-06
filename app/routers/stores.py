@@ -11,7 +11,16 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload, object_session, selectinload
 
-from core import catalogue_store, given_events, push, stock_events, stock_insights
+from core import (
+    catalogue_store,
+    given_events,
+    issuance_history,
+    push,
+    stock_changes,
+    stock_events,
+    stock_insights,
+)
+from core.actor import actor_name
 from core.catalogue import TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
@@ -22,11 +31,13 @@ from database.models import (
     LogsForm,
     LogsFormEntry,
     StoresBox,
+    StoresIssuanceHistory,
     StoresItem,
     StoresItemIssuance,
     StoresOrder,
     StoresOrderItem,
     StoresSection,
+    StoresStockChange,
     User,
 )
 
@@ -212,6 +223,9 @@ def stores_post_structure(
         if not box:
             raise HTTPException(status_code=404, detail="Box not found")
         old_level = box.shelf_level if box.shelf_level is not None else 1
+        for item in box.items:
+            stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo),
+                                         change=-item.quantity, gone=True, note=f"Box {box.label} deleted")
         db.delete(box)
         db.commit()
         # Compact shelf_position on that level
@@ -250,6 +264,10 @@ def stores_post_structure(
         if not section:
             raise HTTPException(status_code=404, detail="Section not found")
         box_id = box.id
+        for item in section.items:
+            stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo),
+                                         change=-item.quantity, gone=True,
+                                         note=f"Section {box.label} / {section.label} deleted")
         db.delete(section)
         db.commit()
         # Compact section positions for this box
@@ -443,6 +461,8 @@ def stores_create_stock(
     if existing:
         logger.info("stock add: topping up existing item %s", existing.id)
         existing.quantity += int(quantity)
+        stock_changes.record_uniform(db, existing, stock_changes.TOPPED_UP, actor_name(idinfo),
+                                     change=int(quantity))
         db.commit()
         db.refresh(existing)
         return _item_to_dict(existing)
@@ -456,9 +476,23 @@ def stores_create_stock(
         section_id = section.id,
     )
     db.add(item)
+    stock_changes.record_uniform(db, item, stock_changes.ADDED, actor_name(idinfo), change=int(quantity))
     db.commit()
     db.refresh(item)
     return _item_to_dict(item)
+
+
+def _log_stock_edit(db: Session, item: StoresItem, before: dict, by: str | None) -> None:
+    """One history line per kind of change an edit made: count, name, place."""
+    name = f"{item.item_type} {item.size}".strip()
+    if item.quantity != before["quantity"]:
+        stock_changes.record_uniform(db, item, stock_changes.COUNTED, by, change=item.quantity - before["quantity"],
+                                     note=f"Was {before['quantity']}")
+    if name != before["name"]:
+        stock_changes.record_uniform(db, item, stock_changes.RENAMED, by, note=f"Was {before['name']}")
+    location = stock_changes.uniform_location(item)
+    if location != before["location"]:
+        stock_changes.record_uniform(db, item, stock_changes.MOVED, by, note=f"From {before['location']}")
 
 
 @router.patch("/stores/stock/{item_id}")
@@ -473,6 +507,9 @@ def stores_update_stock(
     if not item:
         logger.warning("stock update: item %s not found", item_id)
         raise HTTPException(status_code=404, detail="Item not found")
+    by = actor_name(idinfo)
+    before = {"name": f"{item.item_type} {item.size}".strip(), "location": stock_changes.uniform_location(item),
+              "quantity": item.quantity}
 
     if "quantity" in body:
         item.quantity = int(body["quantity"])
@@ -495,6 +532,10 @@ def stores_update_stock(
             raise HTTPException(status_code=404, detail="Section not found")
         item.section_id = section.id
 
+    db.flush()
+    db.refresh(item)  # box / section relationships, after an id-only move
+    _log_stock_edit(db, item, before, by)
+
     # If the edited item now matches another existing item, merge them
     duplicate = db.query(StoresItem).filter(
         StoresItem.id         != item.id,
@@ -507,6 +548,8 @@ def stores_update_stock(
     if duplicate:
         logger.info("stock %s merged into duplicate %s", item.id, duplicate.id)
         duplicate.quantity += item.quantity
+        stock_changes.record_uniform(db, duplicate, stock_changes.MERGED, by, change=item.quantity,
+                                     note="Edited to match this line, so the two were combined")
         db.delete(item)
         db.commit()
         db.refresh(duplicate)
@@ -529,8 +572,27 @@ def stores_delete_stock(
         raise HTTPException(status_code=404, detail="Item not found")
     logger.info("stock delete: %s (%s %s x%s) by %s",
                 item_id, item.item_type, item.size, item.quantity, idinfo.get("email"))
+    stock_changes.record_uniform(db, item, stock_changes.DELETED, actor_name(idinfo), change=-item.quantity,
+                                 gone=True)
     db.delete(item)
     db.commit()
+
+
+# ── Stock changes ─────────────────────────────────────────────────────────────
+
+@router.get("/stores/stock/changes")
+def stores_stock_changes(
+    kind: str | None = Query(None, pattern="^(uniform|badge)$"),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Every change to a stock count, newest first: uniform, badges or both."""
+    query = db.query(StoresStockChange)
+    if kind:
+        query = query.filter(StoresStockChange.kind == kind)
+    rows = query.order_by(StoresStockChange.id.desc()).limit(limit).all()
+    return [stock_changes.to_dict(r) for r in rows]
 
 
 # ── Insights ──────────────────────────────────────────────────────────────────
@@ -837,7 +899,7 @@ def stores_order_item_stock(
     order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
 
     events = stock_events.events_list(item.stock_events)
-    by = body.get("by") or idinfo.get("email")
+    by = body.get("by") or actor_name(idinfo)
 
     if action == "remove":
         if stock_events.is_removed(events):
@@ -848,6 +910,8 @@ def stores_order_item_stock(
         if stock_item.quantity <= 0:
             raise HTTPException(status_code=400, detail="Out of stock")
         stock_item.quantity -= 1
+        stock_changes.record_uniform(db, stock_item, stock_changes.TAKEN, by, change=-1, order_id=order.id,
+                                     note=f"For {_order_subject(order)[0]}")
         events.append(stock_events.new_event(
             stock_events.REMOVED, by,
             stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
@@ -870,6 +934,8 @@ def stores_order_item_stock(
                 detail="That stock entry no longer exists — add the item back on the stock page",
             )
         stock_item.quantity += 1
+        stock_changes.record_uniform(db, stock_item, stock_changes.RETURNED, by, change=1, order_id=order.id,
+                                     note=f"From {_order_subject(order)[0]}'s order")
         events.append(stock_events.new_event(
             stock_events.RETURNED, by,
             stockItemId=stock_item.id, itemType=stock_item.item_type, size=stock_item.size,
@@ -884,28 +950,37 @@ def stores_order_item_stock(
     return {"order": order_to_dict(order), "stockItem": _item_to_dict(stock_item)}
 
 
-def _restore_issuance(db: Session, order: StoresOrder, event: dict) -> None:
-    """Put the cadet's "last issued" record back to what it was before `event` gave the item.
+def _restore_issuance(db: Session, order: StoresOrder, item: StoresOrderItem, event: dict | None,
+                      by: str | None) -> None:
+    """Step the subject's "last issued" record back past the give being undone.
 
-    Only when the record still shows what that give wrote: if a later give (of
-    another item in the same category) has moved it on, it is left alone —
-    undoing the older give must not overwrite the newer one.
+    A give recorded since the issuance history existed is linked to its order
+    item, so that entry is marked undone. One from before it is found by what it
+    wrote, and only while the record still shows it: if a later give has moved
+    the record on, undoing the older one must not overwrite the newer one.
     """
-    category = event.get("category")
-    if not category:
+    entry = issuance_history.entry_for_order_item(db, item.id)
+    if entry:
+        issuance_history.undo_entry(db, entry, by)
         return
-    query = db.query(StoresItemIssuance).filter(StoresItemIssuance.item_category == category)
-    query = (query.filter(StoresItemIssuance.cadet_id == order.cadet_id) if order.cadet_id is not None
-             else query.filter(StoresItemIssuance.user_id == order.user_id))
-    row = query.first()
+    category = (event or {}).get("category")
+    if not category:
+        return  # given before any history: nothing says what to restore
+    subject = {"cadet_cin": order.cadet_id} if order.cadet_id is not None else {"user_id": order.user_id}
+    row = issuance_history.current_record(db, category, **subject)
     if not row or row.last_given.isoformat() != event.get("lastGiven") or row.size_given != event.get("sizeGiven"):
         return
+    issuance_history.undo_latest(db, category, by, **subject)
     previous = event.get("previous")
-    if previous is None:
-        db.delete(row)
-    else:
-        row.last_given = datetime.fromisoformat(previous["lastGiven"])
-        row.size_given = previous.get("sizeGiven")
+    if previous and issuance_history.latest_active(db, category, **subject) is None:
+        # The record it replaced was never in the history; put it back as an entry.
+        db.add(StoresIssuanceHistory(
+            cadet_id=order.cadet_id, user_id=order.user_id if order.cadet_id is None else None,
+            item_category=category, given_at=datetime.fromisoformat(previous["lastGiven"]),
+            size_given=previous.get("sizeGiven"), recorded_at=datetime.fromisoformat(previous["lastGiven"]),
+        ))
+        db.flush()
+        issuance_history.sync_current(db, category, **subject)
 
 
 @router.post("/stores/orders/{order_id}/items/{item_id}/undo-given", status_code=200)
@@ -917,15 +992,14 @@ def stores_undo_given(
     idinfo: dict = Depends(require_staff),
 ):
     """Take back a mark-as-given. The item goes back to waiting, the cadet's
-    "last issued" record is restored, and both the give and the undo stay in
-    the item's history. An item given before the history existed is cleared the
-    same way, but the issuance record is left as it is (there is nothing to
-    restore it from)."""
+    "last issued" record steps back to the give before, and both the give and
+    the undo stay in the item's and the cadet's history. An item given before
+    any history existed is cleared the same way, but the issuance record is
+    left as it is (there is nothing to restore it from)."""
     order, item = get_order_item(db, StoresOrder, StoresOrderItem, order_id, item_id)
-    by = (body or {}).get("by") or idinfo.get("email")
+    by = (body or {}).get("by") or actor_name(idinfo)
     given = undo_given(order, item, by, noun="an item")
-    if given:
-        _restore_issuance(db, order, given)
+    _restore_issuance(db, order, item, given, by)
     db.commit()
     logger.info("order %s item %s: given undone by %s", order_id, item_id, by)
     db.refresh(order)
@@ -955,46 +1029,31 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
         except (ValueError, TypeError):
             given_at = datetime.now()
 
-        query = db.query(StoresItemIssuance).filter(StoresItemIssuance.item_category == category)
-        if cadet_cin is not None:
-            query = query.filter(StoresItemIssuance.cadet_id == cadet_cin)
-        else:
-            query = query.filter(StoresItemIssuance.user_id == user_id)
-
-        existing = query.first()
-        # What the cadet's record said before this give, so an undo can restore it.
+        order_item_id = item.get("orderItemId")
+        order_item = (db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
+                      if order_item_id else None)
+        existing = issuance_history.current_record(db, category, cadet_cin=cadet_cin, user_id=user_id)
+        # What the record said before this give; kept on the order item's own
+        # log too, as it was before the issuance history existed.
         previous = (
             {"lastGiven": existing.last_given.isoformat(), "sizeGiven": existing.size_given}
             if existing else None
         )
-        if existing:
-            existing.last_given = given_at
-            existing.size_given = size
-            updated.append(existing)
-        else:
-            new_issuance = StoresItemIssuance(
-                cadet_id=cadet_cin,
-                user_id=user_id,
-                item_category=category,
-                last_given=given_at,
-                size_given=size,
-            )
-            db.add(new_issuance)
-            updated.append(new_issuance)
+        updated.append(issuance_history.record_give(
+            db, category, given_at, size, given_by, cadet_cin=cadet_cin, user_id=user_id,
+            order_item_id=order_item.id if order_item else None,
+        ))
 
         # Stamp the order item it came from
-        order_item_id = item.get("orderItemId")
-        if order_item_id:
-            order_item = db.query(StoresOrderItem).filter(StoresOrderItem.id == int(order_item_id)).first()
-            if order_item:
-                order_item.given_at = given_at
-                order_item.given_by = given_by
-                events = given_events.events_list(order_item.given_events)
-                events.append(given_events.new_event(
-                    given_events.GIVEN, given_by, timestamp=given_at.isoformat(),
-                    category=category, lastGiven=given_at.isoformat(), sizeGiven=size, previous=previous,
-                ))
-                order_item.given_events = given_events.dump(events)
+        if order_item:
+            order_item.given_at = given_at
+            order_item.given_by = given_by
+            events = given_events.events_list(order_item.given_events)
+            events.append(given_events.new_event(
+                given_events.GIVEN, given_by, timestamp=given_at.isoformat(),
+                category=category, lastGiven=given_at.isoformat(), sizeGiven=size, previous=previous,
+            ))
+            order_item.given_events = given_events.dump(events)
 
     db.commit()
     logger.info("issuances recorded: %s for %s by %s",
@@ -1003,6 +1062,23 @@ def _upsert_issuances(db: Session, items: list[dict], given_by: str,
     for i in updated:
         db.refresh(i)
     return updated
+
+
+def _given_by(body: dict, idinfo: dict) -> str:
+    """Who to credit: the name the page sends, else the signed-in account, so
+    an edit on the Uniform tab (which sends no name) isn't logged as "Unknown"."""
+    return body.get("givenBy") or actor_name(idinfo) or "Unknown"
+
+
+@router.get("/stores/issuances/user/{user_id}/history")
+def stores_get_user_issuance_history(
+    user_id: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    if not db.get(User, user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    return issuance_history.to_dicts(issuance_history.history(db, user_id=user_id))
 
 
 @router.get("/stores/issuances/user/{user_id}")
@@ -1036,9 +1112,21 @@ def stores_mark_user_as_given(
         raise HTTPException(status_code=404, detail="User not found")
 
     updated = _upsert_issuances(
-        db, body.get("items", []), body.get("givenBy") or "Unknown", user_id=user_id,
+        db, body.get("items", []), _given_by(body, idinfo), user_id=user_id,
     )
     return [issuance_to_dict(i) for i in updated]
+
+
+@router.get("/stores/issuances/{cadet_cin}/history")
+def stores_get_issuance_history(
+    cadet_cin: int,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Every uniform give recorded for the cadet, newest first, undone ones included."""
+    if not db.get(Cadet, cadet_cin):
+        raise HTTPException(status_code=404, detail="Cadet not found")
+    return issuance_history.to_dicts(issuance_history.history(db, cadet_cin=cadet_cin))
 
 
 @router.get("/stores/issuances/{cadet_cin}")
@@ -1072,9 +1160,43 @@ def stores_mark_as_given(
         raise HTTPException(status_code=404, detail="Cadet not found")
 
     updated = _upsert_issuances(
-        db, body.get("items", []), body.get("givenBy") or "Unknown", cadet_cin=cadet_cin,
+        db, body.get("items", []), _given_by(body, idinfo), cadet_cin=cadet_cin,
     )
     return [issuance_to_dict(i) for i in updated]
+
+
+@router.post("/stores/issuances/{issuance_id}/undo", status_code=200)
+def stores_undo_issuance(
+    issuance_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Undo the last give of this category: the record steps back to the give
+    before it (or goes, if there wasn't one) and the undone give stays in the
+    history. If that give was handed out against an order, the order item goes
+    back to waiting too, so the two never disagree."""
+    issuance = db.get(StoresItemIssuance, issuance_id)
+    if not issuance:
+        raise HTTPException(status_code=404, detail="Issuance record not found")
+    by = (body or {}).get("by") or actor_name(idinfo)
+    subject = ({"cadet_cin": issuance.cadet_id} if issuance.cadet_id is not None
+               else {"user_id": issuance.user_id})
+    category = issuance.item_category
+
+    entry = issuance_history.latest_active(db, category, **subject)
+    order_item = db.get(StoresOrderItem, entry.order_item_id) if entry and entry.order_item_id else None
+    if order_item and order_item.given_at:
+        # Refuses (409) on a completed order before anything has changed.
+        undo_given(order_item.order, order_item, by, noun="an item")
+    undone = issuance_history.undo_latest(db, category, by, **subject)
+    db.commit()
+    logger.info("issuance %s (%s) undone by %s", issuance_id, category, by)
+    current = issuance_history.current_record(db, category, **subject)
+    return {
+        "issuance": issuance_to_dict(current) if current else None,
+        "undone": issuance_history.to_dict(undone) if undone else None,
+    }
 
 
 @router.delete("/stores/issuances/{issuance_id}", status_code=204)
@@ -1083,12 +1205,18 @@ def stores_delete_issuance(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff),
 ):
+    """Clear a category's "last issued" record. Every give behind it is marked
+    undone rather than deleted, so the history still shows what was given."""
     issuance = db.query(StoresItemIssuance).filter(StoresItemIssuance.id == issuance_id).first()
     if not issuance:
         logger.warning("issuance delete: %s not found", issuance_id)
         raise HTTPException(status_code=404, detail="Issuance record not found")
     logger.info("issuance delete: %s (%s) by %s", issuance_id, issuance.item_category, idinfo.get("email"))
-    db.delete(issuance)
+    subject = ({"cadet_cin": issuance.cadet_id} if issuance.cadet_id is not None
+               else {"user_id": issuance.user_id})
+    by = actor_name(idinfo)
+    while issuance_history.undo_latest(db, issuance.item_category, by, **subject):
+        pass
     db.commit()
 
 

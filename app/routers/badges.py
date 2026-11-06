@@ -6,7 +6,8 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import given_events, stock_events
+from core import given_events, stock_changes, stock_events
+from core.actor import actor_name
 from core.db import get_db
 from core.order_items import get_order_item, mark_ready, undo_given
 from core.qualifications import flying_blue_stages, order_badge_held, qual_names_with_flights
@@ -167,6 +168,12 @@ def badge_create_cell(
     return _cell_to_dict(cell)
 
 
+def _log_cell_deleted(db: Session, cell: BadgeGridCell, by: str | None, note: str) -> None:
+    """Deleting a cell, row or column takes its badges with it: log each one."""
+    for item in cell.items:
+        stock_changes.record_badge(db, item, stock_changes.DELETED, by, change=-item.quantity, gone=True, note=note)
+
+
 @router.delete("/stores/badges/cells/{cell_id}", status_code=204)
 def badge_delete_cell(
     cell_id: int,
@@ -176,6 +183,7 @@ def badge_delete_cell(
     cell = db.query(BadgeGridCell).filter(BadgeGridCell.id == cell_id).first()
     if not cell:
         raise HTTPException(status_code=404, detail="Cell not found")
+    _log_cell_deleted(db, cell, actor_name(idinfo), "Its grid cell was deleted")
     db.delete(cell)
     db.commit()
 
@@ -228,6 +236,7 @@ def badge_add_item(
     quantity = max(1, int(body.get("quantity", 1)))
     item = BadgeItem(cell_id=cell_id, name=name, quantity=quantity)
     db.add(item)
+    stock_changes.record_badge(db, item, stock_changes.ADDED, actor_name(idinfo), change=quantity)
     db.commit()
     db.refresh(item)
     return {"id": item.id, "name": item.name, "quantity": item.quantity}
@@ -243,6 +252,8 @@ def badge_patch_item(
     item = db.query(BadgeItem).filter(BadgeItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    by = actor_name(idinfo)
+    before = (item.name, item.quantity, stock_changes.badge_location(item))
     if "name" in body:
         name = (body["name"] or "").strip()
         if not name:
@@ -255,6 +266,15 @@ def badge_patch_item(
         if not cell:
             raise HTTPException(status_code=404, detail="Cell not found")
         item.cell_id = cell.id
+    db.flush()
+    db.refresh(item)
+    if item.quantity != before[1]:
+        stock_changes.record_badge(db, item, stock_changes.COUNTED, by, change=item.quantity - before[1],
+                                   note=f"Was {before[1]}")
+    if item.name != before[0]:
+        stock_changes.record_badge(db, item, stock_changes.RENAMED, by, note=f"Was {before[0]}")
+    if stock_changes.badge_location(item) != before[2]:
+        stock_changes.record_badge(db, item, stock_changes.MOVED, by, note=f"From {before[2]}")
     db.commit()
     db.refresh(item)
     return {"id": item.id, "name": item.name, "quantity": item.quantity, "cellId": item.cell_id}
@@ -269,6 +289,8 @@ def badge_delete_item(
     item = db.query(BadgeItem).filter(BadgeItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    stock_changes.record_badge(db, item, stock_changes.DELETED, actor_name(idinfo), change=-item.quantity,
+                               gone=True)
     db.delete(item)
     db.commit()
 
@@ -287,6 +309,7 @@ def badge_delete_row(
     if not 0 <= row_index < cfg.num_rows:
         raise HTTPException(status_code=404, detail="Row not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row == row_index).all():
+        _log_cell_deleted(db, cell, actor_name(idinfo), f"Row {row_index + 1} was deleted")
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.row > row_index).all():
         cell.row -= 1
@@ -309,6 +332,7 @@ def badge_delete_col(
     if not 0 <= col_index < cfg.num_cols:
         raise HTTPException(status_code=404, detail="Column not found")
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col == col_index).all():
+        _log_cell_deleted(db, cell, actor_name(idinfo), f"Column {col_index + 1} was deleted")
         db.delete(cell)
     for cell in db.query(BadgeGridCell).filter(BadgeGridCell.col > col_index).all():
         cell.col -= 1
@@ -536,7 +560,7 @@ def badge_order_item_stock(
     order, item = _badge_item(db, order_id, item_id)
 
     events = stock_events.events_list(item.stock_events)
-    by = body.get("by") or idinfo.get("email")
+    by = body.get("by") or actor_name(idinfo)
 
     if action == "remove":
         if stock_events.is_removed(events):
@@ -551,6 +575,8 @@ def badge_order_item_stock(
             itemId=badge_item.id, cellId=badge_item.cell_id, badgeName=badge_item.name,
         ))
         badge_item.quantity -= 1
+        stock_changes.record_badge(db, badge_item, stock_changes.TAKEN, by, change=-1, order_id=order.id,
+                                   gone=badge_item.quantity <= 0, note=f"For {_cadet_name(order)}")
         # The grid stores presence, not zeroes — an empty row is removed entirely.
         if badge_item.quantity <= 0:
             db.delete(badge_item)
@@ -575,7 +601,10 @@ def badge_order_item_stock(
                     status_code=400,
                     detail="The grid cell that badge came from no longer exists — add it back on the badge grid",
                 )
-            db.add(BadgeItem(cell_id=cell.id, name=removal.get("badgeName"), quantity=1))
+            badge_item = BadgeItem(cell_id=cell.id, name=removal.get("badgeName"), quantity=1)
+            db.add(badge_item)
+        stock_changes.record_badge(db, badge_item, stock_changes.RETURNED, by, change=1, order_id=order.id,
+                                   note=f"From {_cadet_name(order)}'s order")
         events.append(stock_events.new_event(
             stock_events.RETURNED, by,
             cellId=removal.get("cellId"), badgeName=removal.get("badgeName"),
@@ -587,11 +616,28 @@ def badge_order_item_stock(
     return {"order": badge_order_to_dict(order), "badges": _badge_full_response(db)}
 
 
+def _cadet_name(order: BadgeOrder) -> str:
+    return f"{order.cadet.first_name} {order.cadet.last_name}" if order.cadet else "Unknown"
+
+
 # ── Badge order list (supplier ordering queue) ────────────────────────────────
 #
 # Each entry tracks its own progress through queued → ordered → received, one
 # badge at a time (rather than the whole queue moving together), and every
 # transition is stamped with who made it so the list works as an audit trail.
+
+# What can happen to an order list entry, in its history. Undoing a stage also
+# undoes every stage after it: a badge can't be received without being ordered.
+ADDED, ORDERED, RECEIVED = "added", "ordered", "received"
+ORDERED_UNDONE, RECEIVED_UNDONE = "ordered_undone", "received_undone"
+LIST_ACTIONS = (ADDED, ORDERED, RECEIVED, ORDERED_UNDONE, RECEIVED_UNDONE)
+
+
+def _log_list_step(entry: BadgeOrderListEntry, action: str, by: str | None) -> None:
+    events = stock_events.events_list(entry.history)
+    events.append(given_events.new_event(action, by))
+    entry.history = stock_events.dump(events)
+
 
 def _order_list_entry_to_dict(entry: BadgeOrderListEntry) -> dict:
     return {
@@ -605,6 +651,7 @@ def _order_list_entry_to_dict(entry: BadgeOrderListEntry) -> dict:
         "orderedBy":   entry.ordered_by,
         "receivedAt":  entry.received_at.isoformat() if entry.received_at else None,
         "receivedBy":  entry.received_by,
+        "history":     stock_events.public_events(entry.history),
     }
 
 
@@ -639,8 +686,9 @@ def badge_order_lists_add_entry(
         badge_name    = item.badge_name,
         cadet_name    = f"{cadet.first_name} {cadet.last_name}",
         created_at    = datetime.now(),
-        added_by      = body.get("by") or idinfo.get("email"),
+        added_by      = body.get("by") or actor_name(idinfo),
     )
+    _log_list_step(entry, ADDED, entry.added_by)
     db.add(entry)
     db.commit()
     db.refresh(entry)
@@ -656,8 +704,8 @@ def badge_order_lists_delete_entry(
     entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    if entry.ordered_at is not None:
-        raise HTTPException(status_code=400, detail="Entry has already been ordered and cannot be removed")
+    # Allowed at any stage: taking a badge off the list undoes its ordered and
+    # received steps with it (the order item's own "Undo order list" button).
     db.delete(entry)
     db.commit()
 
@@ -675,7 +723,8 @@ def badge_order_lists_mark_entry_ordered(
     if entry.ordered_at is not None:
         raise HTTPException(status_code=400, detail="Entry is already marked as ordered")
     entry.ordered_at = datetime.now()
-    entry.ordered_by = body.get("by") or idinfo.get("email")
+    entry.ordered_by = body.get("by") or actor_name(idinfo)
+    _log_list_step(entry, ORDERED, entry.ordered_by)
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)
@@ -696,7 +745,56 @@ def badge_order_lists_mark_entry_received(
     if entry.received_at is not None:
         raise HTTPException(status_code=400, detail="Entry is already marked as received")
     entry.received_at = datetime.now()
-    entry.received_by = body.get("by") or idinfo.get("email")
+    entry.received_by = body.get("by") or actor_name(idinfo)
+    _log_list_step(entry, RECEIVED, entry.received_by)
+    db.commit()
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
+
+
+def _undo_received(entry: BadgeOrderListEntry, by: str | None) -> None:
+    if entry.received_at is not None:
+        entry.received_at = entry.received_by = None
+        _log_list_step(entry, RECEIVED_UNDONE, by)
+
+
+@router.post("/stores/badges/order-lists/entries/{entry_id}/undo-received")
+def badge_order_lists_undo_received(
+    entry_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back "received": the badge is ordered and waiting again."""
+    entry = db.get(BadgeOrderListEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.received_at is None:
+        raise HTTPException(status_code=409, detail="Entry hasn't been marked as received")
+    _undo_received(entry, (body or {}).get("by") or actor_name(idinfo))
+    db.commit()
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
+
+
+@router.post("/stores/badges/order-lists/entries/{entry_id}/undo-ordered")
+def badge_order_lists_undo_ordered(
+    entry_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back "ordered": back to waiting to be ordered. A badge can't be
+    received without being ordered, so "received" is undone too."""
+    entry = db.get(BadgeOrderListEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.ordered_at is None:
+        raise HTTPException(status_code=409, detail="Entry hasn't been marked as ordered")
+    by = (body or {}).get("by") or actor_name(idinfo)
+    _undo_received(entry, by)
+    entry.ordered_at = entry.ordered_by = None
+    _log_list_step(entry, ORDERED_UNDONE, by)
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)
@@ -718,7 +816,7 @@ def badge_orders_mark_item_given(
     order, item = _badge_item(db, order_id, item_id)
     if item.given_at:
         raise HTTPException(status_code=409, detail="This badge has already been marked as given")
-    by = (body or {}).get("by") or idinfo.get("email")
+    by = (body or {}).get("by") or actor_name(idinfo)
     now = datetime.now()
     item.given_at = now
     item.given_by = by
@@ -741,7 +839,7 @@ def badge_orders_undo_item_given(
     """Take back a mark-as-given. The badge goes back to waiting; the give and
     the undo both stay in its history."""
     order, item = _badge_item(db, order_id, item_id)
-    by = (body or {}).get("by") or idinfo.get("email")
+    by = (body or {}).get("by") or actor_name(idinfo)
     undo_given(order, item, by, noun="a badge")
     db.commit()
     db.refresh(order)

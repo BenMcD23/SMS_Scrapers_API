@@ -528,6 +528,73 @@ def seed_stores_history(client, headers: dict, db, now: datetime | None = None) 
         # Commit per order: the next API call writes through its own
         # connection, and SQLite won't let it while this one holds the lock.
         db.commit()
+    seed_issuance_history(client, headers, db, now)
+
+
+def seed_issuance_history(client, headers: dict, db, now: datetime) -> None:
+    """Uniform history the Uniform tab and the stores History page can show: a
+    give made against an open order (linked to it), a give that was taken
+    back (undone, so the record steps back to the one before), and an adult's
+    own kit, which is recorded against their account rather than a CIN."""
+    from database.models import User
+
+    def post(path, body):
+        res = client.post(path, json=body, headers=headers)
+        assert res.status_code < 300, f"{path}: {res.status_code} {res.text}"
+        return res.json()
+
+    recent = (now - timedelta(days=7)).date().isoformat()
+    cin = FIRST_CIN + 32
+    order = post("/stores/orders", {"cadetCin": cin, "items": [{"itemType": "Beret", "size": "56"}]})
+    item = order["items"][0]
+    post(f"/stores/issuances/{cin}", {"givenBy": "Dev Owner", "items": [
+        {"itemType": "Beret", "sizeGiven": "56", "orderItemId": item["id"], "lastGiven": recent}]})
+
+    # FIRST_CIN + 4 already has a 2025 record from seed_stores; give them a
+    # bigger one by mistake and take it back, so both show in the history.
+    wrong = post(f"/stores/issuances/{FIRST_CIN + 4}", {"givenBy": "Dev Owner", "items": [
+        {"itemCategory": "Jumper", "sizeGiven": "XL", "lastGiven": recent}]})
+    post(f"/stores/issuances/{wrong[0]['id']}/undo", {})
+
+    adult = db.query(User).filter(User.google_id == "dev-seed-adult").first()
+    if not adult:
+        adult = User(google_id="dev-seed-adult", email="flt.lt.morgan@317atc.co.uk",
+                     first_name="Rhian", last_name="Morgan")
+        db.add(adult)
+        db.commit()
+    post(f"/stores/issuances/user/{adult.id}", {"givenBy": "Dev Owner", "items": [
+        {"itemCategory": "Tie", "lastGiven": "2025-09-04"},
+        {"itemCategory": "Beret", "sizeGiven": "57", "lastGiven": recent}]})
+
+    # The stock history gets a line taken for an order and a line deleted,
+    # alongside the adds the seed already made.
+    stock = client.get("/stores/stock", headers=headers).json()
+    beret = next(s for s in stock if s["itemType"] == "Beret" and s["quantity"] > 1)
+    post(f"/stores/orders/{order['id']}/items/{item['id']}/stock", {"action": "remove", "stockItemId": beret["id"]})
+    res = client.delete(f"/stores/stock/{stock[-1]['id']}", headers=headers)
+    assert res.status_code == 204, res.text
+
+    # A small badge grid, so Badges > Stock has something on it and its
+    # stock changes fold-out has lines (an add, a recount, one taken for an
+    # order) and gives (one standing, one given and taken back).
+    grid = client.patch("/stores/badges/config", json={"numRows": 2, "numCols": 2}, headers=headers).json()
+    cells = sorted(grid["cells"], key=lambda c: (c["row"], c["col"]))
+    client.patch(f"/stores/badges/cells/{cells[0]['id']}", json={"label": "Core"}, headers=headers)
+    atc = post(f"/stores/badges/cells/{cells[0]['id']}/items", {"name": "ATC", "quantity": 6})
+    post(f"/stores/badges/cells/{cells[1]['id']}/items", {"name": "Radio – Bronze", "quantity": 3})
+    client.patch(f"/stores/badges/items/{atc['id']}", json={"quantity": 5}, headers=headers)
+    badges = post("/stores/badges/orders", {"cadetCin": FIRST_CIN + 33, "items": [
+        {"badgeName": "ATC"}, {"badgeName": "Radio – Bronze"}]})
+    atc_item, radio_item = (i["id"] for i in badges["items"])
+    base = f"/stores/badges/orders/{badges['id']}/items"
+    post(f"{base}/{atc_item}/stock", {"action": "remove", "itemId": atc["id"]})
+    post(f"{base}/{atc_item}/mark-given", {})
+    post(f"{base}/{radio_item}/mark-given", {})
+    post(f"{base}/{radio_item}/undo-given", {})
+    # On the order list, ordered by mistake and taken back, so the undo shows.
+    entry = post("/stores/badges/order-lists/entries", {"orderItemId": radio_item})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", {})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/undo-ordered", {})
 
 
 INSPECTION_NIGHTS = 8
