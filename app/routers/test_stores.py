@@ -54,7 +54,6 @@ STAFF_ONLY = [
     ("post", "/stores/issuances/1/undo", None),
     ("get", "/stores/issuances/1/history", None),
     ("get", "/stores/issuances/user/1/history", None),
-    ("get", "/stores/issuances/recent", None),
     ("get", "/stores/logs-forms", None),
     ("post", "/stores/logs-forms/entries", {}),
     ("delete", "/stores/logs-forms/entries/1", None),
@@ -1300,38 +1299,3 @@ def test_adult_history_is_kept_separately_from_cadets(api, db):
     adult = api.get(f"/stores/issuances/user/{user.id}/history", headers=STAFF).json()
     assert len(adult) == 1 and adult[0]["current"] is True
     assert len(_history(api)) == 1
-
-
-def test_recent_lists_gives_across_everyone_newest_first(api, db):
-    _cadet(db, first_name="Zoë", last_name="Ó Briain")
-    user = User(google_id="g-1", email="adult@317atc.co.uk")
-    db.add(user)
-    db.commit()
-    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
-    issued = _hand_over(api, 1001, "Beret", "55", "2026-10-01")
-    api.post(f"/stores/issuances/user/{user.id}", headers=STAFF, json={"items": [{"itemCategory": "Tie"}]})
-    _undo_last(api, issued[0]["id"])
-
-    recent = api.get("/stores/issuances/recent", headers=STAFF).json()
-    assert [(r["subjectName"], r["itemCategory"], r["sizeGiven"]) for r in recent] == [
-        ("adult@317atc.co.uk", "Tie", None), ("Zoë Ó Briain", "Beret", "55"), ("Zoë Ó Briain", "Beret", "54")]
-    assert [r["current"] for r in recent] == [True, False, True]
-    assert recent[0]["subjectType"] == "user" and recent[1]["cadetCin"] == 1001
-    assert len(api.get("/stores/issuances/recent?limit=1", headers=STAFF).json()) == 1
-
-
-def test_recent_flags_an_older_entry_current_even_when_it_is_off_the_page(api, db):
-    _cadet(db)
-    _hand_over(api, 1001, "Beret", "54", "2025-03-01")
-    _hand_over(api, 1001, "Jumper", "M", "2025-03-01")
-    [only] = api.get("/stores/issuances/recent?limit=1", headers=STAFF).json()
-    assert only["itemCategory"] == "Jumper" and only["current"] is True
-
-
-@pytest.mark.parametrize("limit", [0, 501, "x"])
-def test_recent_rejects_a_bad_limit(api, limit):
-    assert api.get(f"/stores/issuances/recent?limit={limit}", headers=STAFF).status_code == 422
-
-
-def test_recent_is_empty_when_nothing_has_been_given(api):
-    assert api.get("/stores/issuances/recent", headers=STAFF).json() == []

@@ -1396,6 +1396,10 @@ class BadgeOrderListEntry(Base):
     ordered_by    = Column(Text,     nullable=True)
     received_at   = Column(DateTime, nullable=True)
     received_by   = Column(Text,     nullable=True)
+    # Every step and undo, oldest first: JSON [{id, action, timestamp, by}]
+    # (routers/badges.py LIST_ACTIONS). The stamps above are the current state;
+    # this keeps what an undo cleared.
+    history       = Column(Text,     nullable=False, default="[]", server_default="[]")
 
 
 # ─── Parade Night Texts ───────────────────────────────────────────────────────

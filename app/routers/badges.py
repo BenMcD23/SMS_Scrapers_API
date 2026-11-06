@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import given_events, stock_changes, stock_events, stores_archive
@@ -621,48 +621,24 @@ def _cadet_name(order: BadgeOrder) -> str:
     return f"{order.cadet.first_name} {order.cadet.last_name}" if order.cadet else "Unknown"
 
 
-@router.get("/stores/badges/history")
-def badge_history(
-    limit: int = Query(200, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    """Badges given out and gives taken back, newest first, across every order.
-    Read from each order item's own given/undone log, so it goes back as far
-    as that log does; items given before the log existed show their stamp."""
-    items = (
-        db.query(BadgeOrderItem)
-        .options(joinedload(BadgeOrderItem.order).joinedload(BadgeOrder.cadet))
-        .filter((BadgeOrderItem.given_events != "[]") | BadgeOrderItem.given_at.isnot(None))
-        .all()
-    )
-    rows = []
-    for item in items:
-        order = item.order
-        base = {
-            "orderId": str(order.id), "itemId": str(item.id), "badgeName": item.badge_name,
-            "cadetName": _cadet_name(order), "cadetCin": order.cadet_id,
-            "current": item.given_at is not None,
-        }
-        events = given_events.public_events(item.given_events)
-        if not events and item.given_at:
-            events = [{"id": f"stamp-{item.id}", "action": given_events.GIVEN,
-                       "timestamp": item.given_at.isoformat(), "by": item.given_by}]
-        last_given = max((i for i, e in enumerate(events) if e.get("action") == given_events.GIVEN), default=None)
-        for i, event in enumerate(events):
-            rows.append({**base, "id": f"{item.id}-{event.get('id')}", "action": event.get("action"),
-                         "timestamp": event.get("timestamp"), "by": event.get("by"),
-                         # Only the latest give is the one the badge is still out on.
-                         "current": base["current"] and i == last_given})
-    rows.sort(key=lambda r: r["timestamp"] or "", reverse=True)
-    return rows[:limit]
-
-
 # ── Badge order list (supplier ordering queue) ────────────────────────────────
 #
 # Each entry tracks its own progress through queued → ordered → received, one
 # badge at a time (rather than the whole queue moving together), and every
 # transition is stamped with who made it so the list works as an audit trail.
+
+# What can happen to an order list entry, in its history. Undoing a stage also
+# undoes every stage after it: a badge can't be received without being ordered.
+ADDED, ORDERED, RECEIVED = "added", "ordered", "received"
+ORDERED_UNDONE, RECEIVED_UNDONE = "ordered_undone", "received_undone"
+LIST_ACTIONS = (ADDED, ORDERED, RECEIVED, ORDERED_UNDONE, RECEIVED_UNDONE)
+
+
+def _log_list_step(entry: BadgeOrderListEntry, action: str, by: str | None) -> None:
+    events = stock_events.events_list(entry.history)
+    events.append(given_events.new_event(action, by))
+    entry.history = stock_events.dump(events)
+
 
 def _order_list_entry_to_dict(entry: BadgeOrderListEntry) -> dict:
     return {
@@ -676,6 +652,7 @@ def _order_list_entry_to_dict(entry: BadgeOrderListEntry) -> dict:
         "orderedBy":   entry.ordered_by,
         "receivedAt":  entry.received_at.isoformat() if entry.received_at else None,
         "receivedBy":  entry.received_by,
+        "history":     stock_events.public_events(entry.history),
     }
 
 
@@ -712,6 +689,7 @@ def badge_order_lists_add_entry(
         created_at    = datetime.now(),
         added_by      = body.get("by") or actor_name(idinfo),
     )
+    _log_list_step(entry, ADDED, entry.added_by)
     db.add(entry)
     db.commit()
     db.refresh(entry)
@@ -727,8 +705,8 @@ def badge_order_lists_delete_entry(
     entry = db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id == entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    if entry.ordered_at is not None:
-        raise HTTPException(status_code=400, detail="Entry has already been ordered and cannot be removed")
+    # Allowed at any stage: taking a badge off the list undoes its ordered and
+    # received steps with it. The archived copy (Stores > Deleted) keeps them.
     stores_archive.archive(db, entry, actor_name(idinfo))
     db.delete(entry)
     db.commit()
@@ -748,6 +726,7 @@ def badge_order_lists_mark_entry_ordered(
         raise HTTPException(status_code=400, detail="Entry is already marked as ordered")
     entry.ordered_at = datetime.now()
     entry.ordered_by = body.get("by") or actor_name(idinfo)
+    _log_list_step(entry, ORDERED, entry.ordered_by)
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)
@@ -769,6 +748,55 @@ def badge_order_lists_mark_entry_received(
         raise HTTPException(status_code=400, detail="Entry is already marked as received")
     entry.received_at = datetime.now()
     entry.received_by = body.get("by") or actor_name(idinfo)
+    _log_list_step(entry, RECEIVED, entry.received_by)
+    db.commit()
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
+
+
+def _undo_received(entry: BadgeOrderListEntry, by: str | None) -> None:
+    if entry.received_at is not None:
+        entry.received_at = entry.received_by = None
+        _log_list_step(entry, RECEIVED_UNDONE, by)
+
+
+@router.post("/stores/badges/order-lists/entries/{entry_id}/undo-received")
+def badge_order_lists_undo_received(
+    entry_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back "received": the badge is ordered and waiting again."""
+    entry = db.get(BadgeOrderListEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.received_at is None:
+        raise HTTPException(status_code=409, detail="Entry hasn't been marked as received")
+    _undo_received(entry, (body or {}).get("by") or actor_name(idinfo))
+    db.commit()
+    db.refresh(entry)
+    return _order_list_entry_to_dict(entry)
+
+
+@router.post("/stores/badges/order-lists/entries/{entry_id}/undo-ordered")
+def badge_order_lists_undo_ordered(
+    entry_id: int,
+    body: dict | None = None,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Take back "ordered": back to waiting to be ordered. A badge can't be
+    received without being ordered, so "received" is undone too."""
+    entry = db.get(BadgeOrderListEntry, entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    if entry.ordered_at is None:
+        raise HTTPException(status_code=409, detail="Entry hasn't been marked as ordered")
+    by = (body or {}).get("by") or actor_name(idinfo)
+    _undo_received(entry, by)
+    entry.ordered_at = entry.ordered_by = None
+    _log_list_step(entry, ORDERED_UNDONE, by)
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)

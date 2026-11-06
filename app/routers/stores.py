@@ -1087,49 +1087,6 @@ def _given_by(body: dict, idinfo: dict) -> str:
     return body.get("givenBy") or actor_name(idinfo) or "Unknown"
 
 
-def _subject_name(entry: StoresIssuanceHistory, cadets: dict, users: dict) -> str:
-    if entry.cadet_id is not None:
-        cadet = cadets.get(entry.cadet_id)
-        return f"{cadet.first_name} {cadet.last_name}" if cadet else str(entry.cadet_id)
-    user = users.get(entry.user_id)
-    if not user:
-        return "Unknown"
-    return f"{user.first_name or ''} {user.last_name or ''}".strip() or user.email
-
-
-@router.get("/stores/issuances/recent")
-def stores_recent_issuances(
-    limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    """The latest uniform gives across the squadron, undone ones included, so
-    the QM can see what went out recently and who handed it over."""
-    entries = (db.query(StoresIssuanceHistory)
-               .order_by(StoresIssuanceHistory.id.desc()).limit(limit).all())
-    cadet_ids = {e.cadet_id for e in entries if e.cadet_id is not None}
-    user_ids = {e.user_id for e in entries if e.user_id is not None}
-    cadets = {c.cin: c for c in db.query(Cadet).filter(Cadet.cin.in_(cadet_ids))} if cadet_ids else {}
-    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids))} if user_ids else {}
-    # "current" needs every entry for those people, not just the ones on this
-    # page: an older entry can still be what their record shows.
-    current_ids = set()
-    for (cin, uid, category) in {(e.cadet_id, e.user_id, e.item_category) for e in entries}:
-        latest = issuance_history.latest_active(db, category, cadet_cin=cin, user_id=uid)
-        if latest:
-            current_ids.add(latest.id)
-    return [
-        {
-            **issuance_history.to_dict(e, current=e.id in current_ids),
-            "subjectName": _subject_name(e, cadets, users),
-            "subjectType": "cadet" if e.cadet_id is not None else "user",
-            "cadetCin": e.cadet_id,
-            "userId": e.user_id,
-        }
-        for e in entries
-    ]
-
-
 @router.get("/stores/issuances/user/{user_id}/history")
 def stores_get_user_issuance_history(
     user_id: int,

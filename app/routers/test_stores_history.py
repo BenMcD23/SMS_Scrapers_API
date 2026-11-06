@@ -1,5 +1,5 @@
-"""Stores history: the stock change log, recently deleted records (and putting
-them back), and the badges given-out history.
+"""Stores history: the stock change log, and recently deleted records (and
+putting them back).
 
 Driven through HTTP, uniform and badge side by side, with the refusals and
 edge cases alongside each happy path.
@@ -11,7 +11,6 @@ from datetime import datetime
 import pytest
 
 from database.models import (
-    BadgeOrderItem,
     Cadet,
     LogsForm,
     LogsFormEntry,
@@ -29,7 +28,6 @@ ENDPOINTS = [
     ("get", "/stores/stock/changes"),
     ("get", "/stores/deleted"),
     ("post", "/stores/deleted/1/restore"),
-    ("get", "/stores/badges/history"),
 ]
 
 
@@ -446,14 +444,17 @@ def test_restoring_a_badge_list_entry_already_re_added_is_refused(api, db):
     assert _restore(api, _deleted(api)[0]["id"]).status_code == 409
 
 
-def test_an_entry_that_cant_be_removed_isnt_archived(api, db):
+def test_a_badge_taken_off_the_list_after_ordering_keeps_its_steps_when_restored(api, db):
     _cadet(db)
     order = _badge_order(api)
     entry = api.post("/stores/badges/order-lists/entries", json={"orderItemId": order["items"][0]["id"]},
                      headers=STAFF).json()
-    api.post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", json={}, headers=STAFF)
-    assert api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF).status_code == 400
-    assert _deleted(api) == []
+    api.post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", json={"by": "QM"}, headers=STAFF)
+    assert api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF).status_code == 204
+    assert _restore(api, _deleted(api)[0]["id"]).status_code == 200
+    [back] = api.get("/stores/badges/order-lists", headers=STAFF).json()
+    assert back["orderedBy"] == "QM"
+    assert [e["action"] for e in back["history"]] == ["added", "ordered"]
 
 
 def test_an_unknown_kind_cant_be_restored(api, db):
@@ -465,54 +466,6 @@ def test_an_unknown_kind_cant_be_restored(api, db):
 @pytest.mark.parametrize("limit", [0, 1001, "x"])
 def test_deleted_rejects_a_bad_limit(api, limit):
     assert api.get(f"/stores/deleted?limit={limit}", headers=STAFF).status_code == 422
-
-
-# ── badges given out ──────────────────────────────────────────────────────────
-
-def _given(api, order, item, verb):
-    res = api.post(f"/stores/badges/orders/{order['id']}/items/{item}/{verb}", json={}, headers=STAFF)
-    assert res.status_code == 200, res.text
-
-
-def test_badge_history_lists_gives_and_undos_newest_first(api, db):
-    _cadet(db, first="Zoë", last="Ó Briain")
-    order = _badge_order(api)
-    item = order["items"][0]["id"]
-    _given(api, order, item, "mark-given")
-    _given(api, order, item, "undo-given")
-    _given(api, order, item, "mark-given")
-    rows = api.get("/stores/badges/history", headers=STAFF).json()
-    assert [r["action"] for r in rows] == ["given", "undone", "given"]
-    assert [r["current"] for r in rows] == [True, False, False]
-    assert rows[0]["cadetName"] == "Zoë Ó Briain" and rows[0]["badgeName"] == "Leadership – Blue"
-    assert rows[0]["by"] == "Sam Staff" and rows[0]["cadetCin"] == 1001
-    assert len({r["id"] for r in rows}) == 3
-
-
-def test_a_badge_given_before_the_log_existed_still_shows(api, db):
-    _cadet(db)
-    order = _badge_order(api)
-    row = db.get(BadgeOrderItem, int(order["items"][0]["id"]))
-    row.given_at, row.given_by = datetime(2025, 6, 1), "Old QM"
-    db.commit()
-    [only] = api.get("/stores/badges/history", headers=STAFF).json()
-    assert (only["action"], only["by"], only["timestamp"], only["current"]) == \
-        ("given", "Old QM", "2025-06-01T00:00:00", True)
-
-
-def test_badge_history_is_empty_until_something_is_given(api, db):
-    _cadet(db)
-    _badge_order(api)
-    assert api.get("/stores/badges/history", headers=STAFF).json() == []
-
-
-def test_badge_history_honours_the_limit(api, db):
-    _cadet(db)
-    order = _badge_order(api, items=[{"badgeName": "ATC"}, {"badgeName": "First Class"}])
-    for item in order["items"]:
-        _given(api, order, item["id"], "mark-given")
-    assert len(api.get("/stores/badges/history?limit=1", headers=STAFF).json()) == 1
-    assert api.get("/stores/badges/history?limit=0", headers=STAFF).status_code == 422
 
 
 def test_stock_log_rows_have_no_foreign_keys_so_they_outlive_the_line(api, db):

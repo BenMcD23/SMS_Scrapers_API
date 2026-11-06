@@ -573,6 +573,10 @@ def seed_issuance_history(client, headers: dict, db, now: datetime) -> None:
     post(f"{base}/{atc_item}/mark-given", {})
     post(f"{base}/{radio_item}/mark-given", {})
     post(f"{base}/{radio_item}/undo-given", {})
+    # On the order list, ordered by mistake and taken back, so the undo shows.
+    entry = post("/stores/badges/order-lists/entries", {"orderItemId": radio_item})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", {})
+    post(f"/stores/badges/order-lists/entries/{entry['id']}/undo-ordered", {})
 
 
 INSPECTION_NIGHTS = 8

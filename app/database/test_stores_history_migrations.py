@@ -65,3 +65,22 @@ def test_stock_changes_and_deleted_records_migration_matches_the_models():
     with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
         module.downgrade()
     assert not sa.inspect(engine).get_table_names()
+
+
+def test_badge_order_list_history_column_is_added_and_removed():
+    migration = Path(__file__).parent / "alembic/versions/b1l2i3s4t5h6_badge_order_list_history.py"
+    spec = importlib.util.spec_from_file_location("badge_list_history_migration", migration)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(sa.text('CREATE TABLE "Badge_Order_List_Entries" (id INTEGER PRIMARY KEY, badge_name TEXT)'))
+        conn.execute(sa.text("INSERT INTO \"Badge_Order_List_Entries\" (badge_name) VALUES ('ATC')"))
+    with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+        module.upgrade()
+    with engine.begin() as conn:
+        # Entries from before the log start with an empty one.
+        assert conn.execute(sa.text('SELECT history FROM "Badge_Order_List_Entries"')).scalar() == "[]"
+    with engine.begin() as conn, Operations.context(MigrationContext.configure(conn)):
+        module.downgrade()
+    assert "history" not in {c["name"] for c in sa.inspect(engine).get_columns("Badge_Order_List_Entries")}

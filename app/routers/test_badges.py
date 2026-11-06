@@ -34,6 +34,8 @@ STAFF_ONLY = [
     ("delete", "/stores/badges/order-lists/entries/1"),
     ("post", "/stores/badges/order-lists/entries/1/mark-ordered"),
     ("post", "/stores/badges/order-lists/entries/1/mark-received"),
+    ("post", "/stores/badges/order-lists/entries/1/undo-ordered"),
+    ("post", "/stores/badges/order-lists/entries/1/undo-received"),
 ]
 
 
@@ -381,9 +383,6 @@ def test_order_list_lifecycle_and_audit_trail(api, db):
     ordered = api.post(f"/stores/badges/order-lists/entries/{eid}/mark-ordered", json={"by": "QM"}, headers=STAFF).json()
     assert ordered["orderedBy"] == "QM" and ordered["orderedAt"]
     assert api.post(f"/stores/badges/order-lists/entries/{eid}/mark-ordered", json={}, headers=STAFF).status_code == 400
-    # Ordered entries are locked in.
-    assert api.delete(f"/stores/badges/order-lists/entries/{eid}", headers=STAFF).status_code == 400
-
     received = api.post(f"/stores/badges/order-lists/entries/{eid}/mark-received", json={}, headers=STAFF).json()
     assert received["receivedBy"] == "Sam Staff"
     assert api.post(f"/stores/badges/order-lists/entries/{eid}/mark-received", json={}, headers=STAFF).status_code == 400
@@ -630,3 +629,92 @@ def test_given_badges_and_completed_orders_drop_off_the_list(api, db):
     db.query(badges.BadgeOrder).filter_by(id=int(stale["id"])).one().completed = True
     db.commit()
     assert _to_give(api) == []
+
+
+# ── undoing order list steps ──────────────────────────────────────────────────
+
+def _entry(api, item):
+    res = api.post("/stores/badges/order-lists/entries", json={"orderItemId": item}, headers=STAFF)
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def _step(api, eid, verb, **kw):
+    return api.post(f"/stores/badges/order-lists/entries/{eid}/{verb}", headers=STAFF, json=kw)
+
+
+def _actions(entry):
+    return [(e["action"], e["by"]) for e in entry["history"]]
+
+
+def test_undoing_received_leaves_it_ordered_and_logs_every_step(api, db):
+    _cadet(db)
+    eid = _entry(api, _order(api)["items"][0]["id"])
+    _step(api, eid, "mark-ordered", by="QM A")
+    _step(api, eid, "mark-received", by="QM B")
+    res = _step(api, eid, "undo-received", by="QM C")
+    assert res.status_code == 200, res.text
+    entry = res.json()
+    assert entry["receivedAt"] is None and entry["receivedBy"] is None
+    assert entry["orderedBy"] == "QM A"
+    assert _actions(entry) == [("added", "Sam Staff"), ("ordered", "QM A"), ("received", "QM B"),
+                               ("received_undone", "QM C")]
+
+
+# A badge can't be received without being ordered, so undoing "ordered"
+# takes "received" back with it, and logs both.
+def test_undoing_ordered_also_undoes_received(api, db):
+    _cadet(db)
+    eid = _entry(api, _order(api)["items"][0]["id"])
+    _step(api, eid, "mark-ordered")
+    _step(api, eid, "mark-received")
+    entry = _step(api, eid, "undo-ordered").json()
+    assert (entry["orderedAt"], entry["receivedAt"]) == (None, None)
+    assert [a for a, _ in _actions(entry)][-2:] == ["received_undone", "ordered_undone"]
+    # Back in the queue, so it can be ordered again.
+    again = _step(api, eid, "mark-ordered", by="QM").json()
+    assert again["orderedBy"] == "QM" and _actions(again)[-1] == ("ordered", "QM")
+
+
+def test_undoing_ordered_before_received_logs_only_the_one_undo(api, db):
+    _cadet(db)
+    eid = _entry(api, _order(api)["items"][0]["id"])
+    _step(api, eid, "mark-ordered")
+    entry = _step(api, eid, "undo-ordered").json()
+    assert [a for a, _ in _actions(entry)] == ["added", "ordered", "ordered_undone"]
+
+
+def test_a_step_that_hasnt_happened_cant_be_undone(api, db):
+    _cadet(db)
+    eid = _entry(api, _order(api)["items"][0]["id"])
+    assert _step(api, eid, "undo-ordered").status_code == 409
+    assert _step(api, eid, "undo-received").status_code == 409
+    _step(api, eid, "mark-ordered")
+    assert _step(api, eid, "undo-received").status_code == 409
+    assert _step(api, 999, "undo-ordered").status_code == 404
+    assert _step(api, 999, "undo-received").status_code == 404
+
+
+@pytest.mark.parametrize("stages", [(), ("mark-ordered",), ("mark-ordered", "mark-received")])
+def test_taking_a_badge_off_the_list_works_at_any_stage(api, db, stages):
+    _cadet(db)
+    eid = _entry(api, _order(api)["items"][0]["id"])
+    for verb in stages:
+        _step(api, eid, verb)
+    assert api.delete(f"/stores/badges/order-lists/entries/{eid}", headers=STAFF).status_code == 204
+    assert api.get("/stores/badges/order-lists", headers=STAFF).json() == []
+
+
+# Giving a badge doesn't depend on the supplier order: one already in stock can
+# go out without ever being on the list, and undoing a list step leaves the give.
+def test_a_badge_can_be_given_whatever_its_order_list_stage(api, db):
+    _cadet(db)
+    order = _order(api)
+    item = order["items"][0]["id"]
+    given = api.post(f"/stores/badges/orders/{order['id']}/items/{item}/mark-given", json={}, headers=STAFF)
+    assert given.status_code == 200
+    eid = _entry(api, item)
+    _step(api, eid, "mark-ordered")
+    _step(api, eid, "undo-ordered")
+    [listed] = api.get("/stores/badges/orders", headers=STAFF).json()
+    assert listed["items"][0]["givenAt"] is not None
