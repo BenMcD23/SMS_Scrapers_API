@@ -295,6 +295,16 @@ def test_a_database_missing_a_model_column_is_flagged_stale():
     assert schema_is_stale(engine, Base)
 
 
+def test_a_database_missing_a_model_table_is_flagged_stale():
+    # create_all would add the table empty, and the seed never runs on a
+    # database that has cadets, so the preview would show nothing for it.
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql('DROP TABLE "Theory_Sections"')
+    assert schema_is_stale(engine, Base)
+
+
 def test_recruits_cover_every_stage_of_the_joining_form(api, db):
     staff = api.as_("staff")
     seed_recruits(api, staff, db)

@@ -1010,15 +1010,20 @@ def seed_theory_custom(client, headers: dict) -> None:
 
 
 def schema_is_stale(engine, base) -> bool:
-    """True if an existing table lacks a column the models now have."""
+    """True if a table the models have is missing, or an existing one lacks a
+    column. A missing table would be made empty by create_all and never
+    seeded, since seeding only runs on a database with no cadets."""
     from sqlalchemy import inspect
 
     insp = inspect(engine)
+    if not insp.get_table_names():
+        return False  # a new database: create_all builds it and it's seeded
     for table in base.metadata.sorted_tables:
-        if insp.has_table(table.name):
-            have = {c["name"] for c in insp.get_columns(table.name)}
-            if not {c.name for c in table.columns} <= have:
-                return True
+        if not insp.has_table(table.name):
+            return True
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        if not {c.name for c in table.columns} <= have:
+            return True
     return False
 
 
