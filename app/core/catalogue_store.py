@@ -46,7 +46,7 @@ def ensure_seeded(db: Session) -> None:
     if not db.query(CatalogueItemType.id).first():
         # Several defaults share a category (Slacks and Trousers); the stored
         # value is only set where it differs from the item's own name.
-        for pos, name in enumerate(defaults.UNIFORM_ITEM_TYPES):
+        for pos, name in enumerate(defaults.STOCK_ITEM_TYPES):
             category = ISSUANCE_ITEM_TYPE_MAP.get(name)
             db.add(CatalogueItemType(
                 name=name,
@@ -54,6 +54,7 @@ def ensure_seeded(db: Session) -> None:
                 gender=ITEM_GENDER_MAP.get(name, "unisex"),
                 issuance_category=category if category != name else None,
                 no_size=name in defaults.NO_SIZE_ITEMS,
+                stock_only=name in defaults.STOCK_ONLY_ITEM_TYPES,
                 kit_flight=name in defaults.KIT_FLIGHT_ITEMS,
                 on_order_list=name not in defaults.NOT_ON_ORDER_LIST,
                 sizes=json.dumps(list(defaults.UNIFORM_SIZES.get(name, ()))),
@@ -127,7 +128,7 @@ class UniformRules:
 # The original lists as rules, for code that is handed no database (unit tests
 # of the stock arithmetic, mainly).
 DEFAULT_RULES = UniformRules(
-    known=frozenset(defaults.UNIFORM_ITEM_TYPES),
+    known=frozenset(defaults.STOCK_ITEM_TYPES),
     no_size=defaults.NO_SIZE_ITEMS,
     sizes={k: tuple(v) for k, v in defaults.UNIFORM_SIZES.items()},
     gender=dict(ITEM_GENDER_MAP),
@@ -148,7 +149,7 @@ def uniform_rules(db: Session) -> UniformRules:
         sizes={r.name: tuple(_loads(r.sizes)) for r in rows},
         gender={r.name: r.gender for r in rows},
         issuance_category={r.name: r.issuance_category for r in rows if r.issuance_category},
-        kit_flight=tuple(r.name for r in rows if r.active and r.kit_flight),
+        kit_flight=tuple(r.name for r in rows if r.active and r.kit_flight and not r.stock_only),
         off_order_list=tuple(r.name for r in rows if not r.on_order_list or not r.active),
         low_stock_level={r.name: r.low_stock_level for r in rows if r.low_stock_level is not None},
     )
@@ -171,23 +172,26 @@ def reference_payload(db: Session) -> dict:
     Same shape as before the catalogue was editable, so the cadet portal and
     the site keep working unchanged."""
     types = item_types(db)
+    orderable = [t for t in types if not t.stock_only]
     rules = uniform_rules(db)
     cats = badge_categories(db)
     # The issuance lines a cadet's record can hold, in item order, each once.
     # The original order first (the issuance card reads in it), then any a
     # custom item added.
-    wanted = {rules.category_of(t.name) for t in types}
+    wanted = {rules.category_of(t.name) for t in orderable}
     categories = [c for c in ISSUANCE_CATEGORIES if c in wanted]
-    categories += [c for c in dict.fromkeys(rules.category_of(t.name) for t in types) if c not in categories]
+    categories += [c for c in dict.fromkeys(rules.category_of(t.name) for t in orderable) if c not in categories]
     return {
         "uniform": {
-            "itemTypes": [t.name for t in types],
+            "itemTypes": [t.name for t in orderable],
+            # Everything the stock pages offer: the orderable items and the stock-only ones.
+            "stockItemTypes": [t.name for t in types],
             "noSizeItems": sorted(n for n in rules.no_size if n in {t.name for t in types}),
             "sizes": {t.name: list(rules.sizes[t.name]) for t in types if rules.sizes[t.name]},
             "sizingFields": {t.name: _loads(t.sizing_fields) for t in types if _loads(t.sizing_fields)},
             "gender": {t.name: t.gender for t in types},
             "issuanceCategories": categories,
-            "issuanceCategoryByItem": {t.name: rules.category_of(t.name) for t in types},
+            "issuanceCategoryByItem": {t.name: rules.category_of(t.name) for t in orderable},
             "kitFlightItems": list(rules.kit_flight),
         },
         "badges": {

@@ -82,7 +82,8 @@ def _reference(api):
 
 def test_the_first_read_starts_from_the_squadrons_original_lists(api):
     items = _items(api)
-    assert list(items) == list(catalogue.UNIFORM_ITEM_TYPES)
+    assert list(items) == list(catalogue.STOCK_ITEM_TYPES)
+    assert items["Polo"]["stockOnly"] and not items["Beret"]["stockOnly"]
     assert items["Beret"]["sizes"] == list(catalogue.UNIFORM_SIZES["Beret"])
     assert items["Belt"]["noSize"] and items["Belt"]["onOrderList"] is False
     assert items["Slacks"]["issuanceCategory"] == "Slacks/Trousers"
@@ -110,7 +111,18 @@ def test_reference_serves_the_same_shape_it_always_did(api):
 def test_seeding_twice_does_not_duplicate(api, db):
     _items(api)
     _items(api)
-    assert db.query(CatalogueItemType).count() == len(catalogue.UNIFORM_ITEM_TYPES)
+    assert db.query(CatalogueItemType).count() == len(catalogue.STOCK_ITEM_TYPES)
+
+
+def test_an_item_can_be_made_stock_only_and_back(api):
+    created = api.post("/catalogue/uniform", headers=_staff(api),
+                       json={"name": "Hoodie", "sizes": ["M"], "stockOnly": True, "kitFlight": True}).json()
+    uniform = _reference(api)["uniform"]
+    # Stocked but never ordered, and kit can't include what can't be ordered.
+    assert "Hoodie" in uniform["stockItemTypes"] and "Hoodie" not in uniform["itemTypes"]
+    assert "Hoodie" not in uniform["kitFlightItems"]
+    api.patch(f"/catalogue/uniform/{created['id']}", headers=_staff(api), json={"stockOnly": False})
+    assert "Hoodie" in _reference(api)["uniform"]["itemTypes"]
 
 
 # ── uniform items ─────────────────────────────────────────────────────────────

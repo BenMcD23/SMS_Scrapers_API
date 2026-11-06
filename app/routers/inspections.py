@@ -5,6 +5,7 @@ AI analysis of recurring uniform faults."""
 
 import io
 from datetime import datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -157,6 +158,11 @@ def submit_inspection(
     )
     for c in roster:
         flight_by_cin.setdefault(c.cin, c.flight)
+    # A mark keeps the flight the cadet was in when it was first recorded, so a
+    # cadet who has since moved flight or left still counts for that flight.
+    for cin, m in real.items():
+        if m.get("flight"):
+            flight_by_cin[cin] = m["flight"]
 
     # AWOL = absent with no scraped absence log for the date.
     awol: set[int] = set()
@@ -180,6 +186,8 @@ def submit_inspection(
         })
 
     marks = list(real.values()) + auto_marks
+    for m in marks:
+        m["flight"] = flight_by_cin.get(m["cin"])
     flight_scores = _flight_scores(marks, awol, flight_by_cin)
     data = {"marks": marks, "flight_scores": flight_scores, "uniform": body.uniform}
 
@@ -212,6 +220,43 @@ def submit_inspection(
         cin for cin in awol if flight_by_cin.get(cin) in incoming_flights
     )
     return {"id": sheet.id, "awol": incoming_awol, "flight_scores": flight_scores}
+
+
+@router.get("/inspections/comments")
+def comment_suggestions(
+    # Only that order of dress's comments: an MTP night shouldn't offer Blues
+    # faults like "Jumper fluffy". Sheets from before MTP count as Blues.
+    uniform: Literal["blues", "mtp"] = "blues",
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_snco),
+):
+    """Every comment ever left on a submitted sheet, for the marking sheet's
+    quick-pick list: one entry per region, type and text (case and surrounding
+    spaces ignored, the most used spelling shown), most used first.
+
+    Read from the sheets rather than kept in a table of its own, so every
+    comment already given is in it and each new one joins when its sheet is
+    submitted. No cadet is named, so SNCOs marking the sheet can have it."""
+    # ponytail: scans every sheet per call; a few sheets a week, fine for years.
+    counts: dict[tuple, dict[str, int]] = {}
+    for (data,) in db.query(InspectionSheet.data).all():
+        data = data or {}
+        if data.get("uniform", "blues") != uniform:
+            continue
+        for m in data.get("marks", []):
+            for c in m.get("comments") or []:
+                text = (c.get("text") or "").strip()
+                if not text or not c.get("region"):
+                    continue
+                spellings = counts.setdefault((c["region"], c.get("type"), text.casefold()), {})
+                spellings[text] = spellings.get(text, 0) + 1
+    out = [
+        {"region": region, "type": kind,
+         "text": max(spellings, key=spellings.get), "count": sum(spellings.values())}
+        for (region, kind, _), spellings in counts.items()
+    ]
+    out.sort(key=lambda s: (-s["count"], s["text"].casefold()))
+    return out
 
 
 # ── History & trends ──────────────────────────────────────────────────────────
@@ -399,7 +444,9 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
     for m in marks:
         cin = m.get("cin")
         cadet = cadet_by_cin.get(cin)
-        flight = (cadet.flight if cadet else None) or "Unassigned"
+        # The flight stored on the mark (the one they were in that night) wins;
+        # sheets from before it was stored fall back to the cadet's flight now.
+        flight = m.get("flight") or (cadet.flight if cadet else None) or "Unassigned"
         faults, positives = _split_comments(m.get("comments") or [])
         fl = flights.setdefault(
             flight,
@@ -416,8 +463,10 @@ def _grouped_sheet(db: Session, sheet: InspectionSheet) -> list[dict]:
                 fl["score_total"] += score
         fl["cadets"].append({
             "cin":        cin,
-            "first_name": cadet.first_name if cadet else "Unknown",
-            "last_name":  cadet.last_name if cadet else str(cin),
+            # A cadet removed since keeps their whole mark and still counts in
+            # the flight's figures; only their name is gone ("Cadet Left, <CIN>").
+            "first_name": cadet.first_name if cadet else str(cin),
+            "last_name":  cadet.last_name if cadet else "Cadet Left",
             "rank":       cadet.rank if cadet else None,
             "flight":     flight,
             "score":      score,

@@ -1124,6 +1124,7 @@ ITEM_GENDER_MAP: dict[str, str] = {
     "Tie":                "unisex",
     "Brassard":           "unisex",
     "Belt":               "unisex",
+    "Polo":               "unisex",
 }
 
 
@@ -1444,6 +1445,9 @@ class CatalogueItemType(Base):
     # ("Slacks" and "Trousers" share "Slacks/Trousers"). None = its own name.
     issuance_category = Column(Text, nullable=True)
     no_size  = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Held in stock but never ordered (polos): offered on the stock pages, left
+    # out of the order forms and the cadet portal.
+    stock_only = Column(Boolean, nullable=False, default=False, server_default="0")
     # Added to every new C Flight cadet's kitting order.
     kit_flight = Column(Boolean, nullable=False, default=False, server_default="0")
     # Whether the insights page puts it on the "what to order" list.

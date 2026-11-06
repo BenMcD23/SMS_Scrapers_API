@@ -71,6 +71,7 @@ class ItemTypeFields(BaseModel):
     gender: str | None = None
     issuanceCategory: str | None = None
     noSize: bool | None = None
+    stockOnly: bool | None = None
     kitFlight: bool | None = None
     onOrderList: bool | None = None
     lowStockLevel: int | None = Field(default=None, ge=0, le=10_000)
@@ -124,6 +125,7 @@ def _item_json(row: CatalogueItemType, usage: dict) -> dict:
         "gender": row.gender,
         "issuanceCategory": row.issuance_category,
         "noSize": row.no_size,
+        "stockOnly": row.stock_only,
         "kitFlight": row.kit_flight,
         "onOrderList": row.on_order_list,
         "lowStockLevel": row.low_stock_level,
@@ -148,7 +150,7 @@ def _apply_item_fields(row: CatalogueItemType, body: ItemTypeFields) -> None:
         row.gender = body.gender
     if "issuanceCategory" in sent:
         row.issuance_category = None if body.issuanceCategory == row.name else body.issuanceCategory
-    for attr, col in (("noSize", "no_size"), ("kitFlight", "kit_flight"), ("onOrderList", "on_order_list")):
+    for attr, col in (("noSize", "no_size"), ("stockOnly", "stock_only"), ("kitFlight", "kit_flight"), ("onOrderList", "on_order_list")):
         if getattr(body, attr) is not None:
             setattr(row, col, getattr(body, attr))
     if "lowStockLevel" in sent:

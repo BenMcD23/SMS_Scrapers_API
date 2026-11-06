@@ -32,6 +32,7 @@ def upgrade() -> None:
             sa.Column('gender', sa.Text(), nullable=False, server_default='unisex'),
             sa.Column('issuance_category', sa.Text(), nullable=True),
             sa.Column('no_size', sa.Boolean(), nullable=False, server_default='0'),
+            sa.Column('stock_only', sa.Boolean(), nullable=False, server_default='0'),
             sa.Column('kit_flight', sa.Boolean(), nullable=False, server_default='0'),
             sa.Column('on_order_list', sa.Boolean(), nullable=False, server_default='1'),
             sa.Column('low_stock_level', sa.Integer(), nullable=True),
