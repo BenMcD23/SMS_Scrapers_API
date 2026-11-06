@@ -1,23 +1,16 @@
-"""Stores history: the stock change log, and recently deleted records (and
-putting them back).
+"""The stock change log: every change to a uniform shelf or badge grid count.
 
 Driven through HTTP, uniform and badge side by side, with the refusals and
 edge cases alongside each happy path.
 """
 
-import json
-from datetime import datetime
 
 import pytest
 
 from database.models import (
     Cadet,
-    LogsForm,
-    LogsFormEntry,
     StoresBox,
-    StoresDeletedRecord,
     StoresItem,
-    StoresOrderItem,
     StoresSection,
     StoresStockChange,
 )
@@ -26,8 +19,6 @@ STAFF = {"Authorization": "Bearer staff"}
 
 ENDPOINTS = [
     ("get", "/stores/stock/changes"),
-    ("get", "/stores/deleted"),
-    ("post", "/stores/deleted/1/restore"),
 ]
 
 
@@ -44,9 +35,8 @@ def test_history_is_staff_only(api, persona, method, path):
 
 @pytest.mark.parametrize("persona", ["staff", "owner", "oc"])
 def test_every_staff_role_can_read_the_history(api, persona):
-    for method, path in ENDPOINTS:
-        if method == "get":
-            assert api.get(path, headers=api.as_(persona)).status_code == 200
+    for _, path in ENDPOINTS:
+        assert api.get(path, headers=api.as_(persona)).status_code == 200
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -107,16 +97,6 @@ def _badge_stock(api, cell, name="Leadership – Blue", qty=2):
     res = api.post(f"/stores/badges/cells/{cell['id']}/items", json={"name": name, "quantity": qty}, headers=STAFF)
     assert res.status_code == 201, res.text
     return res.json()
-
-
-def _deleted(api):
-    res = api.get("/stores/deleted", headers=STAFF)
-    assert res.status_code == 200, res.text
-    return res.json()
-
-
-def _restore(api, record_id):
-    return api.post(f"/stores/deleted/{record_id}/restore", headers=STAFF)
 
 
 # ── uniform stock changes ─────────────────────────────────────────────────────
@@ -284,188 +264,6 @@ def test_stock_changes_are_empty_to_start_and_honour_the_limit(api, db):
         _add_stock(api, size=str(50 + qty), qty=qty)
     [newest] = api.get("/stores/stock/changes?limit=1", headers=STAFF).json()
     assert newest["size"] == "53"
-
-
-# ── deleted orders ────────────────────────────────────────────────────────────
-
-def test_a_deleted_uniform_order_can_be_seen_and_restored_with_its_history(api, db):
-    _cadet(db, first="Zoë", last="Ó Briain")
-    order = _uniform_order(api)
-    beret = db.get(StoresOrderItem, int(order["items"][0]["id"]))
-    beret.given_at, beret.given_by = datetime(2026, 10, 1, 18), "QM"
-    beret.qm_notes = json.dumps([{"id": "n1", "content": "Wants a 56 next time"}])
-    db.commit()
-    assert api.delete(f"/stores/orders/{order['id']}", headers=STAFF).status_code == 204
-
-    [record] = _deleted(api)
-    assert record["kind"] == "uniform_order"
-    assert record["label"] == "Uniform order for Zoë Ó Briain: Beret, Tie"
-    assert record["deletedBy"] == "Sam Staff" and record["restoredAt"] is None
-
-    res = _restore(api, record["id"])
-    assert res.status_code == 200, res.text
-    assert res.json()["restoredBy"] == "Sam Staff"
-    back = next(o for o in api.get("/stores/orders", headers=STAFF).json() if o["id"] == str(res.json()["restoredId"]))
-    assert [i["itemType"] for i in back["items"]] == ["Beret", "Tie"]
-    assert back["items"][0]["givenAt"] == "2026-10-01T18:00:00"
-    assert back["items"][0]["qmNotes"][0]["content"] == "Wants a 56 next time"
-    assert back["timestamp"] == order["timestamp"]
-
-    # Once only.
-    assert _restore(api, record["id"]).status_code == 409
-
-
-def test_restoring_an_order_for_a_cadet_who_has_gone_is_refused(api, db):
-    _cadet(db)
-    order = _uniform_order(api)
-    api.delete(f"/stores/orders/{order['id']}", headers=STAFF)
-    db.delete(db.get(Cadet, 1001))
-    db.commit()
-    [record] = _deleted(api)
-    res = _restore(api, record["id"])
-    assert res.status_code == 409 and "roster" in res.json()["detail"]
-    assert _deleted(api)[0]["restoredAt"] is None
-
-
-def test_restoring_something_that_was_never_deleted_is_404(api):
-    assert _restore(api, 999).status_code == 404
-
-
-def test_a_deleted_badge_order_can_be_restored(api, db):
-    _cadet(db)
-    order = _badge_order(api, items=[{"badgeName": "Radio – Bronze", "replacement": True}])
-    assert api.delete(f"/stores/badges/orders/{order['id']}", headers=STAFF).status_code == 204
-    [record] = _deleted(api)
-    assert record["label"] == "Badge order for Amy Adams: Radio – Bronze"
-    assert _restore(api, record["id"]).status_code == 200
-    [back] = api.get("/stores/badges/orders", headers=STAFF).json()
-    assert back["items"][0]["badgeName"] == "Radio – Bronze" and back["items"][0]["replacement"] is True
-
-
-def test_a_long_order_is_summarised_in_its_label(api, db):
-    _cadet(db)
-    order = _uniform_order(api, items=[{"itemType": t} for t in ("Beret", "Tie", "Belt", "Jumper", "Brassard")])
-    api.delete(f"/stores/orders/{order['id']}", headers=STAFF)
-    assert _deleted(api)[0]["label"].endswith("Beret, Tie, Belt and 2 more")
-
-
-def test_a_refused_delete_archives_nothing(api):
-    assert api.delete("/stores/orders/999", headers=STAFF).status_code == 404
-    assert api.delete("/stores/badges/orders/999", headers=STAFF).status_code == 404
-    assert _deleted(api) == []
-
-
-def test_an_order_a_cadet_cancels_on_the_portal_is_kept(api, db):
-    cadet = Cadet(cin=2001, first_name="Cara", last_name="Cadet", email="cadet@317atc.co.uk", flight="A")
-    db.add(cadet)
-    db.commit()
-    created = api.post("/cadets/me/orders", json={"items": [{"itemType": "Tie"}]}, headers=api.as_("cadet"))
-    assert created.status_code == 201, created.text
-    assert api.delete(f"/cadets/me/orders/{created.json()['id']}", headers=api.as_("cadet")).status_code == 204
-    [record] = _deleted(api)
-    assert record["deletedBy"] == "Cara Cadet (cancelled on the portal)"
-    assert _restore(api, record["id"]).status_code == 200
-
-
-# ── deleted list entries ──────────────────────────────────────────────────────
-
-def _logs_entry(api, db, item_type="Beret"):
-    _cadet(db)
-    order = _uniform_order(api, items=[{"itemType": item_type, "size": "55"}])
-    item = order["items"][0]["id"]
-    res = api.post("/stores/logs-forms/entries", json={"orderItemId": item}, headers=STAFF)
-    assert res.status_code == 201, res.text
-    return item, res.json()["entries"][0]["id"]
-
-
-def test_a_removed_logs_form_entry_goes_back_on_the_form_it_came_off(api, db):
-    item, entry = _logs_entry(api, db)
-    assert api.delete(f"/stores/logs-forms/entries/{entry}", headers=STAFF).status_code == 204
-    [record] = _deleted(api)
-    assert record["kind"] == "logs_form_entry" and record["label"] == "Logs Form entry: Beret 55 for Amy Adams"
-    assert _restore(api, record["id"]).status_code == 200
-    restored = db.query(LogsFormEntry).one()
-    assert restored.order_item_id == int(item) and restored.form.ordered_at is None
-    assert db.query(LogsForm).count() == 1
-
-
-def test_a_logs_form_entry_restored_after_its_form_was_sent_goes_on_the_open_one(api, db):
-    _, entry = _logs_entry(api, db)
-    form = db.query(LogsForm).one()
-    api.delete(f"/stores/logs-forms/entries/{entry}", headers=STAFF)
-    form.ordered_at = datetime(2026, 11, 1)
-    db.commit()
-    assert _restore(api, _deleted(api)[0]["id"]).status_code == 200
-    db.expire_all()
-    restored = db.query(LogsFormEntry).one()
-    assert restored.form_id != form.id and restored.form.ordered_at is None
-
-
-def test_restoring_a_logs_form_entry_whose_item_is_back_on_a_form_is_refused(api, db):
-    item, entry = _logs_entry(api, db)
-    api.delete(f"/stores/logs-forms/entries/{entry}", headers=STAFF)
-    api.post("/stores/logs-forms/entries", json={"orderItemId": item}, headers=STAFF)
-    res = _restore(api, _deleted(api)[0]["id"])
-    assert res.status_code == 409 and "already back on the Logs Form" in res.json()["detail"]
-    assert db.query(LogsFormEntry).count() == 1
-
-
-def test_a_logs_form_entry_whose_order_has_gone_comes_back_unlinked(api, db):
-    item, entry = _logs_entry(api, db)
-    api.delete(f"/stores/logs-forms/entries/{entry}", headers=STAFF)
-    order_id = db.get(StoresOrderItem, int(item)).order_id
-    api.delete(f"/stores/orders/{order_id}", headers=STAFF)
-    logs_record = next(r for r in _deleted(api) if r["kind"] == "logs_form_entry")
-    assert _restore(api, logs_record["id"]).status_code == 200
-    restored = db.query(LogsFormEntry).one()
-    assert restored.order_item_id is None and restored.cadet_name == "Amy Adams"
-
-
-def test_a_removed_badge_order_list_entry_can_be_restored(api, db):
-    _cadet(db)
-    order = _badge_order(api)
-    item = order["items"][0]["id"]
-    entry = api.post("/stores/badges/order-lists/entries", json={"orderItemId": item}, headers=STAFF).json()
-    assert api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF).status_code == 204
-    [record] = _deleted(api)
-    assert record["label"] == "Badge order list entry: Leadership – Blue for Amy Adams"
-    assert _restore(api, record["id"]).status_code == 200
-    [back] = api.get("/stores/badges/order-lists", headers=STAFF).json()
-    assert back["orderItemId"] == item and back["addedAt"] == entry["addedAt"]
-
-
-def test_restoring_a_badge_list_entry_already_re_added_is_refused(api, db):
-    _cadet(db)
-    order = _badge_order(api)
-    item = order["items"][0]["id"]
-    entry = api.post("/stores/badges/order-lists/entries", json={"orderItemId": item}, headers=STAFF).json()
-    api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF)
-    api.post("/stores/badges/order-lists/entries", json={"orderItemId": item}, headers=STAFF)
-    assert _restore(api, _deleted(api)[0]["id"]).status_code == 409
-
-
-def test_a_badge_taken_off_the_list_after_ordering_keeps_its_steps_when_restored(api, db):
-    _cadet(db)
-    order = _badge_order(api)
-    entry = api.post("/stores/badges/order-lists/entries", json={"orderItemId": order["items"][0]["id"]},
-                     headers=STAFF).json()
-    api.post(f"/stores/badges/order-lists/entries/{entry['id']}/mark-ordered", json={"by": "QM"}, headers=STAFF)
-    assert api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF).status_code == 204
-    assert _restore(api, _deleted(api)[0]["id"]).status_code == 200
-    [back] = api.get("/stores/badges/order-lists", headers=STAFF).json()
-    assert back["orderedBy"] == "QM"
-    assert [e["action"] for e in back["history"]] == ["added", "ordered"]
-
-
-def test_an_unknown_kind_cant_be_restored(api, db):
-    db.add(StoresDeletedRecord(kind="mystery", label="?", data="{}", deleted_at=datetime(2026, 1, 1)))
-    db.commit()
-    assert _restore(api, _deleted(api)[0]["id"]).status_code == 400
-
-
-@pytest.mark.parametrize("limit", [0, 1001, "x"])
-def test_deleted_rejects_a_bad_limit(api, limit):
-    assert api.get(f"/stores/deleted?limit={limit}", headers=STAFF).status_code == 422
 
 
 def test_stock_log_rows_have_no_foreign_keys_so_they_outlive_the_line(api, db):

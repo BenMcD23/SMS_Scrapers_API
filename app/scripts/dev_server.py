@@ -539,25 +539,16 @@ def seed_issuance_history(client, headers: dict, db, now: datetime) -> None:
         {"itemCategory": "Tie", "lastGiven": "2025-09-04"},
         {"itemCategory": "Beret", "sizeGiven": "57", "lastGiven": recent}]})
 
-    # Stores > Deleted: one order deleted and left there, one deleted and put
-    # back, so the page shows both states. The stock history gets a line taken
-    # for an order and a line deleted, alongside the adds the seed already made.
-    for n in (40, 41):
-        gone = post("/stores/orders", {"cadetCin": FIRST_CIN + n, "items": [
-            {"itemType": "Beret", "size": "57"}, {"itemType": "Tie"}]})
-        res = client.delete(f"/stores/orders/{gone['id']}", headers=headers)
-        assert res.status_code == 204, res.text
-    deleted = client.get("/stores/deleted", headers=headers).json()
-    post(f"/stores/deleted/{deleted[0]['id']}/restore", {})
-
+    # The stock history gets a line taken for an order and a line deleted,
+    # alongside the adds the seed already made.
     stock = client.get("/stores/stock", headers=headers).json()
     beret = next(s for s in stock if s["itemType"] == "Beret" and s["quantity"] > 1)
     post(f"/stores/orders/{order['id']}/items/{item['id']}/stock", {"action": "remove", "stockItemId": beret["id"]})
     res = client.delete(f"/stores/stock/{stock[-1]['id']}", headers=headers)
     assert res.status_code == 204, res.text
 
-    # A small badge grid, so Badges > Stock has something on it and the badge
-    # History page has stock changes (an add, a recount, one taken for an
+    # A small badge grid, so Badges > Stock has something on it and its
+    # stock changes fold-out has lines (an add, a recount, one taken for an
     # order) and gives (one standing, one given and taken back).
     grid = client.patch("/stores/badges/config", json={"numRows": 2, "numCols": 2}, headers=headers).json()
     cells = sorted(grid["cells"], key=lambda c: (c["row"], c["col"]))

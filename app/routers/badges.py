@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import given_events, stock_changes, stock_events, stores_archive
+from core import given_events, stock_changes, stock_events
 from core.actor import actor_name
 from core.db import get_db
 from core.order_items import get_order_item, mark_ready, undo_given
@@ -521,7 +521,6 @@ def badge_orders_delete(
     order = db.query(BadgeOrder).filter(BadgeOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    stores_archive.archive(db, order, actor_name(idinfo))
     db.delete(order)
     db.commit()
 
@@ -706,8 +705,7 @@ def badge_order_lists_delete_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
     # Allowed at any stage: taking a badge off the list undoes its ordered and
-    # received steps with it. The archived copy (Stores > Deleted) keeps them.
-    stores_archive.archive(db, entry, actor_name(idinfo))
+    # received steps with it (the order item's own "Undo order list" button).
     db.delete(entry)
     db.commit()
 

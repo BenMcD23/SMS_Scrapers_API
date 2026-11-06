@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
-from core import given_events, issuance_history, push, stock_changes, stock_events, stock_insights, stores_archive
+from core import given_events, issuance_history, push, stock_changes, stock_events, stock_insights
 from core.actor import actor_name
 from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
@@ -25,7 +25,6 @@ from database.models import (
     LogsForm,
     LogsFormEntry,
     StoresBox,
-    StoresDeletedRecord,
     StoresIssuanceHistory,
     StoresItem,
     StoresItemIssuance,
@@ -571,7 +570,7 @@ def stores_delete_stock(
     db.commit()
 
 
-# ── History: stock changes and recently deleted ───────────────────────────────
+# ── Stock changes ─────────────────────────────────────────────────────────────
 
 @router.get("/stores/stock/changes")
 def stores_stock_changes(
@@ -586,33 +585,6 @@ def stores_stock_changes(
         query = query.filter(StoresStockChange.kind == kind)
     rows = query.order_by(StoresStockChange.id.desc()).limit(limit).all()
     return [stock_changes.to_dict(r) for r in rows]
-
-
-@router.get("/stores/deleted")
-def stores_deleted_records(
-    limit: int = Query(200, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    """Stores orders and list entries that were deleted, newest first, restored ones included."""
-    rows = db.query(StoresDeletedRecord).order_by(StoresDeletedRecord.id.desc()).limit(limit).all()
-    return [stores_archive.to_dict(r) for r in rows]
-
-
-@router.post("/stores/deleted/{record_id}/restore")
-def stores_restore_deleted(
-    record_id: int,
-    db: Session = Depends(get_db),
-    idinfo: dict = Depends(require_staff),
-):
-    """Put a deleted order or list entry back, as it was when it was deleted."""
-    record = db.get(StoresDeletedRecord, record_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Deleted record not found")
-    stores_archive.restore(db, record, actor_name(idinfo))
-    db.commit()
-    logger.info("restored %s %s as %s by %s", record.kind, record_id, record.restored_id, idinfo.get("email"))
-    return stores_archive.to_dict(record)
 
 
 # ── Insights ──────────────────────────────────────────────────────────────────
@@ -871,7 +843,6 @@ def stores_delete_order(
         logger.warning("order delete: order %s not found", order_id)
         raise HTTPException(status_code=404, detail="Order not found")
     logger.info("order delete: %s by %s", order_id, idinfo.get("email"))
-    stores_archive.archive(db, order, actor_name(idinfo))
     db.delete(order)
     db.commit()
 
@@ -1351,7 +1322,6 @@ def logs_forms_delete_entry(
     if entry.form.ordered_at is not None:
         raise HTTPException(status_code=400, detail="Form has been ordered and cannot be edited")
     logger.info("logs form entry delete: %s by %s", entry_id, idinfo.get("email"))
-    stores_archive.archive(db, entry, actor_name(idinfo))
     db.delete(entry)
     db.commit()
 

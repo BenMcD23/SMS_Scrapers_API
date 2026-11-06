@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from core import push, stores_archive
+from core import push
 from core.db import get_current_cadet, get_current_user, get_db
 from core.security import get_roles_for_emails, is_oc, require_staff
 from database.models import (
@@ -149,15 +149,13 @@ def _notify_new_order(kind: str, who: str, count: int) -> None:
     )
 
 
-def _delete_order(db: Session, order, by: str):
+def _delete_order(db: Session, order):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.completed:
         raise HTTPException(status_code=400, detail="Cannot cancel a completed order")
     if any(oi.given_at is not None for oi in order.order_items):
         raise HTTPException(status_code=400, detail="Cannot cancel an order where items have already been given out")
-    # Kept in Stores > Deleted, so staff can see what a cadet cancelled.
-    stores_archive.archive(db, order, f"{by} (cancelled on the portal)")
     db.delete(order)
     db.commit()
 
@@ -267,7 +265,7 @@ def cadet_delete_order(
         StoresOrder.id == order_id,
         StoresOrder.cadet_id == cadet.cin,
     ).first()
-    _delete_order(db, order, f"{cadet.first_name} {cadet.last_name}")
+    _delete_order(db, order)
 
 
 @router.get("/cadets/me/issuances")
@@ -378,7 +376,7 @@ def cadet_delete_badge_order(
         BadgeOrder.id == order_id,
         BadgeOrder.cadet_id == cadet.cin,
     ).first()
-    _delete_order(db, order, f"{cadet.first_name} {cadet.last_name}")
+    _delete_order(db, order)
 
 
 # ── User (staff/adult) endpoints ──────────────────────────────────────────────
@@ -449,7 +447,7 @@ def user_delete_order(
         StoresOrder.id == order_id,
         StoresOrder.user_id == user.id,
     ).first()
-    _delete_order(db, order, f"{user.first_name or ''} {user.last_name or ''}".strip() or user.email)
+    _delete_order(db, order)
 
 
 @router.get("/users/me/issuances")

@@ -1333,24 +1333,6 @@ class StoresStockChange(Base):
     changed_by     = Column(Text,     nullable=True)
 
 
-class StoresDeletedRecord(Base):
-    """A copy of a stores record taken just before it was deleted, so it can be
-    seen and put back (Stores > Deleted). The live tables still hard-delete:
-    keeping the copy here means no query elsewhere has to learn to skip
-    deleted rows. core/stores_archive.py writes and restores these."""
-    __tablename__ = "Stores_Deleted_Records"
-
-    id          = Column(Integer,  primary_key=True, autoincrement=True)
-    kind        = Column(Text,     nullable=False, index=True)  # core/stores_archive.py KINDS
-    label       = Column(Text,     nullable=False)  # what it was, for the list
-    data        = Column(Text,     nullable=False)  # JSON: the row's columns (and an order's items)
-    deleted_at  = Column(DateTime, nullable=False, index=True)
-    deleted_by  = Column(Text,     nullable=True)
-    restored_at = Column(DateTime, nullable=True)
-    restored_by = Column(Text,     nullable=True)
-    restored_id = Column(Integer,  nullable=True)  # the new row's id once put back
-
-
 # ─── Supplier order batches (Logs Form / badge order list) ───────────────────
 # Entries snapshot item/cadet details at add-time so later order edits or
 # deletions can't change a batch that has already been sent to RAFAC.
