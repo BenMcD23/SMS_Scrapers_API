@@ -555,3 +555,40 @@ def test_a_reference_with_corrupt_stored_lists_degrades_to_empty(api, db):
     res = api.get("/reference", headers=_staff(api))
     assert res.status_code == 200
     assert "Beret" not in res.json()["uniform"]["sizes"]
+
+
+# ── stock-only items (Polo) ───────────────────────────────────────────────────
+
+def test_polo_is_stock_only_with_its_own_sizes_and_stocks_as_unisex(api, db):
+    polo = _items(api)["Polo"]
+    assert polo["stockOnly"] and polo["gender"] == "unisex" and polo["sizes"] == ["XS", "S", "M", "L", "XL"]
+    api.post("/stores/structure", headers=_staff(api), json={"action": "add-box", "box": "A"})
+    api.post("/stores/structure", headers=_staff(api), json={"action": "add-section", "box": "A", "section": "1"})
+    res = api.post("/stores/stock", headers=_staff(api),
+                   json={"itemType": "Polo", "size": "XL", "box": "A", "section": "1", "quantity": 2})
+    assert res.status_code == 201 and res.json()["gender"] == "unisex"
+
+
+def test_polo_sizes_sort_by_the_catalogue_not_the_alphabet_in_insights(api, db):
+    for size in ("XS", "XL", "M"):
+        _shelf(db, "Polo", size, 1)
+    polo = next(i for i in _insights(api)["items"] if i["itemType"] == "Polo")
+    assert [r["size"] for r in polo["sizes"]] == ["XS", "M", "XL"]
+
+
+def test_polo_is_never_kitted_or_offered_to_cadets(api, db):
+    # Even if someone ticks "part of a new cadet's kit", a stock-only item stays off the order.
+    polo = _items(api)["Polo"]
+    api.patch(f"/catalogue/uniform/{polo['id']}", headers=_staff(api), json={"kitFlight": True})
+    uniform = _reference(api)["uniform"]
+    assert "Polo" not in uniform["kitFlightItems"] and "Polo" not in uniform["itemTypes"]
+    db.add(Cadet(cin=1, first_name="A", last_name="B", email="a@b.c", flight="C"))
+    db.commit()
+    res = api.post("/stores/orders/kit-flight", headers=_staff(api))
+    assert "Polo" not in [i["itemType"] for i in res.json()[0]["items"]]
+
+
+def test_retiring_polo_takes_it_off_the_stock_pages_too(api):
+    polo = _items(api)["Polo"]
+    api.patch(f"/catalogue/uniform/{polo['id']}", headers=_staff(api), json={"active": False})
+    assert "Polo" not in _reference(api)["uniform"]["stockItemTypes"]
