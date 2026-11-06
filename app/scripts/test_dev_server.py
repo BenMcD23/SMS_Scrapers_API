@@ -558,7 +558,8 @@ def test_the_task_bank_has_runnable_short_retired_and_unlinked_to_show(api, db):
     assert any(not t["active"] for t in tasks), "a retired task"
     assert any(t["led_count"] for t in tasks) and any(not t["led_count"] for t in tasks if t["active"])
     assert {t["kind"] for t in tasks} >= {"leadership", "radio"}
-    # Old free-text sheets the bank can't place give the linking list rows.
+    # Old free-text sheets the bank can't place give the linking list rows; a
+    # third belongs to a cadet who holds the badge and is left out.
     assert len(api.get("/session-planner/unlinked-assessments", headers=staff).json()) == 2
     # The form's picker has a cadet with a pass, a fail and tasks still to lead.
     first = sorted(c["cin"] for c in api.get("/cadets", headers=staff).json())[1]

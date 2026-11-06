@@ -341,8 +341,16 @@ def delete_task(task_id: int, db: Session = Depends(get_db), idinfo: dict = Depe
 @router.get("/session-planner/unlinked-assessments")
 def unlinked_assessments(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
     """Leadership sheets that match no task (or more than one), newest first,
-    for staff to link by hand."""
+    for staff to link by hand.
+
+    Cadets who already hold the Leadership badge (at any level) are left out:
+    they've passed the whole assessment, so which tasks they led no longer
+    matters to the planner and there's nothing worth linking."""
     keys = _task_keys(db)
+    badge = BADGE_TYPE_BY_KEY["leadership"]
+    quals: dict[int, list[str]] = defaultdict(list)
+    for cin, name in db.query(CadetQualification.cadet_id, CadetQualification.qual_type):
+        quals[cin].append(name)
     rows = (
         db.query(AssessmentSheet.id, AssessmentSheet.fields, AssessmentSheet.created_at,
                  Cadet.cin, Cadet.first_name, Cadet.last_name, Cadet.rank)
@@ -353,6 +361,8 @@ def unlinked_assessments(db: Session = Depends(get_db), idinfo: dict = Depends(r
     out = []
     for sid, fields, created, cin, first, last, rank in rows:
         if st.match_task(fields, keys) is not None:
+            continue
+        if held_level(badge, quals.get(cin, ())) is not None:
             continue
         fields = fields or {}
         out.append({
