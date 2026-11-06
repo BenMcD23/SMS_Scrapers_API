@@ -216,6 +216,54 @@ class CadetTheoryLesson(Base):
     )
 
 
+class TheorySection(Base):
+    """A heading on the QR codes page that staff added, beside the built-in
+    Badges, Leading and Senior/Master in core/theory_lessons.py. Its subjects
+    store its name in ``TheorySubject.category``; renaming it renames theirs."""
+    __tablename__ = "Theory_Sections"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    name       = Column(Text,     nullable=False, unique=True)
+    created_at = Column(DateTime, nullable=False)
+
+
+class TheorySubject(Base):
+    """A subject staff added, with a check-in QR code per lesson: anything
+    taught over one or more lessons that cadets scan in to (a badge's theory, a
+    squadron course). Merged with the built-in syllabus by
+    core/theory_catalogue.py, so check-in, progress and recording treat both
+    alike.
+
+    ``key`` is what lesson rows store, so it never changes; ``parts`` only ever
+    goes up, because a lesson's code may already be on a slide. A subject with
+    lessons recorded is retired (``active``), not deleted."""
+    __tablename__ = "Theory_Subjects"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    key        = Column(Text,     nullable=False, unique=True)
+    name       = Column(Text,     nullable=False)
+    category   = Column(Text,     nullable=False)  # "Badges" or a TheorySection name
+    parts      = Column(Integer,  nullable=False, default=1)
+    active     = Column(Boolean,  nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime, nullable=False)
+    created_by = Column(Text,     nullable=True)
+
+
+class TheoryLessonCode(Base):
+    """The check-in code for one lesson of a staff-added subject. Generated once
+    and kept for good, like the built-in ones in core/lesson_codes.py: it's on
+    someone's slides. Unique across both sets."""
+    __tablename__ = "Theory_Lesson_Codes"
+
+    id          = Column(Integer,  primary_key=True, autoincrement=True)
+    subject_key = Column(Text,     nullable=False)
+    part        = Column(Integer,  nullable=False)
+    code        = Column(Text,     nullable=False, unique=True)
+    created_at  = Column(DateTime, nullable=False)
+
+    __table_args__ = (UniqueConstraint("subject_key", "part", name="uq_theory_code_subject_part"),)
+
+
 class CadetAbsence(Base):
     """A booked absence scraped from Bader's unit absences page. The scraper
     full-replaces this table each run, so it only ever holds current + future

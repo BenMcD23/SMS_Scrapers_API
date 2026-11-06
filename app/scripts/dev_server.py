@@ -988,6 +988,27 @@ def seed_session_bank(client, headers: dict, now: datetime | None = None) -> Non
     }), "moi")
 
 
+def seed_theory_custom(client, headers: dict) -> None:
+    """A section and QR subjects staff have added beside the built-in syllabus:
+    a two-lesson subject part-done by a cadet, a one-lesson one under Badges,
+    and a retired one, so the QR codes and progress pages show each."""
+    def ok(res, what):
+        assert res.status_code < 300, f"{what}: {res.status_code} {res.text}"
+        return res.json()
+
+    ok(client.post("/cadets/theory/sections", headers=headers, json={"name": "Fieldcraft"}), "section")
+    shelter = ok(client.post("/cadets/theory/subjects", headers=headers,
+                             json={"name": "Shelter Building", "section": "Fieldcraft", "parts": 2}), "subject")
+    ok(client.post("/cadets/theory/subjects", headers=headers,
+                   json={"name": "Map Symbols", "section": "Badges", "parts": 1}), "subject")
+    ok(client.post("/cadets/theory/subjects", headers=headers,
+                   json={"name": "Camp Cooking", "section": "Fieldcraft", "parts": 1, "active": False}), "subject")
+    roster = sorted(c["cin"] for c in ok(client.get("/cadets", headers=headers), "cadets"))
+    ok(client.post("/cadets/theory/mark", headers=headers, json={
+        "cadet_cins": roster[:6], "lessons": [{"key": shelter["key"], "part": 1}],
+    }), "mark")
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if an existing table lacks a column the models now have."""
     from sqlalchemy import inspect
@@ -1067,6 +1088,7 @@ def main() -> None:
         with SessionLocal() as db:
             seed_programme(db)
         seed_session_bank(client, headers)
+        seed_theory_custom(client, headers)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

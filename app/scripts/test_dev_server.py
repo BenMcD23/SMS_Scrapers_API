@@ -42,6 +42,7 @@ from scripts.dev_server import (
     seed_session_bank,
     seed_stores,
     seed_stores_history,
+    seed_theory_custom,
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
@@ -374,6 +375,7 @@ def _seed_everything(api, db):
     seed_assistant(db, now=NOW)
     seed_programme(db, now=NOW)
     seed_session_bank(api, staff, now=NOW)
+    seed_theory_custom(api, staff)
 
 
 def test_the_applications_show_one_of_each_state(api, db):
@@ -526,3 +528,15 @@ def test_the_task_bank_has_runnable_short_retired_and_unlinked_to_show(api, db):
     first = sorted(c["cin"] for c in api.get("/cadets", headers=staff).json())[1]
     led = {t["led"] for t in api.get(f"/assessments/leadership/tasks?cin={first}", headers=staff).json()}
     assert led == {"passed", "failed", None}
+
+
+def test_the_qr_codes_page_has_an_added_section_subject_and_a_retired_one(api, db):
+    staff = api.as_("staff")
+    seed(db, now=NOW)
+    seed_theory_custom(api, staff)
+    names = [r["name"] for r in api.get("/cadets/theory/sections", headers=staff).json()]
+    assert names[-1] == "Fieldcraft"
+    subjects = api.get("/cadets/theory/subjects", headers=staff).json()
+    assert {s["active"] for s in subjects} == {True, False}
+    assert any(s["category"] == "Badges" for s in subjects)
+    assert any(s["used"] for s in subjects), "a subject cadets have started"

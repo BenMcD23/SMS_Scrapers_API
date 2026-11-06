@@ -74,7 +74,8 @@ def test_recording_needs_a_token(api):
 
 def test_classification_subjects_have_three_lessons_and_badges_one(api):
     lessons = {lesson["key"]: lesson for lesson in api.get("/cadets/theory/lessons", headers=STAFF).json()}
-    assert lessons["blue_radio"] == {"key": "blue_radio", "name": "Blue Radio", "category": "Badges", "parts": 1}
+    assert lessons["blue_radio"] == {"key": "blue_radio", "name": "Blue Radio", "category": "Badges", "parts": 1,
+                                     "custom": False}
     assert lessons[NAV]["parts"] == 3 and lessons[NAV]["category"] == "Leading"
     assert lessons["rocketry"]["parts"] == 3
 
@@ -200,7 +201,8 @@ def test_a_cadet_scanning_a_lesson_is_checked_in(api, roster, db):
     res = api.post(f"/cadets/me/lessons/{code}", headers=CADET)
     assert res.status_code == 200
     assert res.json() == {"key": NAV, "name": "Basic Navigation using Map and Compass", "category": "Leading",
-                          "parts": 3, "part": 2, "already": False, "lessons": [2], "complete": False}
+                          "parts": 3, "custom": False, "part": 2, "already": False, "lessons": [2],
+                          "complete": False}
     row = db.query(CadetTheoryLesson).one()
     assert (row.cadet_id, row.part, row.recorded_by) == (1, 2, QR_CHECK_IN)
 
