@@ -890,6 +890,29 @@ def seed_programme(db, now: datetime | None = None) -> None:
         programme.import_month(db, month, year, use_ai=False, nights=month_nights)
 
 
+def seed_check_ins(client, headers: dict, db, now: datetime | None = None) -> None:
+    """Tonight's door list part-filled, so the check-in page and the session
+    planner have ticks to show: most cadets in by the QR code or NFC tag, a few
+    ticked in by an NCO, the rest not here yet. The last parade night gets a
+    full door too, for a planner looking back. The squadron code goes through
+    the real endpoint, made new once so the page says who changed it."""
+    from database.models import Cadet, CadetCheckIn
+
+    now = now or datetime.now()
+    res = client.post("/check-ins/code", headers=headers)
+    assert res.status_code == 200, f"check-in code: {res.status_code} {res.text}"
+    cins = [cin for (cin,) in db.query(Cadet.cin).order_by(Cadet.cin)]
+    tonight = now.replace(hour=19, minute=0, second=0, microsecond=0)
+    for i, cin in enumerate(cins[:24]):
+        db.add(CadetCheckIn(cadet_id=cin, date=tonight.date(), checked_in_at=tonight + timedelta(minutes=i % 15),
+                            checked_in_by="Nina Corporal" if i % 6 == 5 else None))
+    last = _parade_nights(now, 1)[0].replace(hour=19)
+    for i, cin in enumerate(cins[:40]):
+        db.add(CadetCheckIn(cadet_id=cin, date=last.date(), checked_in_at=last + timedelta(minutes=i % 20),
+                            checked_in_by=None))
+    db.commit()
+
+
 def seed_oc_dashboard(client, headers: dict) -> None:
     """A custom OC dashboard for the dev OC login, so /oc/custom shows panels
     to drag and resize rather than the empty starting state. Saved through the
@@ -1203,6 +1226,8 @@ def main() -> None:
             seed_programme(db)
         seed_session_bank(client, headers)
         seed_theory_custom(client, headers)
+        with SessionLocal() as db:
+            seed_check_ins(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

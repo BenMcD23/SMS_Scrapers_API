@@ -34,6 +34,7 @@ from scripts.dev_server import (
     seed_applications,
     seed_assistant,
     seed_audit,
+    seed_check_ins,
     seed_inspections,
     seed_oc_dashboard,
     seed_programme,
@@ -399,6 +400,18 @@ def _seed_everything(api, db):
     seed_programme(db, now=NOW)
     seed_session_bank(api, staff, now=NOW)
     seed_theory_custom(api, staff)
+    seed_check_ins(api, staff, db, now=NOW)
+
+
+def test_the_door_list_has_cadets_in_by_code_by_an_nco_and_not_yet(api, db, monkeypatch):
+    from routers import check_ins
+    _seed_everything(api, db)
+    monkeypatch.setattr(check_ins, "london_today", lambda: NOW.date())
+    cadets = api.get("/check-ins", headers=api.as_("nco")).json()["cadets"]
+    states = {("by code" if c["checked_in_by"] is None else "by nco") if c["checked_in"] else "not yet"
+              for c in cadets}
+    assert states == {"by code", "by nco", "not yet"}
+    assert api.get("/check-ins/code", headers=api.as_("staff")).json()["changed_by"]
 
 
 def test_the_applications_show_one_of_each_state(api, db):

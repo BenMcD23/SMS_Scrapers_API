@@ -45,6 +45,7 @@ from database.models import (
     SessionTask,
     SessionTaskKit,
 )
+from routers.check_ins import checked_in_cins
 
 router = APIRouter()
 
@@ -417,9 +418,12 @@ def planner_cadets(
     idinfo: dict = Depends(require_staff),
 ):
     """Everyone on the roster with what the planner shows when ticking them:
-    how likely they are to be in that night, and their leadership so far."""
+    how likely they are to be in that night, whether they've checked in at the
+    door (routers/check_ins.py; never the scraped register), and their
+    leadership so far."""
     cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
     outlooks = night_outlooks(db, date, [c.cin for c in cadets])
+    here = checked_in_cins(db, date)
     leads = _leads(db)
     quals: dict[int, list[str]] = defaultdict(list)
     for cin, name in db.query(CadetQualification.cadet_id, CadetQualification.qual_type):
@@ -430,6 +434,7 @@ def planner_cadets(
             "cin": c.cin, "first_name": c.first_name, "last_name": c.last_name,
             "rank": c.rank, "flight": c.flight,
             "attendance": outlooks[c.cin],
+            "checked_in": c.cin in here,
             "leadership": {
                 "level": held_level(badge, quals.get(c.cin, ())),
                 "led": len(leads.get(c.cin, [])),
