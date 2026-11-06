@@ -281,6 +281,13 @@ def _rate(present: int, total: int) -> float | None:
     return round(100 * present / total, 1) if total else None
 
 
+def _is_lettered(flight: str | None) -> bool:
+    """A cadet flight ("A", "B", "C", and a "D" if the squadron grows one), as
+    opposed to the NCOs' own flight or no flight at all. Flights come from
+    Bader, so the letters aren't listed here."""
+    return bool(flight) and len(flight) == 1 and flight.isalpha()
+
+
 def programme_stats(db: Session, days: int = 365, today: date | None = None) -> dict:
     """Turnout set against the programme, over the last `days`.
 
@@ -306,7 +313,7 @@ def programme_stats(db: Session, days: int = 365, today: date | None = None) -> 
 
     def counts(day: date, flight: str | None = None) -> tuple[int, int, int]:
         states = [s for cin, s in register.get(day, {}).items()
-                  if flight_of.get(cin) in ("A", "B", "C") and (flight is None or flight_of[cin] == flight)]
+                  if _is_lettered(flight_of.get(cin)) and (flight is None or flight_of[cin] == flight)]
         return sum(s == PRESENT for s in states), sum(s == AUTHORISED for s in states), len(states)
 
     by_category: dict = defaultdict(lambda: {"nights": set(), "present": 0, "authorised": 0, "total": 0})

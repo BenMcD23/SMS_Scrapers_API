@@ -1424,6 +1424,60 @@ class BadgeItem(Base):
     cell = relationship("BadgeGridCell", back_populates="items")
 
 
+# ─── Catalogue (editable by stores staff) ─────────────────────────────────────
+
+class CatalogueItemType(Base):
+    """A uniform item the stores can stock and order: its sizes, gender and how
+    the stock insights treat it. Seeded from core/catalogue.py defaults on first
+    read (core/catalogue_store.py), then edited on the Catalogue page.
+
+    ``name`` is what stock rows and order items store, so it never changes after
+    creation; an item no longer wanted is retired (``active`` false), which hides
+    it from the pickers without touching anything already recorded against it.
+    """
+    __tablename__ = "Catalogue_Item_Types"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    name     = Column(Text, nullable=False, unique=True)
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    gender   = Column(Text, nullable=False, default="unisex", server_default="unisex")  # male | female | unisex
+    # Which line of a cadet's issuance record this item updates when given
+    # ("Slacks" and "Trousers" share "Slacks/Trousers"). None = its own name.
+    issuance_category = Column(Text, nullable=True)
+    no_size  = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Held in stock but never ordered (polos): offered on the stock pages, left
+    # out of the order forms and the cadet portal.
+    stock_only = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Added to every new C Flight cadet's kitting order.
+    kit_flight = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Whether the insights page puts it on the "what to order" list.
+    on_order_list = Column(Boolean, nullable=False, default=True, server_default="1")
+    # Shelf count below which the item shows as low. None = work it out from demand.
+    low_stock_level = Column(Integer, nullable=True)
+    sizes         = Column(Text, nullable=False, default="[]", server_default="[]")  # JSON list, display order
+    sizing_fields = Column(Text, nullable=False, default="[]", server_default="[]")  # JSON list: chest, waist...
+    active   = Column(Boolean, nullable=False, default=True, server_default="1")
+
+
+class CatalogueBadgeCategory(Base):
+    """A badge category the badge stock and order forms offer. Same life cycle
+    as CatalogueItemType: seeded from defaults, edited by staff, retired not
+    deleted once badges have been ordered under it."""
+    __tablename__ = "Catalogue_Badge_Categories"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    slug     = Column(Text, nullable=False, unique=True)  # stable id the frontends key on, e.g. "road-marching"
+    name     = Column(Text, nullable=False)
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    # A category is either fixed named badges (items) or one badge per level
+    # ("<prefix> – <level>"), never both.
+    prefix   = Column(Text, nullable=True)
+    levels   = Column(Text, nullable=False, default="[]", server_default="[]")  # JSON list
+    items    = Column(Text, nullable=False, default="[]", server_default="[]")  # JSON list
+    gained_where = Column(Boolean, nullable=False, default=True, server_default="1")
+    active   = Column(Boolean, nullable=False, default=True, server_default="1")
+
+
 # ─── Recruits ─────────────────────────────────────────────────────────────────
 
 class RecruitApplication(Base):
