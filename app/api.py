@@ -58,6 +58,7 @@ from routers import (
     recruits,
     reference,
     scrapers,
+    session_planner,
     session_plans,
     settings,
     stats,
@@ -230,6 +231,7 @@ app.include_router(backups.router)
 app.include_router(committee.router)
 app.include_router(oc.router)
 app.include_router(session_plans.router)
+app.include_router(session_planner.router)
 app.include_router(nco_holidays.router)
 app.include_router(nco_appraisals.router)
 app.include_router(nco_comments.router)

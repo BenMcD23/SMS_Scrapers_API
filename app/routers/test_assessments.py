@@ -4,6 +4,7 @@ the Bader upload trigger."""
 
 import base64
 import io
+from datetime import datetime
 
 import pytest
 from PIL import Image
@@ -14,7 +15,7 @@ from assessment_builders.leadership import process_assessment_data as leadership
 from assessment_builders.moi import process_assessment_data as moi_rules
 from assessment_builders.pdf_utils import decode_pdf_data_url, merge_pdfs
 from core.crypto import encrypt_password
-from database.models import AssessmentSheet, BaderCredentials, Cadet, User
+from database.models import AssessmentSheet, BaderCredentials, Cadet, SessionTask, User
 
 STAFF = {"Authorization": "Bearer staff"}
 NCO = {"Authorization": "Bearer nco"}
@@ -467,3 +468,71 @@ def test_upload_refuses_when_ram_is_low(api, db, cadet, monkeypatch):
     db.add(BaderCredentials(user_id=user.id, role_username="u"))
     db.commit()
     assert api.post("/assessments/upload-to-bader", json={"assessment_ids": [sid]}, headers=STAFF).status_code == 503
+
+
+# ── leadership against the task bank ──────────────────────────────────────────
+
+def _bank_task(db, **over):
+
+    now = datetime(2026, 1, 1)
+    task = SessionTask(**{"kind": "leadership", "number": "7", "name": "Toxic Barrel", "duration_minutes": 15,
+                          "active": True, "created_at": now, "updated_at": now, **over})
+    db.add(task)
+    db.commit()
+    return task.id
+
+
+def test_a_leadership_sheet_picked_from_the_bank_prints_the_banks_name(api, db, cadet):
+    tid = _bank_task(db)
+    # Whatever text the page sent, the sheet carries the bank's number and name.
+    res = _add(api, "leadership", leadership(task_id=tid, exercise_no="", exercise_name="typo"))
+    assert res.status_code == 200, res.text
+    fields = db.get(AssessmentSheet, res.json()["assessment_id"]).fields
+    assert (fields["task_id"], fields["exercise_no"], fields["exercise_name"]) == (tid, "7", "Toxic Barrel")
+
+
+def test_a_free_text_leadership_sheet_still_works_without_a_task(api, db, cadet):
+    res = _add(api, "leadership", leadership())
+    fields = db.get(AssessmentSheet, res.json()["assessment_id"]).fields
+    assert "task_id" not in fields and fields["exercise_name"] == "Bridge"
+
+
+@pytest.mark.parametrize("over,status", [
+    ({"task_id": 999}, 404),
+    ({"task_id": "abc"}, 422),
+])
+def test_a_leadership_sheet_for_a_task_that_isnt_there_is_refused(api, db, cadet, over, status):
+    assert _add(api, "leadership", leadership(**over)).status_code == status
+    assert db.query(AssessmentSheet).count() == 0
+
+
+def test_a_leadership_sheet_cant_be_for_a_radio_task_or_a_retired_one(api, db, cadet):
+    radio_task = _bank_task(db, kind="radio", name="Net")
+    retired = _bank_task(db, number="8", name="Old", active=False)
+    assert _add(api, "leadership", leadership(task_id=radio_task)).status_code == 400
+    assert _add(api, "leadership", leadership(task_id=retired)).status_code == 400
+
+
+def test_editing_a_leadership_sheet_keeps_its_task_unless_told_otherwise(api, db, cadet):
+    tid = _bank_task(db)
+    other = _bank_task(db, number="8", name="Bridge Build")
+    sid = _add(api, "leadership", leadership(task_id=tid)).json()["assessment_id"]
+    # Retiring the task afterwards mustn't stop the sheet being edited.
+    db.get(SessionTask, tid).active = False
+    db.commit()
+
+    body = leadership(debriefing_notes="Edited")
+    body.pop("task_id", None)
+    assert api.put(f"/assessments/{sid}", json=body, headers=NCO).status_code == 200
+    db.expire_all()
+    assert db.get(AssessmentSheet, sid).fields["task_id"] == tid
+
+    assert api.put(f"/assessments/{sid}", json=leadership(task_id=other), headers=NCO).status_code == 200
+    db.expire_all()
+    assert db.get(AssessmentSheet, sid).fields["exercise_name"] == "Bridge Build"
+
+    assert api.put(f"/assessments/{sid}", json=leadership(task_id=None, exercise_name="Free"),
+                   headers=NCO).status_code == 200
+    db.expire_all()
+    fields = db.get(AssessmentSheet, sid).fields
+    assert "task_id" not in fields and fields["exercise_name"] == "Free"

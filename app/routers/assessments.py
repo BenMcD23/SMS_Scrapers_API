@@ -18,7 +18,7 @@ from assessment_builders.space import generate_space_pdf, process_space_data
 from core.db import escape_like, get_db, get_or_create_user
 from core.emailer import assessment_email_html, send_email
 from core.security import get_user_role, require_staff, require_staff_or_nco
-from database.models import AssessmentSheet, Cadet, User
+from database.models import AssessmentSheet, Cadet, SessionTask, User
 from routers import scrapers
 
 router = APIRouter()
@@ -131,6 +131,39 @@ def _leadership_fields_and_pdf(data: dict) -> tuple[dict, bytes]:
         "assessor_signature": processed.get("assessor_signature") or "",
     }
     return fields, pdf_bytes
+
+
+def _leadership_task(db: Session, data: dict, existing: dict | None = None) -> int | None:
+    """The bank task a leadership sheet is for, writing its number and name into
+    ``data`` so the PDF prints what the bank says.
+
+    No ``task_id`` key on an edit keeps the one the sheet already has; an
+    explicit ``null`` means a free-text exercise that isn't in the bank. A
+    retired task can't be picked for a new sheet, but a sheet already on one
+    can still be edited."""
+    if "task_id" not in data and existing is not None:
+        data["task_id"] = existing.get("task_id")
+    raw = data.get("task_id")
+    if raw in (None, ""):
+        return None
+    try:
+        task_id = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="task_id must be a number") from None
+    task = db.get(SessionTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="That task isn't in the bank")
+    if task.kind != "leadership":
+        raise HTTPException(status_code=400, detail=f"“{task.name}” isn't a leadership task")
+    if not task.active and (existing or {}).get("task_id") != task_id:
+        raise HTTPException(status_code=400, detail=f"“{task.name}” has been retired from the bank")
+    data["exercise_no"] = task.number or ""
+    data["exercise_name"] = task.name
+    return task_id
+
+
+def _with_task(fields: dict, task_id: int | None) -> dict:
+    return {**fields, "task_id": task_id} if task_id is not None else fields
 
 
 def _radio_fields_and_pdf(data: dict, cadet: Cadet) -> tuple[dict, bytes]:
@@ -259,8 +292,9 @@ def generate_leadership_assessment(
     assessor_name = _assessor_name(user)
     if assessor_name:
         data["assessor_name"] = assessor_name
+    task_id = _leadership_task(db, data)
     fields, pdf_bytes = _leadership_fields_and_pdf(data)
-    sheet = _save_sheet_and_notify(db, user, cadet, "Blue Leadership", fields, pdf_bytes)
+    sheet = _save_sheet_and_notify(db, user, cadet, "Blue Leadership", _with_task(fields, task_id), pdf_bytes)
     return {"status": "success", "assessment_id": sheet.id}
 
 
@@ -477,7 +511,9 @@ def edit_assessment(
         data["assessor_signature"] = existing.get("assessor_signature", "")
 
     if atype == "Blue Leadership":
+        task_id = _leadership_task(db, data, existing)
         fields, pdf_bytes = _leadership_fields_and_pdf(data)
+        fields = _with_task(fields, task_id)
     elif atype == "Blue Radio":
         data["assessor_initials"] = existing.get("assessor_initials", "")
         _validate_radio(data, require_signature=False)
