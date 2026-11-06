@@ -1051,7 +1051,8 @@ SESSION_LEADS = [
     (3, ("", "spiders web"), False, 12),       # old sheet, matches on its name
     (3, "5", True, 3),
     (4, ("", "Swamp crossing"), True, 15),     # old sheet the bank can't place
-    (5, ("9", "Egg drop"), False, 13),         # nor this one
+    (5, ("9", "Egg drop"), False, 13),         # nor this one, but its cadet holds the badge, so it's hidden
+    (7, ("", "Rope bridge"), True, 11),        # another the bank can't place, for a cadet without the badge
     (6, "6", True, 2), (6, "4", True, 1),
     (8, "Stretcher Carry", True, 4),
 ]

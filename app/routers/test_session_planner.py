@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from database.models import AssessmentSheet, Cadet, SessionKit, SessionTask, User
+from database.models import AssessmentSheet, Cadet, CadetQualification, SessionKit, SessionTask, User
 
 
 def _kit(api, name="Plank", quantity=2, **over):
@@ -310,6 +310,29 @@ def test_sheets_the_bank_cant_place_are_listed_newest_first(api, db, cadets):
     rows = api.get("/session-planner/unlinked-assessments", headers=api.as_("staff")).json()
     assert [r["assessment_id"] for r in rows] == [swamp]
     assert rows[0]["first_name"] == "Zoë" and rows[0]["exercise_name"] == "Swamp" and rows[0]["date"] == "2026-04-01"
+
+
+@pytest.mark.parametrize("held", ["Blue Leadership", "Gold Leadership"])
+def test_a_cadet_who_holds_the_leadership_badge_has_nothing_to_link(api, db, cadets, held):
+    # They've passed the whole assessment, so what each sheet was for no longer
+    # matters. Another cadet's unplaced sheet is still listed.
+    _task(api)
+    _sheet(db, 1, exercise_name="Swamp")
+    _sheet(db, 1, exercise_name="Barrel")
+    other = _sheet(db, 2, exercise_name="Swamp")
+    db.add(CadetQualification(cadet_id=1, qual_type=held, status="true"))
+    db.commit()
+    rows = api.get("/session-planner/unlinked-assessments", headers=api.as_("staff")).json()
+    assert [r["assessment_id"] for r in rows] == [other]
+
+
+def test_other_qualifications_dont_hide_a_cadets_unlinked_sheets(api, db, cadets):
+    _task(api)
+    sid = _sheet(db, 1, exercise_name="Swamp")
+    db.add(CadetQualification(cadet_id=1, qual_type="first_aid", status="true"))
+    db.commit()
+    rows = api.get("/session-planner/unlinked-assessments", headers=api.as_("staff")).json()
+    assert [r["assessment_id"] for r in rows] == [sid]
 
 
 def test_no_leadership_sheets_means_nothing_unlinked(api):
