@@ -1,7 +1,7 @@
 """session planner: the task bank and the kit list
 
 Revision ID: s1e2s3k4i5t6
-Revises: a5d6r7a8f9t0
+Revises: r5s6i7g8n9u0
 Create Date: 2026-11-05 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = 's1e2s3k4i5t6'
-down_revision: Union[str, Sequence[str], None] = 'a5d6r7a8f9t0'
+down_revision: Union[str, Sequence[str], None] = 'r5s6i7g8n9u0'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
