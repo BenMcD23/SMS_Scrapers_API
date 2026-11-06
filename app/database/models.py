@@ -1508,6 +1508,20 @@ class RecruitApplication(Base):
     created_at       = Column(DateTime, nullable=False)
 
 
+class RecruitSignupSettings(Base):
+    """Whether the public recruitment-evening sign-up page (the website's
+    /enrol) takes sign-ups. One row, ever, created on first use. Closed unless
+    ``open_until`` is in the future: staff open it on the night and it shuts
+    itself at midnight, so a forgotten switch doesn't leave a public form
+    making recruits for months.
+    """
+    __tablename__ = "Recruit_Signup_Settings"
+
+    id         = Column(Integer,  primary_key=True, autoincrement=True)
+    open_until = Column(DateTime, nullable=True)  # UK local time, naive like the rest
+    opened_by  = Column(Text,     nullable=True)  # email of the staff member who last opened it
+
+
 # ─── Activity logs (DofE) ─────────────────────────────────────────────────────
 
 class ActivityLogEnrolment(Base):
