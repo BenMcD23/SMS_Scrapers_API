@@ -9,18 +9,24 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, object_session, selectinload
 
-from core import given_events, issuance_history, push, stock_changes, stock_events, stock_insights
+from core import (
+    catalogue_store,
+    given_events,
+    issuance_history,
+    push,
+    stock_changes,
+    stock_events,
+    stock_insights,
+)
 from core.actor import actor_name
-from core.catalogue import KIT_FLIGHT_ITEMS, TIE_VARIANTS
+from core.catalogue import TIE_VARIANTS
 from core.config import UNIFORM_FORM_API_KEY
 from core.db import get_db
 from core.order_items import get_order_item, mark_ready, undo_given
 from core.security import require_staff
 from database.models import (
-    ISSUANCE_ITEM_TYPE_MAP,
-    ITEM_GENDER_MAP,
     Cadet,
     LogsForm,
     LogsFormEntry,
@@ -97,7 +103,9 @@ def _last_issued(issuance: StoresItemIssuance | None) -> dict | None:
     return {"date": issuance.last_given.isoformat(), "size": issuance.size_given}
 
 
-def order_to_dict(order: StoresOrder) -> dict:
+def order_to_dict(order: StoresOrder, rules: catalogue_store.UniformRules | None = None) -> dict:
+    # Lists pass the rules in so the catalogue is read once, not once per order.
+    rules = rules or catalogue_store.uniform_rules(object_session(order))
     if order.cadet_id is not None and order.cadet:
         subject_name = f"{order.cadet.first_name} {order.cadet.last_name}"
         subject_type = "cadet"
@@ -131,7 +139,7 @@ def order_to_dict(order: StoresOrder) -> dict:
                 "readyToCollect": oi.ready_to_collect.isoformat() if oi.ready_to_collect else None,
                 "stockEvents":    stock_events.public_events(getattr(oi, "stock_events", None)),
                 "givenEvents":    given_events.public_events(getattr(oi, "given_events", None)),
-                "lastIssued":     _last_issued(issued.get(ISSUANCE_ITEM_TYPE_MAP.get(oi.item_type, oi.item_type))),
+                "lastIssued":     _last_issued(issued.get(rules.category_of(oi.item_type))),
             }
             for oi in sorted(order.order_items, key=lambda x: x.id)
         ],
@@ -463,7 +471,7 @@ def stores_create_stock(
         item_type  = item_type,
         size       = size,
         quantity   = int(quantity),
-        gender     = ITEM_GENDER_MAP.get(item_type, "unisex"),
+        gender     = catalogue_store.uniform_rules(db).gender.get(item_type, "unisex"),
         box_id     = box.id,
         section_id = section.id,
     )
@@ -507,7 +515,7 @@ def stores_update_stock(
         item.quantity = int(body["quantity"])
     if "itemType" in body:
         item.item_type = body["itemType"]
-        item.gender    = ITEM_GENDER_MAP.get(body["itemType"], "unisex")
+        item.gender    = catalogue_store.uniform_rules(db).gender.get(body["itemType"], "unisex")
     if "size" in body:
         item.size = body["size"]
     if "box" in body:
@@ -599,6 +607,7 @@ def stores_get_insights(
     """Demand by item and size over the last ``months``, set against the shelf,
     with how many of each to order to cover the next ``cover`` months."""
     now = datetime.now()
+    rules = catalogue_store.uniform_rules(db)
     since = now - timedelta(days=round(months * 30.44))
     on_logs_form = {
         oid for (oid,) in db.query(LogsFormEntry.order_item_id)
@@ -619,7 +628,7 @@ def stores_get_insights(
             item_type=oi.item_type, size=oi.size or "", need_sizing=bool(oi.need_sizing),
             requested_at=created_at, given=given, waiting=waiting,
         ))
-        size = stock_insights.demand_size(oi.item_type, oi.size or "", bool(oi.need_sizing))
+        size = stock_insights.demand_size(oi.item_type, oi.size or "", bool(oi.need_sizing), rules)
         if size is not None:
             key = (oi.item_type, size)
             if key not in last_requested or created_at > last_requested[key]:
@@ -630,7 +639,7 @@ def stores_get_insights(
                 len(demand), len(stock), months, idinfo.get("email"))
     return stock_insights.build_insights(
         demand, stock, since=since, months=months, cover_months=cover,
-        last_requested=last_requested,
+        last_requested=last_requested, rules=rules,
     )
 
 
@@ -655,7 +664,8 @@ def stores_get_orders(
         .all()
     )
     logger.info("orders loaded: %d for %s", len(orders), idinfo.get("email"))
-    return [order_to_dict(o) for o in orders]
+    rules = catalogue_store.uniform_rules(db)
+    return [order_to_dict(o, rules) for o in orders]
 
 
 @router.post("/stores/orders", status_code=201)
@@ -744,6 +754,7 @@ def stores_kit_flight(
     idinfo: dict = Depends(require_staff),
 ):
     """Create a kitting order for every C Flight cadet who doesn't already have one."""
+    rules = catalogue_store.uniform_rules(db)
     already = {cadet_id for (cadet_id,) in db.query(StoresOrder.cadet_id).filter(StoresOrder.kitting == True).all()}
     cadets = db.query(Cadet).filter(Cadet.flight == "C", Cadet.banned == False).all()
     created = []
@@ -753,14 +764,14 @@ def stores_kit_flight(
         order = StoresOrder(cadet_id=cadet.cin, created_at=datetime.now(), kitting=True)
         db.add(order)
         db.flush()
-        add_order_items(db, order, [{"itemType": t} for t in KIT_FLIGHT_ITEMS])
+        add_order_items(db, order, [{"itemType": t} for t in rules.kit_flight])
         created.append(order)
     db.commit()
     logger.info("kit flight: %d new kitting orders (%d C Flight cadets) by %s",
                 len(created), len(cadets), idinfo.get("email"))
     for o in created:
         db.refresh(o)
-    return [order_to_dict(o) for o in created]
+    return [order_to_dict(o, rules) for o in created]
 
 
 @router.post("/stores/orders/form-import", status_code=201)
@@ -1000,13 +1011,14 @@ def stores_undo_given(
 def _upsert_issuances(db: Session, items: list[dict], given_by: str,
                       cadet_cin: int = None, user_id: int = None) -> list[StoresItemIssuance]:
     updated = []
+    rules = catalogue_store.uniform_rules(db)
     for item in items:
         # Accept either a direct itemCategory or map from itemType
         if cadet_cin is not None:
-            category = item.get("itemCategory") or ISSUANCE_ITEM_TYPE_MAP.get(item.get("itemType", ""))
+            category = item.get("itemCategory") or rules.category_for_item(item.get("itemType", ""))
         else:
             raw_category = item.get("itemCategory", "")
-            category = ISSUANCE_ITEM_TYPE_MAP.get(raw_category, raw_category)
+            category = rules.category_of(raw_category)
         if not category:
             continue
 

@@ -402,10 +402,37 @@ def seed_portal(db, cadets, rng, now: datetime) -> None:
                 taught_next = partway = False
 
 
+def seed_catalogue(client, headers: dict) -> None:
+    """Edits to the uniform and badge catalogue through the Catalogue endpoints,
+    so the page shows each state it has: a stock level set on one item and empty
+    on the rest, a custom item and category, and a retired one of each."""
+    def call(method, path, body=None):
+        res = getattr(client, method)(path, json=body, headers=headers) if body is not None \
+            else getattr(client, method)(path, headers=headers)
+        assert res.status_code < 300, f"{path}: {res.status_code} {res.text}"
+        return res.json() if res.content else None
+
+    items = {i["name"]: i for i in call("get", "/catalogue/uniform")}
+    call("patch", f"/catalogue/uniform/{items['Jumper']['id']}", {"lowStockLevel": 6})
+    call("post", "/catalogue/uniform", {
+        "name": "Fleece", "gender": "unisex", "sizes": ["XS", "S", "M", "L", "XL"],
+        "sizingFields": ["chest"], "onOrderList": False,
+    })
+    retired = call("post", "/catalogue/uniform", {"name": "Cravat", "noSize": True})
+    call("patch", f"/catalogue/uniform/{retired['id']}", {"active": False})
+
+    call("post", "/catalogue/badges", {
+        "name": "Band Badges", "prefix": "Band", "levels": ["Blue", "Bronze", "Silver"], "gainedWhere": False,
+    })
+    old = call("post", "/catalogue/badges", {"name": "Old Scheme", "items": ["Bandsman", "Drum Major"]})
+    call("patch", f"/catalogue/badges/{old['id']}", {"active": False})
+
+
 def seed_stores(client, headers: dict) -> None:
     """Shelves, stock and a few open orders, added through the real endpoints so
     they always pass the API's own validation, sized from /reference so they
     never name an item or size the site doesn't offer."""
+    seed_catalogue(client, headers)
     ref = client.get("/reference", headers=headers).json()["uniform"]
     sized = [t for t in ref["itemTypes"] if t not in ref["noSizeItems"] and ref["sizes"].get(t)]
 

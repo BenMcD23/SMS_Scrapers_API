@@ -6,7 +6,7 @@ the record before it, and an undo steps back to that record. Each existing
 is lost and it can be undone like any other.
 
 Revision ID: i1s2h3i4s5t6
-Revises: r5s6i7g8n9u0
+Revises: c1a2t3a4l5o6
 Create Date: 2026-11-05 00:00:00.000000
 
 """
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'i1s2h3i4s5t6'
-down_revision: Union[str, Sequence[str], None] = 'r5s6i7g8n9u0'
+down_revision: Union[str, Sequence[str], None] = 'c1a2t3a4l5o6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

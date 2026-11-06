@@ -5,15 +5,14 @@ already drifted (item names, different "gained where" rules). This
 module is the single source of truth; the frontends fetch it from
 ``GET /reference`` (see routers/reference.py) instead of hardcoding it.
 
-Everything here is plain data so it can move into database tables behind a
-settings page later without changing the endpoint's shape. Names must match
-what is already stored in the database (order items, issuances, stock), so
-renaming an entry is a data migration, not just an edit here.
+These are the squadron's original lists and now only the starting point:
+core/catalogue_store.py copies them into the database on first read and the
+Catalogue page edits them from there, so changing a value here does not change
+a squadron that has already started. Names must match what is already stored
+(order items, issuances, stock), so an entry is retired, never renamed.
 """
 
 from typing import TypedDict
-
-from database.models import ISSUANCE_CATEGORIES, ISSUANCE_ITEM_TYPE_MAP, ITEM_GENDER_MAP
 
 # ── Uniform ───────────────────────────────────────────────────────────────────
 
@@ -119,6 +118,10 @@ KIT_FLIGHT_ITEMS: tuple[str, ...] = (
     "Trousers", "Slacks", "Skirt",
 )
 
+# Left off the insights page's order list: the QM keeps these topped up without
+# needing a forecast. They still show on the sizes and unused lists.
+NOT_ON_ORDER_LIST: tuple[str, ...] = ("Beret", "Belt", "Brassard", "Tie")
+
 # ── Badges ────────────────────────────────────────────────────────────────────
 
 
@@ -164,25 +167,3 @@ GAINED_WHERE_OPTIONS: list[dict[str, str]] = [
     {"value": "on_sqn", "label": "Squadron"},
     {"value": "other", "label": "Other"},
 ]
-
-
-def reference_payload() -> dict:
-    """The JSON body of GET /reference — one object so a client fetches once."""
-    return {
-        "uniform": {
-            "itemTypes": list(UNIFORM_ITEM_TYPES),
-            "stockItemTypes": list(STOCK_ITEM_TYPES),
-            "noSizeItems": sorted(NO_SIZE_ITEMS),
-            "sizes": {k: list(v) for k, v in UNIFORM_SIZES.items()},
-            "sizingFields": {k: list(v) for k, v in SIZING_FIELDS.items()},
-            "gender": dict(ITEM_GENDER_MAP),
-            "issuanceCategories": list(ISSUANCE_CATEGORIES),
-            "issuanceCategoryByItem": dict(ISSUANCE_ITEM_TYPE_MAP),
-            "kitFlightItems": list(KIT_FLIGHT_ITEMS),
-        },
-        "badges": {
-            "categories": BADGE_CATEGORIES,
-            "categoriesWithoutGainedWhere": sorted(BADGE_CATEGORIES_WITHOUT_GAINED_WHERE),
-            "gainedWhereOptions": GAINED_WHERE_OPTIONS,
-        },
-    }

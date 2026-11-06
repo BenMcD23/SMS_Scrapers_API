@@ -175,3 +175,54 @@ def test_berets_belts_brassards_and_ties_are_left_off_the_order_list():
     assert result["notOnOrderList"] == ["Beret", "Belt", "Brassard", "Tie"]
     # ...but their demand and status still show on the sizes view.
     assert line(result, "Beret", "56")["status"] == "short"
+
+
+# ── what the catalogue lets staff change ──────────────────────────────────────
+
+from dataclasses import replace  # noqa: E402
+
+from core.catalogue_store import DEFAULT_RULES  # noqa: E402
+
+
+def _rules(**changes):
+    return replace(DEFAULT_RULES, **changes)
+
+
+def test_a_minimum_shelf_count_orders_a_size_with_no_demand():
+    stock = [StockRow("Jumper", "94", 1)]
+    quiet = build_insights([], stock, since=SINCE, months=12, cover_months=3)
+    assert quiet["toOrder"] == []
+    result = build_insights([], stock, since=SINCE, months=12, cover_months=3,
+                            rules=_rules(low_stock_level={"Jumper": 4}))
+    line = result["toOrder"][0]
+    assert (line["size"], line["toOrder"], line["status"]) == ("94", 3, "low")
+
+
+def test_a_minimum_never_lowers_what_demand_already_asks_for():
+    demand = [DemandRow("Jumper", "94", False, SINCE, False, True)] * 6
+    stock = [StockRow("Jumper", "94", 1)]
+    plain = build_insights(demand, stock, since=SINCE, months=12, cover_months=3)
+    with_min = build_insights(demand, stock, since=SINCE, months=12, cover_months=3,
+                              rules=_rules(low_stock_level={"Jumper": 2}))
+    assert with_min["toOrder"][0]["toOrder"] == plain["toOrder"][0]["toOrder"]
+
+
+def test_an_item_can_be_taken_off_or_put_on_the_order_list():
+    stock = [StockRow("Jumper", "94", 0), StockRow("Beret", "56", 0)]
+    demand = [DemandRow("Jumper", "94", False, SINCE, False, True),
+              DemandRow("Beret", "56", False, SINCE, False, True)]
+    off_jumper = build_insights(demand, stock, since=SINCE, months=12, cover_months=3,
+                                rules=_rules(off_order_list=("Jumper",)))
+    assert {r["itemType"] for r in off_jumper["toOrder"]} == {"Beret"}
+    assert off_jumper["notOnOrderList"] == ["Jumper"]
+
+
+def test_a_custom_item_without_a_size_is_one_line_and_sorts_by_its_own_sizes():
+    rules = _rules(no_size=DEFAULT_RULES.no_size | {"Lanyard"}, sizes={"Fleece": ("S", "M", "L")})
+    result = build_insights([], [StockRow("Lanyard", "x", 1), StockRow("Fleece", "L", 1),
+                                 StockRow("Fleece", "S", 1), StockRow("Fleece", "XL", 1)],
+                            since=SINCE, months=12, cover_months=3, rules=rules)
+    by_item = {i["itemType"]: [r["size"] for r in i["sizes"]] for i in result["items"]}
+    assert by_item["Lanyard"] == [""]
+    # S, L from the item's own order; XL is not in its list so sorts after.
+    assert by_item["Fleece"] == ["S", "L", "XL"]

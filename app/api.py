@@ -35,6 +35,7 @@ from routers import (
     backups,
     badges,
     cadets,
+    catalogue,
     chat,
     classification_day,
     committee,
@@ -238,6 +239,7 @@ app.include_router(appointments.router)
 app.include_router(classification_day.router)
 app.include_router(recruits.router)
 app.include_router(reference.router)
+app.include_router(catalogue.router)
 app.include_router(chat.router)
 app.include_router(assistant.router)
 app.include_router(usage_router.router)

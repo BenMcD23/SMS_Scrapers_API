@@ -13,7 +13,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from core.catalogue import NO_SIZE_ITEMS, UNIFORM_SIZES
+from core.catalogue_store import DEFAULT_RULES, UniformRules
 
 # A size the catalogue doesn't list (an old spelling, a typo on an order) still
 # counts, it just sorts after the catalogue's own sizes.
@@ -40,24 +40,24 @@ class StockRow:
     quantity: int
 
 
-def size_key(item_type: str, size: str) -> str:
+def size_key(item_type: str, size: str, rules: UniformRules = DEFAULT_RULES) -> str:
     """One-size items (belt, brassard, tie) are one line each. Orders rarely
     carry a size for them, and the shelf might say "Short" or "64-114cm", so
     splitting by what was typed would show demand and stock on different rows."""
-    return "" if item_type in NO_SIZE_ITEMS else size.strip()
+    return "" if item_type in rules.no_size else size.strip()
 
 
-def demand_size(item_type: str, size: str, need_sizing: bool) -> str | None:
+def demand_size(item_type: str, size: str, need_sizing: bool, rules: UniformRules = DEFAULT_RULES) -> str | None:
     """The size an order item counts under, or None while it still needs
     measuring: without a size it can't be matched to a shelf."""
-    if item_type in NO_SIZE_ITEMS:
+    if item_type in rules.no_size:
         return ""
     size = size.strip()
     return size if size and not need_sizing else None
 
 
-def _size_order(item_type: str, size: str) -> tuple[int, str]:
-    sizes = UNIFORM_SIZES.get(item_type, ())
+def _size_order(item_type: str, size: str, rules: UniformRules = DEFAULT_RULES) -> tuple[int, str]:
+    sizes = rules.sizes.get(item_type, ())
     return (sizes.index(size) if size in sizes else _UNKNOWN_SIZE, size)
 
 
@@ -70,6 +70,9 @@ def _status(requested: int, waiting: int, in_stock: int, to_order: int) -> str:
     "rare":  asked for now and then, too seldom to be worth keeping one in;
              order it when a cadet needs it.
     "unused": on the shelf but nobody asked for it in the window.
+
+    A line that has a stock level set is "low" (or "out" at none) whenever the
+    shelf is under it, even if demand alone would not have asked for more.
     """
     if waiting > in_stock:
         return "short"
@@ -82,10 +85,6 @@ def _status(requested: int, waiting: int, in_stock: int, to_order: int) -> str:
     return "ok"
 
 
-# Left off the order list: the QM keeps these topped up without needing a
-# forecast. They still show on the sizes and unused lists.
-NOT_ON_ORDER_LIST: tuple[str, ...] = ("Beret", "Belt", "Brassard", "Tie")
-
 STATUS_RANK = {"short": 0, "out": 1, "low": 2, "rare": 3, "ok": 4, "unused": 5}
 
 
@@ -97,6 +96,7 @@ def build_insights(
     months: int,
     cover_months: int,
     last_requested: dict[tuple[str, str], datetime] | None = None,
+    rules: UniformRules = DEFAULT_RULES,
 ) -> dict:
     """Combine demand since ``since`` with current stock.
 
@@ -104,7 +104,9 @@ def build_insights(
     suggestion covers ``cover_months`` of that rate plus everyone already
     waiting, less what is on the shelf. ``last_requested`` is the all-time most
     recent request per (item, size), so a line nobody asked for this window can
-    still say when it last went out.
+    still say when it last went out. ``rules`` carries what staff set in the
+    catalogue: which items have no size, the size order, which stay off the
+    order list and any minimum shelf count.
     """
     last_requested = last_requested or {}
     rows: dict[tuple[str, str], dict] = {}
@@ -126,7 +128,7 @@ def build_insights(
         # Waiting counts whenever it was asked for: a cadet still waiting from
         # last year still needs one off the shelf. Requested/given are the window.
         in_window = d.requested_at >= since
-        size = demand_size(d.item_type, d.size, d.need_sizing)
+        size = demand_size(d.item_type, d.size, d.need_sizing, rules)
         unsized = size is None
         totals = item(d.item_type)
         if in_window:
@@ -148,7 +150,7 @@ def build_insights(
     for s in stock:
         if s.quantity <= 0:
             continue
-        row(s.item_type, size_key(s.item_type, s.size))["inStock"] += s.quantity
+        row(s.item_type, size_key(s.item_type, s.size, rules))["inStock"] += s.quantity
         item(s.item_type)["inStock"] += s.quantity
 
     lines = []
@@ -158,6 +160,9 @@ def build_insights(
         # of every size anyone asked for once a year on the order list, and the
         # list stops being worth reading. Those rare sizes are ordered per cadet.
         need = math.floor(rate * cover_months + 0.5) + r["waiting"]
+        # A minimum the QM set holds even when nobody has asked for the size
+        # lately, so it can't be forecast away.
+        need = max(need, rules.low_stock_level.get(item_type, 0))
         r["monthlyRate"] = round(rate, 2)
         r["toOrder"] = max(0, need - r["inStock"])
         r["status"] = _status(r["requested"], r["waiting"], r["inStock"], r["toOrder"])
@@ -165,7 +170,7 @@ def build_insights(
         r["lastRequested"] = last.isoformat() if last else None
         lines.append(r)
 
-    lines.sort(key=lambda r: (r["itemType"], _size_order(r["itemType"], r["size"])))
+    lines.sort(key=lambda r: (r["itemType"], _size_order(r["itemType"], r["size"], rules)))
 
     for totals in items.values():
         sized = [r for r in lines if r["itemType"] == totals["itemType"]]
@@ -176,20 +181,20 @@ def build_insights(
         totals["topSize"] = max(asked, key=lambda r: r["requested"])["size"] if asked else None
 
     to_order = sorted(
-        (r for r in lines if r["toOrder"] > 0 and r["itemType"] not in NOT_ON_ORDER_LIST),
+        (r for r in lines if r["toOrder"] > 0 and r["itemType"] not in rules.off_order_list),
         key=lambda r: (STATUS_RANK[r["status"]], -r["toOrder"], r["itemType"],
-                       _size_order(r["itemType"], r["size"])),
+                       _size_order(r["itemType"], r["size"], rules)),
     )
     unused = sorted(
         (r for r in lines if r["status"] == "unused"),
-        key=lambda r: (-r["inStock"], r["itemType"], _size_order(r["itemType"], r["size"])),
+        key=lambda r: (-r["inStock"], r["itemType"], _size_order(r["itemType"], r["size"], rules)),
     )
 
     return {
         "since": since.isoformat(),
         "months": months,
         "coverMonths": cover_months,
-        "notOnOrderList": list(NOT_ON_ORDER_LIST),
+        "notOnOrderList": list(rules.off_order_list),
         "summary": {
             "requested": sum(t["requested"] for t in items.values()),
             "given": sum(t["given"] for t in items.values()),
