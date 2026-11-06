@@ -1,11 +1,14 @@
 """The theory catalogue as the QR codes and progress pages see it: the built-in
 syllabus (core/theory_lessons.py, codes in core/lesson_codes.py) plus the
 sections and subjects staff have added (Theory_Sections, Theory_Subjects,
-Theory_Lesson_Codes).
+Theory_Subject_Codes).
 
 The built-in half never changes at run time: its codes are on slides already,
 and test_lesson_codes.py pins them. Staff-added subjects get codes from
 ``new_code`` when they're created or given another lesson, and keep them.
+Being in the database, they're only as safe as the backups: a restore from
+before a subject was added loses it, and its printed codes then say "not a
+lesson we know" (a random code can't come back as a different lesson).
 
 Staff can add subjects to Badges or to a section of their own, never to
 Leading or Senior/Master: those are the classification syllabus, and the

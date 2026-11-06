@@ -1,6 +1,6 @@
 """staff-added QR code sections, subjects and their lesson codes
 
-Revision ID: t1h2e3o4r5y6
+Revision ID: q2r3c4s5u6b7
 Revises: s1e2s3k4i5t6
 Create Date: 2026-11-06 00:00:00.000000
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 't1h2e3o4r5y6'
+revision: str = 'q2r3c4s5u6b7'
 down_revision: Union[str, Sequence[str], None] = 's1e2s3k4i5t6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -40,7 +40,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('key'),
     )
     op.create_table(
-        'Theory_Lesson_Codes',
+        'Theory_Subject_Codes',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('subject_key', sa.Text(), nullable=False),
         sa.Column('part', sa.Integer(), nullable=False),
@@ -48,11 +48,11 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('code'),
-        sa.UniqueConstraint('subject_key', 'part', name='uq_theory_code_subject_part'),
+        sa.UniqueConstraint('subject_key', 'part', name='uq_theory_subject_code_part'),
     )
 
 
 def downgrade() -> None:
-    op.drop_table('Theory_Lesson_Codes')
+    op.drop_table('Theory_Subject_Codes')
     op.drop_table('Theory_Subjects')
     op.drop_table('Theory_Sections')

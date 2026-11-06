@@ -252,8 +252,12 @@ class TheorySubject(Base):
 class TheoryLessonCode(Base):
     """The check-in code for one lesson of a staff-added subject. Generated once
     and kept for good, like the built-in ones in core/lesson_codes.py: it's on
-    someone's slides. Unique across both sets."""
-    __tablename__ = "Theory_Lesson_Codes"
+    someone's slides. Unique across both sets.
+
+    Not the ``Theory_Lesson_Codes`` table migration u1q2r3c4o5d6 dropped: that
+    held the built-in codes, which moved to source so no restore could change
+    them. These live here because staff make them at run time."""
+    __tablename__ = "Theory_Subject_Codes"
 
     id          = Column(Integer,  primary_key=True, autoincrement=True)
     subject_key = Column(Text,     nullable=False)
@@ -261,7 +265,7 @@ class TheoryLessonCode(Base):
     code        = Column(Text,     nullable=False, unique=True)
     created_at  = Column(DateTime, nullable=False)
 
-    __table_args__ = (UniqueConstraint("subject_key", "part", name="uq_theory_code_subject_part"),)
+    __table_args__ = (UniqueConstraint("subject_key", "part", name="uq_theory_subject_code_part"),)
 
 
 class CadetAbsence(Base):
