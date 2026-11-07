@@ -6,6 +6,7 @@ resources:
   - migrate.yaml
   - api.yaml
   - ingress.yaml
+  - network-policy.yaml
 
 # Non-secret settings, from config.env (plus each overlay's). The hash
 # suffix means a change rolls the API.

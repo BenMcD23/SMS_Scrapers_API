@@ -1,0 +1,36 @@
+# Nothing outside this namespace reaches its pods except the callers that
+# must: Traefik (the public ingress) and the CloudNativePG operator. Without
+# this, any pod in the cluster (the other apps, preview stacks running branch
+# code) could open a connection to the prod database or call the API pods
+# directly.
+#
+# Ingress only: the API's outbound calls (Google, Notify, GitHub, Bader, the
+# chatbot) are untouched. kubelet health probes come from the node and are
+# allowed by k3s's policy controller regardless (the chatbot's policy relies
+# on the same).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: same-namespace-only
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    # The API, the migrate and switchover jobs, and the two database
+    # instances replicating to each other.
+    - from:
+        - podSelector: {}
+    # The operator manages the instances (status on 8000, and Postgres itself).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+    # Traefik only forwards to Ingress backends: the API, and the HTTP-01
+    # solver pod cert-manager starts here when the TLS cert renews.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
