@@ -258,7 +258,7 @@ def test_moi_lesson_plan_is_stored(api, db, cadet):
     sid = _add(api, "moi", moi(lesson_plan_pdf=PDF_URL, lesson_plan_filename="plan.pdf")).json()["assessment_id"]
     sheet = db.get(AssessmentSheet, sid)
     assert sheet.lesson_plan_pdf.startswith(b"%PDF") and sheet.lesson_plan_filename == "plan.pdf"
-    detail = api.get(f"/assessments/{sid}/detail", headers=NCO).json()
+    detail = api.get(f"/assessments/{sid}/detail", headers=STAFF).json()
     assert detail["has_lesson_plan"] is True and detail["lesson_plan_filename"] == "plan.pdf"
 
 
@@ -273,14 +273,43 @@ def test_overview_groups_and_upload_thresholds(api, cadet):
     _add(api, "moi", moi(scores={"1": 1}))
     _add(api, "radio", radio())
 
-    [row] = api.get("/assessments/overview", headers=NCO).json()
+    [row] = api.get("/assessments/overview", headers=STAFF).json()
     groups = {g["assessment_type"]: g for g in row["groups"]}
     lead = groups["Blue Leadership"]
     assert (lead["passed_count"], lead["required_to_upload"], lead["can_upload"]) == (2, 2, True)
-    assert [x["is_mine"] for x in lead["assessments"]] == [True, True, False]
+    assert [x["is_mine"] for x in lead["assessments"]] == [False, False, False]
     assert groups["MOI"]["passed_count"] == 0 and groups["MOI"]["can_upload"] is True
     assert groups["Blue Radio"]["required_to_upload"] == 1 and groups["Blue Radio"]["can_upload"] is True
     assert lead["uploaded"] is False and lead["uploaded_at"] is None
+
+
+@pytest.mark.parametrize("role", ["nco", "snco"])
+def test_moi_sheets_are_hidden_from_ncos_and_sncos(api, cadet, role):
+    # MOI is staff-only to write, so it's staff-only to read: an MOI sheet
+    # answers 404 like a missing one, and drops out of the overview.
+    sid = _add(api, "moi", moi()).json()["assessment_id"]
+    _add(api, "leadership", leadership())
+    who = api.as_(role)
+    [row] = api.get("/assessments/overview", headers=who).json()
+    assert [g["assessment_type"] for g in row["groups"]] == ["Blue Leadership"]
+    assert api.get(f"/assessments/{sid}/detail", headers=who).status_code == 404
+    assert api.get(f"/assessments/{sid}/pdf", headers=who).status_code == 404
+    assert api.put(f"/assessments/{sid}", json=moi(), headers=who).status_code == 404
+    assert api.get("/assessments/group/1/MOI/combined-pdf", headers=who).status_code == 404
+
+
+def test_staff_still_see_moi_sheets(api, cadet):
+    sid = _add(api, "moi", moi()).json()["assessment_id"]
+    [row] = api.get("/assessments/overview", headers=STAFF).json()
+    assert [g["assessment_type"] for g in row["groups"]] == ["MOI"]
+    assert api.get(f"/assessments/{sid}/detail", headers=STAFF).status_code == 200
+    assert api.get(f"/assessments/{sid}/pdf", headers=STAFF).status_code == 200
+    assert api.get("/assessments/group/1/MOI/combined-pdf", headers=STAFF).status_code == 200
+
+
+def test_overview_with_only_moi_is_empty_for_an_nco(api, cadet):
+    _add(api, "moi", moi())
+    assert api.get("/assessments/overview", headers=NCO).json() == []
 
 
 def test_overview_empty(api):
@@ -386,10 +415,10 @@ def test_single_and_combined_pdfs(api, db, cadet):
                                  + base64.b64encode(_real_pdf()).decode())).json()["assessment_id"]
     _add(api, "moi", moi())
 
-    single = api.get(f"/assessments/{first}/pdf", headers=NCO)
+    single = api.get(f"/assessments/{first}/pdf", headers=STAFF)
     assert single.status_code == 200 and single.content.startswith(b"%PDF")
 
-    combined = api.get("/assessments/group/1/MOI/combined-pdf", headers=NCO)
+    combined = api.get("/assessments/group/1/MOI/combined-pdf", headers=STAFF)
     assert combined.status_code == 200
     # Two 2-page MOI sheets plus a 1-page lesson plan.
     assert len(PdfReader(io.BytesIO(combined.content)).pages) == 5
@@ -404,7 +433,7 @@ def test_combined_pdf_survives_a_corrupt_lesson_plan(api, db, cadet):
     sheet = db.get(AssessmentSheet, sid)
     sheet.lesson_plan_pdf = b"PNG pretending to be a PDF"
     db.commit()
-    res = api.get("/assessments/group/1/MOI/combined-pdf", headers=NCO)
+    res = api.get("/assessments/group/1/MOI/combined-pdf", headers=STAFF)
     assert res.status_code == 200
     assert len(PdfReader(io.BytesIO(res.content)).pages) == 2
 
