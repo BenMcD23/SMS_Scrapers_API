@@ -83,6 +83,8 @@ def send_email(to: str, subject: str, html_body: str, attachment: bytes | None =
 
 
 def assessment_email_html(cadet_name: str, assessment_type: str, passed: bool, date: str, assessor_name: str) -> str:
+    # The assessor name and date are typed by an NCO, so they're escaped.
+    cadet_name, assessment_type, date, assessor_name = map(_esc, (cadet_name, assessment_type, date, assessor_name))
     result_colour = "#2e7d32" if passed else "#c62828"
     result_text = "PASSED" if passed else "NOT PASSED"
     return f"""
