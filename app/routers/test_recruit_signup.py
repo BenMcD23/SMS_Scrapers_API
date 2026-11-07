@@ -265,3 +265,13 @@ def test_sign_ups_are_rate_limited(api, opened):
     codes = [api.post("/recruit-signup", json={**SIGNUP, "cadetFirstName": f"Kid{i}"}).status_code
              for i in range(31)]
     assert codes[:30] == [201] * 30 and codes[30] == 429
+
+
+def test_a_made_up_bearer_token_does_not_buy_a_fresh_rate_limit(api, opened):
+    # The limiter keys callers by their bearer token without verifying it, so on
+    # this public route a script sending a new junk token each time would get a
+    # new bucket per request, and an unlimited stream of emails to any address.
+    codes = [api.post("/recruit-signup", json={**SIGNUP, "cadetFirstName": f"Kid{i}"},
+                      headers={"Authorization": f"Bearer junk{i}"}).status_code
+             for i in range(31)]
+    assert codes[30] == 429

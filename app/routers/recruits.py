@@ -311,8 +311,9 @@ def signup_status(db: Session = Depends(get_db)):
 @router.post("/recruit-signup", status_code=201)
 # Public, and every request arrives through the same proxy, so this caps the
 # whole page rather than one phone: well above a busy evening's families, far
-# below what a script would want.
-@limiter.limit("30/minute")
+# below what a script would want. One fixed bucket: the default key trusts any
+# bearer string unverified, so a script could buy a fresh bucket per request.
+@limiter.limit("30/minute", key_func=lambda request: "recruit-signup")
 def signup(request: Request, body: Signup, background: BackgroundTasks, db: Session = Depends(get_db)):
     """Add a recruit from the sign-up page and email the parent their link.
 
