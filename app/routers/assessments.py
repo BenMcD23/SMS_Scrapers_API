@@ -271,6 +271,19 @@ def _is_assessor_or_staff(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
     return sheet.assessor_id == user.id or get_user_role(idinfo.get("email", "")) == "staff"
 
 
+def _hides_moi(idinfo: dict) -> bool:
+    """MOI sheets are staff-only: NCOs and SNCOs can't create them, or see them."""
+    return get_user_role(idinfo.get("email", "")) != "staff"
+
+
+def _sheet_or_404(db: Session, assessment_id: int, idinfo: dict) -> AssessmentSheet:
+    # A hidden MOI sheet is a 404 like a missing one, so its id says nothing.
+    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
+    if not sheet or (sheet.assessment_type == "MOI" and _hides_moi(idinfo)):
+        raise HTTPException(status_code=404, detail="Assessment not found.")
+    return sheet
+
+
 def _can_edit(sheet: AssessmentSheet, user, idinfo: dict) -> bool:
     return (
         sheet.assessment_type in EDITABLE_TYPES
@@ -368,8 +381,11 @@ def assessments_overview(
     idinfo: dict = Depends(require_staff_or_nco),
 ):
     viewer = get_or_create_user(db, idinfo)
+    query = db.query(AssessmentSheet)
+    if _hides_moi(idinfo):
+        query = query.filter(AssessmentSheet.assessment_type != "MOI")
     sheets = (
-        db.query(AssessmentSheet)
+        query
         .join(Cadet, AssessmentSheet.cadet_id == Cadet.cin)
         .options(
             joinedload(AssessmentSheet.cadet),
@@ -448,9 +464,7 @@ def get_assessment_detail(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
-    if not sheet:
-        raise HTTPException(status_code=404, detail="Assessment not found.")
+    sheet = _sheet_or_404(db, assessment_id, idinfo)
 
     fields = dict(sheet.fields or {})
     fields.pop("assessor_signature", None)
@@ -483,9 +497,7 @@ def edit_assessment(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
-    if not sheet:
-        raise HTTPException(status_code=404, detail="Assessment not found.")
+    sheet = _sheet_or_404(db, assessment_id, idinfo)
 
     if sheet.uploaded:
         raise HTTPException(
@@ -591,9 +603,7 @@ def get_assessment_pdf(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    sheet = db.query(AssessmentSheet).filter(AssessmentSheet.id == assessment_id).first()
-    if not sheet:
-        raise HTTPException(status_code=404, detail="Assessment not found.")
+    sheet = _sheet_or_404(db, assessment_id, idinfo)
     if not sheet.pdf_data:
         raise HTTPException(status_code=404, detail="No PDF stored for this assessment.")
 
@@ -620,6 +630,8 @@ def get_combined_group_pdf(
     its lesson plan (if any), oldest first — so re-assessing the same lesson
     keeps building one cumulative document instead of overwriting it.
     """
+    if assessment_type == "MOI" and _hides_moi(idinfo):
+        raise HTTPException(status_code=404, detail="No assessments found for this cadet/type.")
     sheets = (
         db.query(AssessmentSheet)
         .filter(AssessmentSheet.cadet_id == cin, AssessmentSheet.assessment_type == assessment_type)
