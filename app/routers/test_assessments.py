@@ -196,6 +196,16 @@ def test_assessor_name_prefers_the_profile_name(api, db, cadet):
     assert db.get(AssessmentSheet, sid).fields["assessor_name"] == "Cpl N Corporal"
 
 
+def test_nco_typed_text_is_escaped_in_the_cadets_email(api, cadet, outbox):
+    # An NCO picks their own assessor name and the sheet's date passes through
+    # as typed, so both could put links or markup into a squadron email.
+    api.patch("/settings/assessor-name", json={"assessor_name": '<a href="http://x">Cpl</a>'}, headers=NCO)
+    _add(api, "leadership", leadership(date="<b>soon</b>"))
+    body = outbox[0]["html"]
+    assert "<a href" not in body and "<b>soon" not in body
+    assert "&lt;a href=&quot;http://x&quot;&gt;Cpl&lt;/a&gt;" in body and "&lt;b&gt;soon&lt;/b&gt;" in body
+
+
 def test_cadet_without_email_still_saves(api, db, outbox):
     db.add(Cadet(cin=1, first_name="Amy", last_name="Able"))
     db.commit()
