@@ -111,7 +111,13 @@ def test_without_need_only_the_first_listed_session_in_a_period_takes_everyone()
     cadets = [cadet(1), cadet(2)]
     first, second = tp.plan_night([session(1, key=None, part=None), session(2, key=None, part=None)], cadets)
     assert sorted(first.cins) == [1, 2] and second.cins == []
-    assert second.warnings  # nobody left for it says so rather than showing an empty box
+    # Not "nobody has checked in": they have, another session took them.
+    assert second.warnings == ["Everyone it's for is in another session this period."]
+
+
+def test_a_need_only_session_everyone_has_had_says_so():
+    [plan] = tp.plan_night([session(include="need")], [cadet(1, had={1, 2})])
+    assert plan.cins == [] and plan.warnings == ["Everyone it's for has had this lesson."]
 
 
 def test_different_periods_and_free_standing_sessions_each_get_everyone():

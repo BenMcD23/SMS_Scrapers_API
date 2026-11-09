@@ -184,7 +184,8 @@ def plan_night(sessions: list[NightSession], cadets: list[NightCadet]) -> list[S
         checked_only = use_checked_in(s.pool, anyone_in)
         lesson = s.subject_key is not None and s.part is not None
         used = taken.setdefault(s.period, set()) if s.period is not None else set()
-        pool = [c for c in cadets if c.cin not in used and _in_pool(c, s, checked_only)]
+        matching = [c for c in cadets if _in_pool(c, s, checked_only)]
+        pool = [c for c in matching if c.cin not in used]
         statuses = {c.cin: lesson_status(c, s.subject_key, s.part) for c in pool} if lesson else {}
         if lesson and s.include == "need":
             # A cadet who scanned in during this lesson has had it now, but
@@ -197,7 +198,12 @@ def plan_night(sessions: list[NightSession], cadets: list[NightCadet]) -> list[S
 
         warnings: list[str] = []
         if not pool:
-            if checked_only:
+            # Say which "nobody": staff fix each differently.
+            if any(c.cin in used for c in matching):
+                warnings.append("Everyone it's for is in another session this period.")
+            elif matching and lesson and s.include == "need":
+                warnings.append("Everyone it's for has had this lesson.")
+            elif checked_only:
                 warnings.append("Nobody it's for has checked in yet.")
             else:
                 warnings.append("Nobody it's for is expected.")

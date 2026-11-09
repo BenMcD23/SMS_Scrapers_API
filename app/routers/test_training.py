@@ -311,7 +311,7 @@ def add_session(api, body, night=NIGHT):
 
 def test_an_empty_night_has_nothing_to_show(api):
     body = api.get(f"/training/nights/{NIGHT}", headers=api.as_("staff")).json()
-    assert body == {"date": "2026-11-02", "checked_in": 0, "programme": [], "sessions": []}
+    assert body == {"date": "2026-11-02", "checked_in": 0, "flights": [], "programme": [], "sessions": []}
 
 
 def test_a_lesson_session_groups_whoever_is_in_by_need_and_counts_tonights_scans(api, db):
@@ -326,7 +326,7 @@ def test_a_lesson_session_groups_whoever_is_in_by_need_and_counts_tonights_scans
                       "grouping": "need"})
     night = api.get(f"/training/nights/{NIGHT}", headers=api.as_("staff")).json()
     [s] = night["sessions"]
-    assert night["checked_in"] == 5
+    assert night["checked_in"] == 5 and night["flights"] == ["A", "B", "C"]
     assert s["flights"] == ["A", "B"] and s["planning_with"] == "checked_in"
     assert s["lesson"]["name"] == "Basic Navigation using Map and Compass" and s["lesson"]["code"]
     assert s["counts"] == {"cadets": 4, "needs": 1, "behind": 1, "had": 2, "scanned": 1}

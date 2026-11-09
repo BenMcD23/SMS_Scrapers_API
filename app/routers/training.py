@@ -531,6 +531,8 @@ def training_night(night: Date, db: Session = Depends(get_db), idinfo: dict = De
     return {
         "date": night.isoformat(),
         "checked_in": len(here),
+        # The squadron's flights, for picking which a session is for.
+        "flights": sorted({(c.flight or "").strip().upper() for c in cadets} - {""}),
         "programme": programme,
         "sessions": out,
     }

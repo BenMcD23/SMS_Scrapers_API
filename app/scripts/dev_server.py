@@ -1149,7 +1149,7 @@ def seed_training(client, headers: dict, db, now: datetime | None = None) -> Non
     ahead, and tonight set up by hand against the door list, with a few
     cadets already scanned in to the map reading lesson. Through the real
     endpoints, with the rules rather than a model (a preview has no LLM key)."""
-    from database.models import Cadet, CadetCheckIn, CadetTheoryLesson
+    from database.models import Cadet, CadetCheckIn, CadetTheoryLesson, ProgrammeNight
 
     def ok(res, what):
         assert res.status_code < 300, f"{what}: {res.status_code} {res.text}"
@@ -1166,7 +1166,9 @@ def seed_training(client, headers: dict, db, now: datetime | None = None) -> Non
     ok(client.put("/training/links", headers=headers,
                   json={"activity": "Inter Flight STEM Exercise", "subject_key": None, "part": None}), "not a lesson")
 
-    ahead = (_parade_nights(now, 1)[0] + timedelta(weeks=1)).date()
+    # The next programme night after tonight, so planning ahead never lands
+    # on the night set up by hand below.
+    ahead = min(d for (d,) in db.query(ProgrammeNight.date) if d > now.date())
     ok(client.post(f"/training/nights/{ahead}/from-programme", headers=headers), "from programme")
 
     tonight = now.date()

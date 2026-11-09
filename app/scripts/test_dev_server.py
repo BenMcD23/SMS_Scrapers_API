@@ -592,8 +592,24 @@ def test_the_training_pages_have_links_in_every_state_and_a_night_grouped_from_t
     assert tonight["checked_in"] and len(tonight["sessions"]) == 4
     nav = tonight["sessions"][0]
     assert nav["planning_with"] == "checked_in" and nav["counts"]["scanned"] >= 1 and nav["groups"]
-    ahead = (_parade_nights(NOW, 1)[0] + timedelta(weeks=1)).date()
+    from database.models import TrainingNightSession
+    ahead = next(d for (d,) in db.query(TrainingNightSession.date).distinct() if d != NOW.date())
+    assert ahead > NOW.date()
     planned = api.get(f"/training/nights/{ahead}", headers=staff).json()
     assert planned["programme"] and planned["sessions"]
     assert all(s["planning_with"] == "expected" for s in planned["sessions"])
     assert api.get("/training/catch-ups", headers=staff).json(), "a linked lesson with cadets to catch up"
+
+
+def test_on_a_parade_night_the_planned_ahead_night_is_never_tonight(api, db):
+    # On a Monday the programme already has tonight in it; starting "next
+    # week" from it once landed on tonight and doubled up its sessions.
+    monday = datetime(2026, 11, 9, 18, 0)
+    staff = api.as_("staff")
+    seed(db, now=monday)
+    seed_programme(db, now=monday)
+    seed_theory_custom(api, staff)
+    seed_check_ins(api, staff, db, now=monday)
+    seed_training(api, staff, db, now=monday)
+    tonight = api.get(f"/training/nights/{monday.date()}", headers=staff).json()
+    assert [s["title"] for s in tonight["sessions"]] == ["Map Reading 2", "Drill", "Intro to Drill", "Leadership tasks"]
