@@ -44,6 +44,7 @@ from scripts.dev_server import (
     seed_stores,
     seed_stores_history,
     seed_theory_custom,
+    seed_training,
 )
 
 NOW = datetime(2026, 10, 8, 18, 0)  # a Thursday
@@ -401,6 +402,7 @@ def _seed_everything(api, db):
     seed_session_bank(api, staff, now=NOW)
     seed_theory_custom(api, staff)
     seed_check_ins(api, staff, db, now=NOW)
+    seed_training(api, staff, db, now=NOW)
 
 
 def test_the_door_list_has_cadets_in_by_code_by_an_nco_and_not_yet(api, db, monkeypatch):
@@ -577,3 +579,21 @@ def test_the_qr_codes_page_has_an_added_section_subject_and_a_retired_one(api, d
     assert {s["active"] for s in subjects} == {True, False}
     assert any(s["category"] == "Badges" for s in subjects)
     assert any(s["used"] for s in subjects), "a subject cadets have started"
+
+
+def test_the_training_pages_have_links_in_every_state_and_a_night_grouped_from_the_door(api, db):
+    # Without it the Training nights, links and catch-ups pages are empty in
+    # every preview.
+    _seed_everything(api, db)
+    staff = api.as_("staff")
+    states = {r["state"] for r in api.get("/training/links", headers=staff).json()}
+    assert states == {"linked", "not_lesson", "suggested"}
+    tonight = api.get(f"/training/nights/{NOW.date()}", headers=staff).json()
+    assert tonight["checked_in"] and len(tonight["sessions"]) == 4
+    nav = tonight["sessions"][0]
+    assert nav["planning_with"] == "checked_in" and nav["counts"]["scanned"] >= 1 and nav["groups"]
+    ahead = (_parade_nights(NOW, 1)[0] + timedelta(weeks=1)).date()
+    planned = api.get(f"/training/nights/{ahead}", headers=staff).json()
+    assert planned["programme"] and planned["sessions"]
+    assert all(s["planning_with"] == "expected" for s in planned["sessions"])
+    assert api.get("/training/catch-ups", headers=staff).json(), "a linked lesson with cadets to catch up"

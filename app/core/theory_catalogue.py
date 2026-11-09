@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import secrets
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -106,8 +107,21 @@ def new_key(db: Session, name: str) -> str:
     return key
 
 
+def add_codes(db: Session, key: str, parts: int) -> None:
+    """Codes for lessons 1..parts that don't have one yet. A lesson that had one
+    (the subject was cut back, then grown again) gets the same code back.
+    Shared by the QR codes page and accepting a programme link that adds a
+    subject (routers/training.py), so both give a new lesson its code."""
+    have = {p for (p,) in db.query(TheoryLessonCode.part).filter_by(subject_key=key)}
+    now = datetime.now()
+    for part in range(1, parts + 1):
+        if part not in have:
+            db.add(TheoryLessonCode(subject_key=key, part=part, code=new_code(db), created_at=now))
+            db.flush()
+
+
 def can_add_to(section: str) -> bool:
     return section not in SYLLABUS_SECTIONS
 
 
-__all__ = ["BADGES", "Catalogue", "catalogue", "new_code", "new_key", "can_add_to", "MAX_PARTS"]
+__all__ = ["BADGES", "Catalogue", "add_codes", "catalogue", "new_code", "new_key", "can_add_to", "MAX_PARTS"]

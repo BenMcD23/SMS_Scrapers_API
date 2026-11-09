@@ -1941,3 +1941,55 @@ class ProgrammeSession(Base):
     raw        = Column(Text,    nullable=False)   # the cell as written, which a re-import matches on
 
     night = relationship("ProgrammeNight", back_populates="sessions")
+
+
+# ─── Training ────────────────────────────────────────────────────────────────
+
+class ProgrammeLessonLink(Base):
+    """Which lesson a programme activity is (routers/training.py): "Map Reading
+    2" in the programme is lesson 2 of the Map Reading subject in the theory
+    catalogue. Keyed on the activity's tidy name, so a re-import that replaces
+    a month's sessions keeps its links.
+
+    The model or the rules suggest a link and staff confirm it. A suggestion
+    can be an existing subject (``subject_key``), a subject to add
+    (``new_subject``, made when it's accepted), or neither: not a lesson
+    (drill, sport, socials). Only confirmed links feed catch-ups."""
+    __tablename__ = "Programme_Lesson_Links"
+
+    id          = Column(Integer,  primary_key=True, autoincrement=True)
+    activity    = Column(Text,     nullable=False, unique=True)
+    subject_key = Column(Text,     nullable=True)
+    new_subject = Column(Text,     nullable=True)
+    part        = Column(Integer,  nullable=True)
+    confirmed   = Column(Boolean,  nullable=False, default=False, server_default="0")
+    source      = Column(Text,     nullable=False)  # "ai", "rules" or "staff"
+    updated_at  = Column(DateTime, nullable=False)
+    updated_by  = Column(Text,     nullable=True)
+
+
+class TrainingNightSession(Base):
+    """One thing running on a training night, with the inputs that decide who
+    is in it and how they're grouped (the rules are core/training_plan.py).
+    Only the inputs are kept: the groups are worked out afresh from who has
+    checked in each time the page asks, so they follow the door."""
+    __tablename__ = "Training_Night_Sessions"
+
+    id          = Column(Integer,  primary_key=True, autoincrement=True)
+    date        = Column(Date,     nullable=False, index=True)
+    position    = Column(Integer,  nullable=False, default=0)
+    period      = Column(Integer,  nullable=True)   # 1, 2...; None stands alone
+    title       = Column(Text,     nullable=False)
+    subject_key = Column(Text,     nullable=True)   # a theory catalogue subject
+    part        = Column(Integer,  nullable=True)
+    flights     = Column(JSON,     nullable=False, default=list)  # ["A", "B"]; [] is everyone
+    pool        = Column(Text,     nullable=False, default="auto")
+    include     = Column(Text,     nullable=False, default="all")
+    grouping    = Column(Text,     nullable=False, default="one")
+    group_count = Column(Integer,  nullable=True)   # for "mixed" grouping
+    max_group   = Column(Integer,  nullable=True)
+    instructor  = Column(Text,     nullable=True)
+    notes       = Column(Text,     nullable=True)
+    created_at  = Column(DateTime, nullable=False)
+    created_by  = Column(Text,     nullable=True)
+    updated_at  = Column(DateTime, nullable=False)
