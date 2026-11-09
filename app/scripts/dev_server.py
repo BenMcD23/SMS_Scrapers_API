@@ -973,7 +973,7 @@ def seed_recruits(client, headers: dict, db) -> None:
     res = client.post("/recruit-signup", json={
         "cadetFirstName": "Ruby", "cadetLastName": "O'Neill", "cadetDob": "2013-03-14",
         "parentName": "Gráinne O'Neill", "parentEmail": "grainne.oneill@example.com",
-        "parentMobile": "07700 900456"})
+        "parentMobile": "07700 900456", "poloSize": "M"})
     assert res.status_code == 201, f"/recruit-signup: {res.status_code} {res.text}"
 
 

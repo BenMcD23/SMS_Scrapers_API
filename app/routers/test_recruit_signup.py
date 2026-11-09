@@ -275,3 +275,32 @@ def test_a_made_up_bearer_token_does_not_buy_a_fresh_rate_limit(api, opened):
                       headers={"Authorization": f"Bearer junk{i}"}).status_code
              for i in range(31)]
     assert codes[30] == 429
+
+
+# ── polo size ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("size", ["XS", "S", "M", "L", "XL"])
+def test_the_polo_size_is_kept_and_shown_to_staff(api, db, opened, size):
+    assert api.post("/recruit-signup", json={**SIGNUP, "poloSize": size}).status_code == 201
+    assert db.query(RecruitApplication).one().polo_size == size
+    [listed] = api.get("/recruits", headers=STAFF).json()
+    assert listed["poloSize"] == size
+
+
+@pytest.mark.parametrize("bad", ["XXL", "xl", "", "Medium", 5])
+def test_an_unknown_polo_size_is_refused(api, db, opened, bad):
+    assert api.post("/recruit-signup", json={**SIGNUP, "poloSize": bad}).status_code == 422
+    assert db.query(RecruitApplication).count() == 0
+
+
+def test_signing_up_without_a_polo_size_still_works(api, db, opened):
+    # A page loaded before the question existed, or a recruit staff added by hand.
+    assert api.post("/recruit-signup", json=SIGNUP).status_code == 201
+    [listed] = api.get("/recruits", headers=STAFF).json()
+    assert listed["poloSize"] is None
+
+
+def test_a_second_go_corrects_the_polo_size_without_a_second_recruit(api, db, opened):
+    api.post("/recruit-signup", json={**SIGNUP, "poloSize": "S"})
+    api.post("/recruit-signup", json={**SIGNUP, "poloSize": "L"})
+    assert db.query(RecruitApplication).one().polo_size == "L"

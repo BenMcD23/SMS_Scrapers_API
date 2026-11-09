@@ -1689,6 +1689,9 @@ class RecruitApplication(Base):
     cadet_last_name  = Column(Text,     nullable=False)
     parent_name      = Column(Text,     nullable=False)
     parent_email     = Column(Text,     nullable=False)
+    # XS-XL, asked on the sign-up page so a polo can be ordered. None for a
+    # recruit staff added by hand, or who signed up before it was asked.
+    polo_size        = Column(Text,     nullable=True)
     # The link's secret. Stored as-is (not hashed) so staff can copy the link
     # again; it only opens this one form, whose answers sit in the same row.
     token            = Column(Text,     nullable=False, unique=True)

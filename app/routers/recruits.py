@@ -61,6 +61,8 @@ _PNG = b"\x89PNG\r\n\x1a\n"
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+# The squadron polo's sizes, smallest first (the order the sign-up page offers).
+PoloSize = Literal["XS", "S", "M", "L", "XL"]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -93,6 +95,7 @@ def _summary(app: RecruitApplication, now: datetime) -> dict:
         "cadetLastName": app.cadet_last_name,
         "parentName": app.parent_name,
         "parentEmail": app.parent_email,
+        "poloSize": app.polo_size,
         "status": _status(app),
         "progress": recruit_form.progress(form, bool(app.submitted_at)),
         "link": _link(app),
@@ -157,12 +160,14 @@ def _prefill(cadet_name: str, parent_name: str, parent_email: str,
 
 
 def _new_application(first: str, last: str, parent_name: str, parent_email: str, now: datetime,
-                     created_by: str | None, dob: date | None = None, mobile: str = "") -> RecruitApplication:
+                     created_by: str | None, dob: date | None = None, mobile: str = "",
+                     polo_size: str | None = None) -> RecruitApplication:
     return RecruitApplication(
         cadet_first_name=first,
         cadet_last_name=last,
         parent_name=parent_name,
         parent_email=parent_email,
+        polo_size=polo_size,
         token=secrets.token_urlsafe(32),
         expires_at=now + timedelta(days=LINK_DAYS),
         data=_prefill(f"{first} {last}", parent_name, parent_email, dob, mobile),
@@ -280,6 +285,9 @@ class Signup(BaseModel):
     parentName: Name
     parentEmail: Name
     parentMobile: Name
+    # Optional so a page loaded before the question was added still signs up;
+    # the website's form requires it.
+    poloSize: PoloSize | None = None
     # A field people never see: a bot fills every input, a parent leaves it blank.
     website: str = ""
 
@@ -347,12 +355,14 @@ def signup(request: Request, body: Signup, background: BackgroundTasks, db: Sess
         # with a live link, sent again.
         if existing.expires_at <= now:
             existing.expires_at = now + timedelta(days=LINK_DAYS)
+        if body.poloSize:
+            existing.polo_size = body.poloSize  # a correction on the second go
         db.commit()
         _queue_link(background, existing)
         return {"cadetFirstName": existing.cadet_first_name, "link": None, "email": existing.parent_email}
 
     app = _new_application(body.cadetFirstName, body.cadetLastName, body.parentName, body.parentEmail,
-                           now, SIGNUP_CREATED_BY, body.cadetDob, body.parentMobile)
+                           now, SIGNUP_CREATED_BY, body.cadetDob, body.parentMobile, body.poloSize)
     db.add(app)
     db.commit()
     _queue_link(background, app)
