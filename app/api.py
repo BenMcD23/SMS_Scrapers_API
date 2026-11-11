@@ -50,6 +50,7 @@ from routers import (
     nco_appraisals,
     nco_comments,
     nco_holidays,
+    nco_staff_notes,
     newsletters,
     oc,
     portal,
@@ -239,6 +240,7 @@ app.include_router(session_planner.router)
 app.include_router(nco_holidays.router)
 app.include_router(nco_appraisals.router)
 app.include_router(nco_comments.router)
+app.include_router(nco_staff_notes.router)
 app.include_router(attendance.router)
 app.include_router(leaving.router)
 app.include_router(appointments.router)

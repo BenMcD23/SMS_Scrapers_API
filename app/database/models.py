@@ -1167,6 +1167,45 @@ class NcoCommentReply(Base):
     author  = relationship("User")
 
 
+NCO_NOTE_SOURCES = ("typed", "voice")
+
+
+class NcoStaffNote(Base):
+    """A staff observation about one cadet NCO, jotted on parade night.
+
+    Staff-only, always: unlike NcoComment (which every NCO reads), these are
+    what staff think of the NCOs themselves. Over a review period they build up
+    into the NCO's profile, and the next appraisal is drafted from the ones it
+    hasn't used yet — `appraisal_id` marks the appraisal that used a note, so
+    the following one starts fresh.
+
+    `cadet_id` is nulled rather than cascaded when the cadet leaves (the
+    scraper hard-deletes them) and `cadet_name` is snapshotted, as on comments.
+    `source` records whether it was spoken or typed: a transcription can mishear
+    a name, which is worth knowing when a note reads oddly later."""
+    __tablename__ = "NCO_Staff_Notes"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="SET NULL"), nullable=True, index=True)
+    cadet_name = Column(Text, nullable=False, default="", server_default="")
+    # The note outlives the staff account that wrote it.
+    author_id = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    body      = Column(Text,     nullable=False)
+    note_date = Column(DateTime, nullable=False)  # the parade night it's about
+    source    = Column(Text,     nullable=False, default="typed", server_default="typed")
+
+    appraisal_id = Column(Integer, ForeignKey("NCO_Appraisals.id", ondelete="SET NULL"),
+                          nullable=True, index=True)
+
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=True)  # set on an edit only
+
+    author    = relationship("User")
+    cadet     = relationship("Cadet")
+    appraisal = relationship("NcoAppraisal")
+
+
 # ─── Scraper Runs ─────────────────────────────────────────────────────────────
 
 class ScraperRun(Base):
