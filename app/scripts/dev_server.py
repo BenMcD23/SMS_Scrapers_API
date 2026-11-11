@@ -1142,6 +1142,57 @@ def seed_theory_custom(client, headers: dict) -> None:
     }), "mark")
 
 
+def seed_training(client, headers: dict, db, now: datetime | None = None) -> None:
+    """Training nights: programme activities linked to lessons (accepted
+    suggestions, staff's own links, one marked not a lesson and some still
+    waiting), next week's night started from its programme for planning
+    ahead, and tonight set up by hand against the door list, with a few
+    cadets already scanned in to the map reading lesson. Through the real
+    endpoints, with the rules rather than a model (a preview has no LLM key)."""
+    from database.models import Cadet, CadetCheckIn, CadetTheoryLesson, ProgrammeNight
+
+    def ok(res, what):
+        assert res.status_code < 300, f"{what}: {res.status_code} {res.text}"
+        return res.json()
+
+    now = now or datetime.now()
+    ok(client.post("/training/links/suggest?use_ai=false", headers=headers), "suggest")
+    ok(client.post("/training/links/accept", headers=headers,
+                   json={"activities": ["IET Pt 1", "Flying Ops 1", "History of the RAF"]}), "accept")
+    # The rules call these a new "Map Reading" subject; it's the syllabus's.
+    for activity, part in (("Map Reading 1", 1), ("Map Reading 2", 2)):
+        ok(client.put("/training/links", headers=headers,
+                      json={"activity": activity, "subject_key": "acp_32_2", "part": part}), "link")
+    ok(client.put("/training/links", headers=headers,
+                  json={"activity": "Inter Flight STEM Exercise", "subject_key": None, "part": None}), "not a lesson")
+
+    # The next programme night after tonight, so planning ahead never lands
+    # on the night set up by hand below.
+    ahead = min(d for (d,) in db.query(ProgrammeNight.date) if d > now.date())
+    ok(client.post(f"/training/nights/{ahead}/from-programme", headers=headers), "from programme")
+
+    tonight = now.date()
+    for body in (
+        {"title": "Map Reading 2", "period": 1, "subject_key": "acp_32_2", "part": 2, "flights": ["A", "B"],
+         "include": "need", "grouping": "need", "max_group": 8, "instructor": "Sgt Davies"},
+        {"title": "Drill", "period": 1, "flights": ["A", "B"], "grouping": "flight", "instructor": "Sgt Hall"},
+        {"title": "Intro to Drill", "period": 1, "flights": ["C"], "instructor": "FS Gill"},
+        {"title": "Leadership tasks", "period": 2, "pool": "checked_in", "grouping": "mixed", "group_count": 3,
+         "instructor": "Fg Off Barker", "notes": "Command tasks on the field if it's dry, the hall if not."},
+    ):
+        ok(client.post(f"/training/nights/{tonight}/sessions", headers=headers, json=body), body["title"])
+
+    here = {cin for (cin,) in db.query(CadetCheckIn.cadet_id).filter(CadetCheckIn.date == tonight)}
+    had = {cin for (cin,) in db.query(CadetTheoryLesson.cadet_id).filter_by(lesson_key="acp_32_2", part=2)}
+    scanning = [c.cin for c in db.query(Cadet).filter(Cadet.flight.in_(["A", "B"])).order_by(Cadet.cin)
+                if c.cin in here and c.cin not in had][:3]
+    at = now.replace(hour=19, minute=40, second=0, microsecond=0)
+    for cin in scanning:
+        db.add(CadetTheoryLesson(cadet_id=cin, lesson_key="acp_32_2", part=2, attended_at=at,
+                                 recorded_by="QR check-in"))
+    db.commit()
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if a table the models have is missing, or an existing one lacks a
     column. A missing table would be made empty by create_all and never
@@ -1229,6 +1280,8 @@ def main() -> None:
         seed_theory_custom(client, headers)
         with SessionLocal() as db:
             seed_check_ins(client, headers, db)
+        with SessionLocal() as db:
+            seed_training(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

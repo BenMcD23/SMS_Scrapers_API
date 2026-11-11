@@ -20,7 +20,7 @@ from core import classification_plan as plan
 from core.db import get_current_cadet, get_db
 from core.qualifications import qual_names_with_flights
 from core.security import require_staff
-from core.theory_catalogue import BUILT_IN_SECTIONS, MAX_PARTS, can_add_to, catalogue, new_code, new_key
+from core.theory_catalogue import BUILT_IN_SECTIONS, MAX_PARTS, add_codes, can_add_to, catalogue, new_key
 from core.theory_lessons import THEORY_LESSONS, lesson_qual_held
 from core.theory_progress import (
     QR_CHECK_IN,
@@ -340,17 +340,6 @@ def theory_subjects(db: Session = Depends(get_db), idinfo: dict = Depends(requir
             for s in subjects]
 
 
-def _add_codes(db: Session, key: str, parts: int) -> None:
-    """Codes for lessons 1..parts that don't have one yet. A lesson that had one
-    (the subject was cut back, then grown again) gets the same code back."""
-    have = set(_codes_for(db, key))
-    now = datetime.now()
-    for part in range(1, parts + 1):
-        if part not in have:
-            db.add(TheoryLessonCode(subject_key=key, part=part, code=new_code(db), created_at=now))
-            db.flush()
-
-
 @router.post("/cadets/theory/subjects", status_code=201)
 def add_theory_subject(body: SubjectBody, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
     section = _check_section(db, body.section)
@@ -362,7 +351,7 @@ def add_theory_subject(body: SubjectBody, db: Session = Depends(get_db), idinfo:
         active=body.active, created_at=datetime.now(), created_by=idinfo.get("email"),
     )
     db.add(subject)
-    _add_codes(db, subject.key, body.parts)
+    add_codes(db, subject.key, body.parts)
     db.commit()
     return _subject_out(subject, _codes_for(db, subject.key), used=False)
 
@@ -383,7 +372,7 @@ def edit_theory_subject(
         raise HTTPException(status_code=409, detail=f"{section} already has a subject called “{body.name}”")
     subject.name, subject.category, subject.active = body.name, section, body.active
     subject.parts = body.parts
-    _add_codes(db, key, body.parts)
+    add_codes(db, key, body.parts)
     db.commit()
     codes = {p: c for p, c in _codes_for(db, key).items() if p <= subject.parts}
     return _subject_out(subject, codes, _used(db, key))
