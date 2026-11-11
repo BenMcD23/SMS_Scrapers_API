@@ -44,6 +44,10 @@ from dataclasses import dataclass, field
 
 from core.session_plan import seniority
 
+# A parade night has two halves: 1st 19:25-20:05, 2nd 20:20-21:00. The
+# programme doc is laid out the same way, and the site's lib/training.ts names
+# them with those times, so change both together.
+PERIODS = (1, 2)
 POOLS = ("auto", "checked_in", "expected")
 INCLUDES = ("all", "need")
 GROUPINGS = ("one", "flight", "need", "mixed")

@@ -373,7 +373,7 @@ def confirmed_links(db: Session) -> dict[str, tuple[str, int]]:
 
 class SessionBody(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    period: int | None = Field(default=None, ge=1, le=6)
+    period: int | None = Field(default=None, ge=1, le=len(tp.PERIODS))  # None: the whole night
     subject_key: str | None = None
     part: int | None = Field(default=None, ge=1, le=MAX_PARTS)
     flights: list[str] = Field(default_factory=list, max_length=10)

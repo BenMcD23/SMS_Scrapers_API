@@ -422,6 +422,7 @@ def test_a_session_that_doesnt_exist_is_404(api, method):
     {"title": "Drill", "grouping": "random"},
     {"title": "Drill", "include": "some"},
     {"title": "Drill", "period": 0},
+    {"title": "Drill", "period": 3},  # a night has two halves
     {"title": "Drill", "group_count": 0},
     {"title": "Drill", "max_group": 1},
     {"title": "Drill", "flights": ["A Flight Plus"]},
