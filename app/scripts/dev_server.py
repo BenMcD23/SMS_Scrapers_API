@@ -1142,6 +1142,76 @@ def seed_theory_custom(client, headers: dict) -> None:
     }), "mark")
 
 
+def seed_nco_notes(client, headers: dict, db, now: datetime | None = None) -> None:
+    """Staff notes about the NCOs, and one appraisal drafted from some of them,
+    so /nco-notes shows NCOs with notes waiting, one with none, a profile split
+    into "since the last appraisal" and "used in it", spoken and typed notes,
+    an edited one, and notes by another staff member (no edit or delete).
+    Written through the real endpoints; only the other author and the email
+    stamp are set directly, as the preview has one login and sends no email."""
+    from database.models import NcoAppraisal, NcoStaffNote, User
+
+    now = now or datetime.now()
+    ncos = client.get("/nco-notes", headers=headers).json()["ncos"]
+    if len(ncos) < 5:
+        return
+
+    def night(days_ago: int) -> str:
+        return (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+    def note(cin, body, days_ago, source="typed"):
+        res = client.post("/nco-notes", headers=headers, json={
+            "cadet_cin": cin, "body": body, "note_date": night(days_ago), "source": source})
+        res.raise_for_status()
+        return res.json()["id"]
+
+    first = ncos[0]["cin"]
+    used = [
+        note(first, "Ran the junior drill lesson on her own and kept the pace up.", 190),
+        note(first, "Let two cadets talk through the brief without saying anything.", 176, "voice"),
+        note(first, "Volunteered for the Remembrance parade detail.", 160),
+    ]
+    appraisal = client.post("/nco-appraisals", headers=headers, json={
+        "cadet_id": first,
+        "appraisal_date": night(130),
+        "general_observations": "A reliable NCO who leads by example and volunteers readily.",
+        "effectiveness_in_role": "Delivers drill confidently; needs to step in sooner when standards slip.",
+        "strengths": "Drill instruction - runs a lesson unaided and keeps cadets engaged.",
+        "weaknesses": "Assertiveness - reluctant to correct peers' cadets mid-brief.",
+        "targets": "Correct low-level behaviour on the spot during the next term's briefs.",
+        "next_review_months": 6,
+        "generated_by": "gemini-3.8-flash",
+        "note_ids": used,
+    })
+    appraisal.raise_for_status()
+
+    note(first, "Pulled a cadet up on their dress in front of the flight, calmly and fairly.", 21, "voice")
+    note(first, "Led the colour party practice; clear words of command.", 14)
+    edited = note(first, "Late tonight, but let the duty SNCO know beforehand.", 7)
+    client.put(f"/nco-notes/{edited}", headers=headers, json={
+        "body": "Late tonight, but let the duty SNCO know beforehand and caught up quickly.",
+    }).raise_for_status()
+
+    note(ncos[1]["cin"], "Quiet with his section again — needs to speak up on the parade square.", 14, "voice")
+    note(ncos[1]["cin"], "Good first aid demo for the new recruits; knew the material cold.", 7)
+    note(ncos[2]["cin"], "Organised the kit for the field day without being asked.", 7, "voice")
+    by_other = [
+        note(ncos[3]["cin"], "Spent the evening chatting with friends rather than with her section.", 14),
+        note(ncos[2]["cin"], "Helped a new cadet with their uniform after parade.", 0),
+    ]
+    # ncos[4] is left without notes, so the "nothing noted yet" state shows.
+
+    other = User(google_id="dev-staff-hughes", email="s.hughes@example.com",
+                 first_name="Sarah", last_name="Hughes")
+    db.add(other)
+    db.flush()
+    db.query(NcoStaffNote).filter(NcoStaffNote.id.in_(by_other)).update(
+        {NcoStaffNote.author_id: other.id})
+    row = db.get(NcoAppraisal, appraisal.json()["id"])
+    row.emailed_at, row.emailed_to = now - timedelta(days=128), "nco@example.com"
+    db.commit()
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if a table the models have is missing, or an existing one lacks a
     column. A missing table would be made empty by create_all and never
@@ -1229,6 +1299,8 @@ def main() -> None:
         seed_theory_custom(client, headers)
         with SessionLocal() as db:
             seed_check_ins(client, headers, db)
+        with SessionLocal() as db:
+            seed_nco_notes(client, headers, db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
+from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from core.attendance import ABSENT, PRESENT, count_states
@@ -41,6 +42,7 @@ from database.models import (
     CadetAttendance,
     NcoAppraisal,
     NcoAppraisalReminder,
+    NcoStaffNote,
     User,
 )
 from form_generators.nco_appraisal_gen import build_appraisal_docx, next_review_label
@@ -89,6 +91,11 @@ class AppraisalBody(BaseModel):
     # Set by the client when the sections came from the AI writer, so the saved
     # appraisal records that it was drafted rather than written from scratch.
     generated_by: str | None = None
+
+    # Staff notes (NCO_Staff_Notes) this appraisal was drafted from. Only read
+    # when an appraisal is created: it marks them used, so the next appraisal
+    # starts from the notes made after this one.
+    note_ids: list[int] = []
 
 
 class ReminderBody(BaseModel):
@@ -228,6 +235,24 @@ def _nco_or_400(db: Session, cadet_id: int) -> Cadet:
     return cadet
 
 
+def _open_notes_or_error(db: Session, cadet: Cadet, note_ids: list[int]) -> list[NcoStaffNote]:
+    """The staff notes an appraisal is being saved from. Each must be about
+    this NCO (400 otherwise — a page bug, not something to file quietly) and not
+    already used by another appraisal (409: two staff wrote one at once)."""
+    ids = set(note_ids)
+    if not ids:
+        return []
+    notes = db.query(NcoStaffNote).filter(NcoStaffNote.id.in_(ids)).all()
+    if len(notes) != len(ids) or any(n.cadet_id != cadet.cin for n in notes):
+        raise HTTPException(status_code=400, detail="Some of those notes aren't about this NCO")
+    if any(n.appraisal_id is not None for n in notes):
+        raise HTTPException(
+            status_code=409,
+            detail="Some of those notes have already been used in another appraisal — reload and check",
+        )
+    return notes
+
+
 def _summary(appraisal: NcoAppraisal) -> dict:
     cadet = appraisal.cadet
     return {
@@ -365,6 +390,11 @@ def list_appraisals(
         latest.setdefault(appraisal.cadet_id, appraisal)
         counts[appraisal.cadet_id] = counts.get(appraisal.cadet_id, 0) + 1
     reminder_by_cadet = {r.cadet_id: r for r in reminders}
+    open_notes = dict(
+        db.query(NcoStaffNote.cadet_id, func.count(NcoStaffNote.id))
+        .filter(NcoStaffNote.appraisal_id.is_(None), NcoStaffNote.cadet_id.isnot(None))
+        .group_by(NcoStaffNote.cadet_id).all()
+    )
 
     nco_rows, upcoming = [], []
     for cadet in ncos:
@@ -383,6 +413,8 @@ def list_appraisals(
             "next_review_date": _iso(last.next_review_date) if last else None,
             "appraisal_count": counts.get(cadet.cin, 0),
             "reminder_id": reminder.id if reminder else None,
+            # Staff notes waiting for this NCO's next appraisal.
+            "open_notes": open_notes.get(cadet.cin, 0),
         })
 
         # An appraisal's own next-review date wins: once one exists, that's the
@@ -551,7 +583,11 @@ def create_appraisal(
         appraisal_date=now, next_review_date=now,
     )
     _apply_body(appraisal, body, cadet, cadet.attendance)
+    notes = _open_notes_or_error(db, cadet, body.note_ids)
     db.add(appraisal)
+    db.flush()
+    for note in notes:
+        note.appraisal_id = appraisal.id
 
     # The appraisal is what the reminder was asking for, so it has served its
     # purpose — the next review date now comes from the appraisal itself.
@@ -604,6 +640,11 @@ def delete_appraisal(
     idinfo: dict = Depends(require_staff),
 ):
     appraisal = _get_or_404(db, appraisal_id)
+    # The notes it used go back to waiting for the next one. The foreign key
+    # does this on PostgreSQL; done here too so it holds wherever it runs.
+    db.query(NcoStaffNote).filter(NcoStaffNote.appraisal_id == appraisal.id).update(
+        {NcoStaffNote.appraisal_id: None}
+    )
     db.delete(appraisal)
     db.commit()
     return {"ok": True}

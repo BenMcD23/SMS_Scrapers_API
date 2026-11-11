@@ -36,6 +36,7 @@ from scripts.dev_server import (
     seed_audit,
     seed_check_ins,
     seed_inspections,
+    seed_nco_notes,
     seed_oc_dashboard,
     seed_programme,
     seed_push,
@@ -366,7 +367,7 @@ UNSEEDED_TABLES = {
     "Bader_Credentials",  # secrets: a preview never scrapes
     "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
     "Cadet_Portal_Data", "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
-    "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders", "NCO_Appraisals",
+    "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders",
     "NCO_Comment_Replies", "NCO_Comments", "NCO_Holidays", "Parade_Night_Messages",
     "Removed_Cadets", "Scraper_Runs", "Scraper_Schedules", "Session_Plan_Attachments",
     "Session_Plan_Comments", "Session_Plans", "Sms_Recipients", "Staff_Attendance",
@@ -401,6 +402,7 @@ def _seed_everything(api, db):
     seed_session_bank(api, staff, now=NOW)
     seed_theory_custom(api, staff)
     seed_check_ins(api, staff, db, now=NOW)
+    seed_nco_notes(api, staff, db, now=NOW)
 
 
 def test_the_door_list_has_cadets_in_by_code_by_an_nco_and_not_yet(api, db, monkeypatch):
@@ -577,3 +579,23 @@ def test_the_qr_codes_page_has_an_added_section_subject_and_a_retired_one(api, d
     assert {s["active"] for s in subjects} == {True, False}
     assert any(s["category"] == "Badges" for s in subjects)
     assert any(s["used"] for s in subjects), "a subject cadets have started"
+
+
+def test_the_seeded_nco_notes_show_every_state_the_page_draws(api, db):
+    # Waiting and used notes, spoken and typed, mine and someone else's, an
+    # edited one, and an NCO with none: each is drawn differently on /nco-notes.
+    seed(db, now=NOW)
+    staff = api.as_("staff")
+    seed_nco_notes(api, staff, db, now=NOW)
+    overview = api.get("/nco-notes", headers=staff).json()
+    waiting = [n["open_notes"] for n in overview["ncos"][:5]]
+    assert waiting[0] == 3 and waiting[4] == 0 and all(waiting[:4])
+
+    first = api.get(f"/nco-notes/ncos/{overview['ncos'][0]['cin']}", headers=staff).json()
+    assert len(first["appraisals"]) == 1 and first["open_notes"] == 3
+    assert {n["appraisal_id"] is None for n in first["notes"]} == {True, False}
+    notes = overview["recent"]
+    assert {n["source"] for n in notes} == {"typed", "voice"}
+    assert {n["is_mine"] for n in notes} == {True, False}
+    assert any(n["updated_at"] for n in notes)
+    assert {n["author_name"] for n in notes if not n["is_mine"]} == {"Sarah Hughes"}

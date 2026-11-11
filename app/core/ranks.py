@@ -12,7 +12,10 @@ from database.models import Cadet
 # Rank is the only marker — flight isn't, NCOs stay posted to the flight they
 # run. Staff ranks are never checked against this: a staff sergeant is not a
 # cadet NCO.
-NCO_RANKS = {"corporal", "sergeant", "flight sergeant"}
+# Both spellings: Bader shows ranks in full ("Corporal"), but the short forms
+# turn up too (the preview seed and the site's rank order use them), and a
+# short form missing from here quietly empties every NCO list.
+NCO_RANKS = {"corporal", "sergeant", "flight sergeant", "cpl", "sgt", "fs", "f/sgt"}
 
 
 def is_nco_rank(rank: str | None) -> bool:
