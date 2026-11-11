@@ -3,7 +3,7 @@
 Staff-only observations about cadet NCOs, which feed the NCO appraisals.
 
 Revision ID: s7n8o9t0e1s2
-Revises: r6p7o8l9o0s1
+Revises: t7r8a9i0n1g2
 Create Date: 2026-11-11 00:00:00.000000
 
 """
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 
 revision: str = 's7n8o9t0e1s2'
-down_revision: Union[str, Sequence[str], None] = 'r6p7o8l9o0s1'
+down_revision: Union[str, Sequence[str], None] = 't7r8a9i0n1g2'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
