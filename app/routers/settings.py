@@ -4,7 +4,7 @@ import io
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,26 @@ class AssessorNamePatch(BaseModel):
 
 class PhoneNumberPatch(BaseModel):
     phone_number: str
+
+
+class NavPinsPut(BaseModel):
+    # None puts the role's default pins back.
+    pins: list[str] | None = Field(default=None, max_length=200)
+
+    @field_validator("pins")
+    @classmethod
+    def site_paths(cls, pins: list[str] | None) -> list[str] | None:
+        """Paths on the site, once each, in the order given. Anything else
+        (a full URL, a script, a huge string) is refused rather than stored."""
+        if pins is None:
+            return None
+        seen: list[str] = []
+        for p in pins:
+            if not p.startswith("/") or p.startswith("//") or len(p) > 200 or any(c.isspace() for c in p):
+                raise ValueError("Each pin must be a page on the site, like /stores/badges/orders.")
+            if p not in seen:
+                seen.append(p)
+        return seen
 
 
 @router.post("/save-credentials")
@@ -295,3 +315,34 @@ def update_phone_number(
     row.phone_number = phone or None
     db.commit()
     return {"status": "success", **_phone_json(db, kind, row)}
+
+
+# ── Pinned pages ─────────────────────────────────────────────────────────────
+#
+# The pages someone pinned to the SMS site's menu and phone bar. On the account,
+# not in a browser, so they follow them from laptop to phone. Whether each page
+# is one they may open is the site's to check against the role (it hides pins
+# it can't reach); here it's just their own list.
+
+
+@router.get("/settings/nav-pins")
+def get_nav_pins(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    """The pins, or null when they've never chosen (the site then shows the
+    role's defaults)."""
+    user = get_or_create_user(db, idinfo)
+    return {"pins": user.nav_pins}
+
+
+@router.put("/settings/nav-pins")
+def put_nav_pins(
+    data: NavPinsPut,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff_or_nco),
+):
+    user = get_or_create_user(db, idinfo)
+    user.nav_pins = data.pins
+    db.commit()
+    return {"pins": user.nav_pins}
