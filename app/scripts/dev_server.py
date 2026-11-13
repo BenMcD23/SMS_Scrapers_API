@@ -1201,8 +1201,11 @@ def seed_nco_notes(client, headers: dict, db, now: datetime | None = None) -> No
     ]
     # ncos[4] is left without notes, so the "nothing noted yet" state shows.
 
+    # A second member of staff who has pinned a few pages (Users.nav_pins); the
+    # dev accounts start with none chosen, so the preview shows the defaults.
     other = User(google_id="dev-staff-hughes", email="s.hughes@example.com",
-                 first_name="Sarah", last_name="Hughes")
+                 first_name="Sarah", last_name="Hughes",
+                 nav_pins=["/stores/uniform/orders", "/stores/badges/orders", "/nco-notes"])
     db.add(other)
     db.flush()
     db.query(NcoStaffNote).filter(NcoStaffNote.id.in_(by_other)).update(

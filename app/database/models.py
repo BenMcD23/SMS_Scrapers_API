@@ -660,6 +660,11 @@ class User(Base):
     email     = Column(Text, nullable=False)
     first_name = Column(Text, nullable=True)
     last_name  = Column(Text, nullable=True)
+    # The pages this person pinned to the top of the SMS site's menu and the
+    # phone's bottom bar, in order (paths like "/stores/badges/orders"). On the
+    # account rather than in a browser so they follow them to any device.
+    # NULL means never chosen, so the site shows the role's defaults.
+    nav_pins   = Column(JSON, nullable=True)
 
     bader_credentials  = relationship("BaderCredentials", back_populates="user",
                                        uselist=False, cascade="all, delete-orphan")
