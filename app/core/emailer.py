@@ -134,6 +134,44 @@ def quali_expiry_email_html(rows: list[tuple[str, str, str, int]]) -> str:
     """
 
 
+_COMPLIANCE_LABEL = {"expired": "Expired", "missing": "Not done", "expiring": "Due soon"}
+
+
+def staff_compliance_email_html(name: str | None, rows: list[tuple[str, str, str, str]]) -> str:
+    """rows: (person, item, status, expires_str), worst first. ``name`` greets
+    one member of staff about their own items; None is the OC's digest."""
+    trs = "".join(
+        '<tr>'
+        + ("" if name else f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{_esc(person)}</td>')
+        + f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{_esc(item)}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee;font-weight:bold;'
+        f'color:{"#e65100" if status == "expiring" else "#c62828"}">{_COMPLIANCE_LABEL.get(status, status)}</td>'
+        f'<td style="padding:6px 8px;border-bottom:1px solid #eee">{_esc(expires)}</td>'
+        f'</tr>'
+        for person, item, status, expires in rows
+    )
+    th = 'style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc"'
+    intro = (
+        f"<p>Hi {_esc(name)},</p><p>The Volunteer Portal shows these are due or have lapsed. "
+        "Please renew them on the portal, or tell the OC if the portal is wrong.</p>"
+        if name else
+        "<p>Staff whose DBS, BPSS or mandatory training is due within 60 days or has lapsed, "
+        "from the last Volunteer Portal sync. Each has been emailed about their own.</p>"
+    )
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">DBS and Mandatory Training</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      {intro}
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr>{"" if name else f"<th {th}>Staff</th>"}<th {th}>Item</th><th {th}>Status</th><th {th}>Expires</th></tr>
+        {trs}
+      </table>
+      {FOOTER}
+    </div>
+    """
+
+
 def ban_alert_email_html(rows: list[tuple[str, str]]) -> str:
     """rows: (cadet_name, event_title) — a banned cadet found signed up to an event."""
     trs = "".join(

@@ -17,6 +17,22 @@ user's browser. Nobody publishes or documents this API, so:
 - Bader can change any of this without warning. Any code built on it should
   fail loudly when that happens.
 
+## What 317 SMS uses
+
+The 317 Sync bookmarklet (the SMS site's `public/vp-sync-bookmarklet.js`)
+relays these for the sync page; `app/routers/volunteer_portal.py` imports them.
+
+- Cadets: WHTs, shooting log, fieldcraft, classification, flying, learning,
+  unit history, and every exam subject's enrolments and results.
+- Staff: `persons/staff`, each person's `security/dbs` and `security/bpss`,
+  and the unit-wide `trackers/mandatorytraining`, for the DBS & Training page
+  (`core/staff_compliance.py`).
+- One write: `POST api/exams/management/subjects/{examId}/enrolments`, to enrol
+  cadets 317 SMS says are ready (`POST /vp-sync/exam-ready`). The bookmarklet
+  allows only that path, only enrolling, at most 100 people, and asks on the
+  portal tab before it sends. The sync page reads the enrolment list back to
+  check who went on, since the reply's shape isn't known.
+
 ## Calling it
 
 All paths are relative to `https://volunteers.bader.mod.uk/`.
