@@ -35,6 +35,7 @@ from scripts.dev_server import (
     seed_assistant,
     seed_audit,
     seed_check_ins,
+    seed_drill,
     seed_inspections,
     seed_nco_notes,
     seed_oc_dashboard,
@@ -42,6 +43,7 @@ from scripts.dev_server import (
     seed_push,
     seed_recruits,
     seed_session_bank,
+    seed_staff_compliance,
     seed_stores,
     seed_stores_history,
     seed_theory_custom,
@@ -405,6 +407,33 @@ def _seed_everything(api, db):
     seed_check_ins(api, staff, db, now=NOW)
     seed_nco_notes(api, staff, db, now=NOW)
     seed_training(api, staff, db, now=NOW)
+    seed_drill(api, staff, db, now=NOW)
+    seed_staff_compliance(db, now=NOW)
+
+
+def test_the_drill_tracker_has_cadets_at_every_point_on_the_syllabus(api, db):
+    seed(db, now=NOW)
+    seed_drill(api, api.as_("staff"), db, now=NOW)
+    body = api.get("/drill/progress", headers=api.as_("nco")).json()
+    statuses = {status for c in body["cadets"] for status in c["stages"].values()}
+    assert statuses == {"not_started", "in_progress", "ready", "complete"}
+    assert any(c["ready_for_test"] for c in body["cadets"])
+    assert any(c["current"] is None for c in body["cadets"])  # the whole syllabus passed
+    assert any(not t["passed"] for c in body["cadets"] for t in c["tests"])
+    # A stage with no test, and one decided by a pass mark.
+    assert {s["test_name"] for s in body["stages"]} >= {None, "5x5 drill test"}
+    assert any(s["pass_mark"] for s in body["stages"])
+
+
+def test_staff_compliance_shows_every_state(api, db):
+    seed(db, now=NOW)
+    seed_staff_compliance(db, now=NOW)
+    body = api.get("/staff/compliance", headers=api.as_("oc")).json()
+    # The page judges against today; the seed is relative to NOW, so allow for
+    # the gap by checking the spread rather than exact statuses.
+    statuses = {s["status"] for s in body["staff"]}
+    assert None in statuses  # never synced
+    assert {"expired", "missing"} <= statuses
 
 
 def test_the_door_list_has_cadets_in_by_code_by_an_nco_and_not_yet(api, db, monkeypatch):

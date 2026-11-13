@@ -257,7 +257,7 @@ def test_oc_dashboard_numbers(api, db, cadets):
 
 # ── OC dashboard layout ───────────────────────────────────────────────────────
 
-DEFAULT_LAYOUT = ["committee", "strength", "qualifications", "pipeline"]
+DEFAULT_LAYOUT = ["committee", "strength", "qualifications", "compliance", "pipeline"]
 LAYOUT = "/oc/dashboard/layout"
 
 
@@ -279,7 +279,7 @@ def test_oc_layout_starts_as_the_default_order(api):
 
 
 def test_saved_oc_layout_comes_back_and_reset_restores_the_default(api):
-    order = ["qualifications", "committee", "pipeline", "strength"]
+    order = ["qualifications", "committee", "pipeline", "compliance", "strength"]
     saved = api.put(LAYOUT, json={"sections": order}, headers=OC)
     assert saved.status_code == 200 and saved.json() == {"sections": order, "customised": True}
     assert api.get(LAYOUT, headers=OC).json()["sections"] == order
@@ -297,7 +297,7 @@ def test_saved_oc_layout_comes_back_and_reset_restores_the_default(api):
 def test_a_partial_layout_keeps_every_section(api):
     # Sections left out go to the bottom in their default order, so none vanish.
     body = api.put(LAYOUT, json={"sections": ["pipeline"]}, headers=OC).json()
-    assert body["sections"] == ["pipeline", "committee", "strength", "qualifications"]
+    assert body["sections"] == ["pipeline", "committee", "strength", "qualifications", "compliance"]
     assert api.put(LAYOUT, json={"sections": []}, headers=OC).json()["sections"] == DEFAULT_LAYOUT
 
 
@@ -321,7 +321,8 @@ def test_a_stored_layout_drops_retired_sections_and_gains_new_ones(api, db):
     db.add(DashboardLayout(user_id=user.id, dashboard="oc", updated_at=datetime.now(),
                            sections='["pipeline", "retired", "strength"]'))
     db.commit()
-    assert api.get(LAYOUT, headers=OC).json()["sections"] == ["pipeline", "strength", "committee", "qualifications"]
+    assert api.get(LAYOUT, headers=OC).json()["sections"] == ["pipeline", "strength", "committee", "qualifications",
+                                                                 "compliance"]
 
 
 @pytest.mark.parametrize("raw", ["not json", '{"a": 1}', "null"])

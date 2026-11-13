@@ -40,6 +40,7 @@ from routers import (
     check_ins,
     classification_day,
     committee,
+    drill,
     events,
     flying,
     form_generators,
@@ -63,6 +64,7 @@ from routers import (
     session_planner,
     session_plans,
     settings,
+    staff_compliance,
     stats,
     stores,
     texts,
@@ -207,9 +209,11 @@ def health_check(idinfo: dict = Depends(require_user)):
 
 
 # portal must come before cadets so /cadets/me isn't swallowed by /cadets/{cin}
+app.include_router(staff_compliance.router)
 app.include_router(portal.router)
 app.include_router(activity_logs.router)
 app.include_router(theory.router)
+app.include_router(drill.router)
 app.include_router(check_ins.router)
 app.include_router(cadets.router)
 app.include_router(inspections.router)

@@ -14,12 +14,21 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func
 
 from core import programme, push
-from core.config import AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, QUALI_EXPIRY_ALERT_EMAIL
-from core.emailer import quali_expiry_email_html, send_email
+from core import staff_compliance as sc
+from core.config import AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, OC_EMAIL, QUALI_EXPIRY_ALERT_EMAIL
+from core.emailer import quali_expiry_email_html, send_email, staff_compliance_email_html
 from core.qualifications import quali_expiry_cutoff
 from database.database import SessionLocal
-from database.models import AssessmentSheet, AuditEvent, Cadet, CadetQualification, StatsSnapshot
+from database.models import (
+    AssessmentSheet,
+    AuditEvent,
+    Cadet,
+    CadetQualification,
+    StaffComplianceAlert,
+    StatsSnapshot,
+)
 from routers import assistant, scrapers, usage
+from routers.staff_compliance import compliance_rows
 from routers.stats import save_snapshot
 from scripts.db_backup import run_db_backup
 from texts.sender import scheduled_send_job
@@ -124,6 +133,62 @@ def quali_expiry_alert() -> None:
         db.close()
 
 
+def staff_compliance_alert() -> None:
+    """Weekly email to each member of staff whose DBS, BPSS or mandatory
+    training is due within 60 days, lapsed or not done, and a digest to the OC.
+
+    Each item is mentioned once per stage (due soon, then lapsed) for a given
+    expiry date, so a renewal that brings a new date starts afresh. "Not done"
+    has no date and is never stamped: it stays on the OC's digest each week
+    until it's done, but the person is only emailed when something new is due.
+    """
+    today = date.today()
+    now = datetime.now()
+    db = SessionLocal()
+    try:
+        sent = {(a.staff_id, a.item, a.expires_on, a.stage) for a in db.query(StaffComplianceAlert)}
+        digest, stamps = [], []
+        for person in compliance_rows(db, today):
+            chase = sc.due(person["items"])
+            if not chase:
+                continue
+            for i in chase:
+                digest.append((person["name"], i["name"], i["status"],
+                               i["expires"].strftime("%d/%m/%Y") if i["expires"] else ""))
+            new = [i for i in chase if i["expires"] and i["status"] in (sc.EXPIRING, sc.EXPIRED)
+                   and (person["cin"], i["key"], i["expires"], i["status"]) not in sent]
+            if not new:
+                continue
+            # Someone with no email on the roster is still stamped: the OC's
+            # digest below is how they hear about it.
+            if person["email"]:
+                send_email(
+                    person["email"],
+                    "Your DBS or mandatory training is due",
+                    staff_compliance_email_html(person["name"].split(" ")[0], [
+                        (person["name"], i["name"], i["status"],
+                         i["expires"].strftime("%d/%m/%Y") if i["expires"] else "") for i in chase
+                    ]),
+                )
+                push.notify("compliance", "DBS or training due",
+                            ", ".join(i["name"] for i in new[:3]) + (" and more" if len(new) > 3 else ""),
+                            "/staff/compliance", emails=[person["email"]])
+            stamps += [StaffComplianceAlert(staff_id=person["cin"], item=i["key"], expires_on=i["expires"],
+                                            stage=i["status"], sent_at=now) for i in new]
+        # The OC hears about everything outstanding, only in weeks something new
+        # was sent; otherwise "not done" items would email them every Friday.
+        if stamps:
+            for oc in [e.strip() for e in OC_EMAIL.split(",") if e.strip()]:
+                send_email(oc, f"Staff DBS and training due ({len(digest)})", staff_compliance_email_html(None, digest))
+            db.add_all(stamps)
+            db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("staff compliance alert failed")
+    finally:
+        db.close()
+
+
 def weekly_stats_snapshot() -> None:
     """Make sure every week has a stats snapshot, scraper run or not.
 
@@ -173,6 +238,7 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(cleanup_old_audit_events, "interval", hours=24)
     scheduler.add_job(assistant.cleanup_old_chats, "interval", hours=24)
     scheduler.add_job(quali_expiry_alert, CronTrigger(day_of_week="fri", hour=7, minute=0, timezone=LONDON))
+    scheduler.add_job(staff_compliance_alert, CronTrigger(day_of_week="fri", hour=7, minute=10, timezone=LONDON))
     # Sunday evening: after any weekend scrape, before the week's trend closes.
     scheduler.add_job(weekly_stats_snapshot, CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=LONDON))
     # Sunday evening, before the week's parade nights.

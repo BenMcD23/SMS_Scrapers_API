@@ -52,7 +52,8 @@ def test_a_sync_saves_each_data_set_and_logs_who_ran_it(api, db, cadet):
     whts = [{"weaponCategory": "L98A2", "dateExpires": "2027-01-01"}]
     r = _sync(api, [{"cin": CIN, "data": {"whts": whts, "classification": {"leadingCadetPassed": None}}}])
 
-    assert r.json() == {"matched": 1, "unmatched": 0, "saved": 2, "failed": 0, "kept": 0, "theory": 0, "flights": 0}
+    assert r.json() == {"matched": 1, "unmatched": 0, "saved": 2, "failed": 0, "kept": 0, "theory": 0, "flights": 0,
+                        "staff": 0}
     assert _stored(db, "whts") == whts
     assert _stored(db, "classification") == {"leadingCadetPassed": None}
     run = db.query(ScraperRun).one()
@@ -264,3 +265,96 @@ def test_the_cadet_page_shows_flights_and_dates_with_everything_else(api, cadet)
     assert [f["aircraft"] for f in body["flights"]] == ["Tutor", "PTT"]  # newest first
     assert body["classification_dates"] == {"Leading Cadet": "2025-07-16"}
     assert [s["done"] for s in body["flying_blue_stages"]] == [False, True, True]
+
+
+# ── exam enrolment ────────────────────────────────────────────────────────────
+
+NAV_SUBJECT = {"exam_id": "e-nav", "course_name": "Leading Cadet/CCF Part 2 Navigation on Land Exam"}
+POF_SUBJECT = {"exam_id": "e-pof", "course_name": "Leading Cadet/CCF Part 2 Principles of Flight Exam"}
+
+
+@pytest.fixture
+def ready_cadet(db):
+    """A First Class cadet taught Navigation here but not yet passed on the portal."""
+    from database.models import CadetTheoryProgress
+
+    db.add(Cadet(cin=CIN, first_name="Zoë", last_name="Ó Briain", rank="Cdt", flight="A",
+                 classification="First Class Cadet"))
+    db.add(Cadet(cin=CIN + 1, first_name="Ann", last_name="Able", classification="First Class Cadet"))
+    db.add(CadetTheoryProgress(cadet_id=CIN, lesson_key="acp_32_2", completed_at=datetime(2026, 9, 1),
+                               recorded_by="staff@317atc.co.uk"))
+    db.commit()
+
+
+def _ready(api, subjects, persona="staff"):
+    return api.post("/vp-sync/exam-ready", json={"subjects": subjects}, headers=api.as_(persona))
+
+
+def test_a_cadet_taught_a_subject_is_ready_for_its_portal_exam(api, ready_cadet):
+    body = _ready(api, [NAV_SUBJECT, POF_SUBJECT]).json()
+    nav, pof = body
+    assert (nav["exam_id"], nav["lesson_key"]) == ("e-nav", "acp_32_2")
+    assert nav["cadets"] == [{"cin": CIN, "name": "Zoë Ó Briain", "rank": "Cdt", "flight": "A"}]
+    # Nobody has been taught Principles of Flight yet.
+    assert pof["lesson_key"] == "acp_33_2" and pof["cadets"] == []
+
+
+def test_a_cadet_who_already_passed_on_the_portal_isnt_ready_again(api, db, ready_cadet):
+    # Staff had already marked it taught, so the sync keeps their row and the
+    # pass shows only in the raw exam results; that must still count.
+    db.add(CadetPortalData(cadet_id=CIN, dataset="exams", synced_at=datetime(2026, 10, 1), data={
+        "results": [{"courseName": NAV_SUBJECT["course_name"], "status": 2, "updatedDate": "2026-10-01T00:00:00"}],
+    }))
+    db.commit()
+    assert _ready(api, [NAV_SUBJECT]).json()[0]["cadets"] == []
+
+
+def test_an_exam_we_cant_map_comes_back_with_nobody(api, ready_cadet):
+    body = _ready(api, [{"exam_id": "x", "course_name": "Underwater Basket Weaving Exam"}]).json()
+    assert body == [{"exam_id": "x", "course_name": "Underwater Basket Weaving Exam", "lesson_key": None,
+                     "lesson_name": None, "cadets": []}]
+
+
+def test_no_subjects_is_an_empty_list(api, ready_cadet):
+    assert _ready(api, []).json() == []
+
+
+@pytest.mark.parametrize("subjects", [
+    [{"exam_id": "", "course_name": "x"}],
+    [{"exam_id": "a", "course_name": "x", "extra": 1}],
+    [{"course_name": "x"}],
+    [{"exam_id": "a", "course_name": "x"}] * 101,
+])
+def test_a_malformed_subject_list_is_422(api, subjects):
+    assert _ready(api, subjects).status_code == 422
+
+
+def test_exam_ready_needs_a_token(api):
+    assert api.post("/vp-sync/exam-ready", json={"subjects": []}).status_code == 401
+
+
+@pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
+def test_only_staff_see_who_is_ready_or_log_enrolments(api, persona):
+    assert _ready(api, [NAV_SUBJECT], persona).status_code == 403
+    r = api.post("/vp-sync/enrolments", json={**NAV_SUBJECT, "enrolled": [CIN]}, headers=api.as_(persona))
+    assert r.status_code == 403
+
+
+def test_an_enrolment_is_logged_with_who_did_it(api, db):
+    r = api.post("/vp-sync/enrolments", json={**NAV_SUBJECT, "enrolled": [CIN], "failed": [CIN + 1]},
+                 headers=api.as_("staff"))
+    assert r.status_code == 201
+    run = db.query(ScraperRun).filter_by(scraper_id="vp-enrol").one()
+    assert run.ran_by == "staff@317atc.co.uk" and run.success is False
+    assert "enrolled 1" in run.logs and f"portal refused 1 ({CIN + 1})" in run.logs
+
+
+def test_a_clean_enrolment_is_a_successful_run(api, db):
+    api.post("/vp-sync/enrolments", json={**NAV_SUBJECT, "enrolled": [CIN]}, headers=api.as_("staff"))
+    assert db.query(ScraperRun).filter_by(scraper_id="vp-enrol").one().success is True
+
+
+def test_logging_an_enrolment_of_nobody_is_422(api, db):
+    r = api.post("/vp-sync/enrolments", json=NAV_SUBJECT, headers=api.as_("staff"))
+    assert r.status_code == 422
+    assert db.query(ScraperRun).count() == 0
