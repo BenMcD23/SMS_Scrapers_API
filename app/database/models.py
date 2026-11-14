@@ -72,6 +72,8 @@ class Cadet(Base):
     activity_log_enrolment = relationship("ActivityLogEnrolment", back_populates="cadet", uselist=False,
                                           cascade="all, delete-orphan")
     activity_logs     = relationship("ActivityLog", back_populates="cadet", cascade="all, delete-orphan")
+    drill_lessons     = relationship("CadetDrillLesson", back_populates="cadet", cascade="all, delete-orphan")
+    drill_tests       = relationship("CadetDrillTest",   back_populates="cadet", cascade="all, delete-orphan")
 
 class RemovedCadet(Base):
     """A cadet staff removed after they left SMS. The quali scraper skips these
@@ -103,6 +105,8 @@ class Staff(Base):
     # Row-level register history, separate from the monthly `attendance` counts
     # above (which come from the unit-wide staff attendance report).
     attendance_records = relationship("StaffAttendance", back_populates="staff", cascade="all, delete-orphan")
+    portal_data        = relationship("StaffPortalData", back_populates="staff", cascade="all, delete-orphan")
+    compliance_alerts  = relationship("StaffComplianceAlert", back_populates="staff", cascade="all, delete-orphan")
 
 
 QUALIFICATION_TYPES = (
@@ -371,6 +375,39 @@ class CadetPortalData(Base):
     synced_at = Column(DateTime,   nullable=False)
 
     cadet = relationship("Cadet", back_populates="portal_data")
+
+
+class StaffPortalData(Base):
+    """One Volunteer Portal data set for a staff member (DBS, BPSS, mandatory
+    training), exactly as the portal returned it. core/staff_compliance.py
+    reads what's due from it; nothing else is written from it."""
+    __tablename__ = "Staff_Portal_Data"
+    __table_args__ = (UniqueConstraint("staff_id", "dataset"),)
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    staff_id  = Column(BigInteger, ForeignKey("Staff.cin", ondelete="CASCADE"), nullable=False, index=True)
+    dataset   = Column(Text,       nullable=False)  # one of volunteer_portal.STAFF_DATASETS
+    data      = Column(JSON,       nullable=False)
+    synced_at = Column(DateTime,   nullable=False)
+
+    staff = relationship("Staff", back_populates="portal_data")
+
+
+class StaffComplianceAlert(Base):
+    """That a staff member was emailed about one compliance item reaching a
+    stage, so the weekly job tells them once per stage. Keyed on the expiry
+    date too: renewing it gives a new date, and the next lapse is alerted afresh."""
+    __tablename__ = "Staff_Compliance_Alerts"
+    __table_args__ = (UniqueConstraint("staff_id", "item", "expires_on", "stage"),)
+
+    id         = Column(Integer,    primary_key=True, autoincrement=True)
+    staff_id   = Column(BigInteger, ForeignKey("Staff.cin", ondelete="CASCADE"), nullable=False, index=True)
+    item       = Column(Text,       nullable=False)  # core.staff_compliance item key, e.g. "dbs"
+    expires_on = Column(Date,       nullable=False)
+    stage      = Column(Text,       nullable=False)  # "expiring" | "expired"
+    sent_at    = Column(DateTime,   nullable=False)
+
+    staff = relationship("Staff", back_populates="compliance_alerts")
 
 
 class CadetFlight(Base):
@@ -2037,3 +2074,72 @@ class TrainingNightSession(Base):
     created_at  = Column(DateTime, nullable=False)
     created_by  = Column(Text,     nullable=True)
     updated_at  = Column(DateTime, nullable=False)
+
+
+# ─── Drill syllabus ───────────────────────────────────────────────────────────
+
+class DrillStage(Base):
+    """One stage of the squadron's progressive drill syllabus. Staff edit the
+    stages and lessons on the Drill page; the migration adds a starter list.
+
+    A stage ends with a test (a 5x5 drill test by default). ``max_score`` and
+    ``pass_mark`` are optional: with a pass mark, a score decides the result;
+    without one, the tester says pass or fail."""
+    __tablename__ = "Drill_Stages"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    name      = Column(Text,    nullable=False)
+    position  = Column(Integer, nullable=False, default=0)
+    test_name = Column(Text,    nullable=True)   # None: the stage has no test
+    max_score = Column(Integer, nullable=True)
+    pass_mark = Column(Integer, nullable=True)
+
+    lessons = relationship("DrillLesson", back_populates="stage", order_by="DrillLesson.position",
+                           cascade="all, delete-orphan")
+
+
+class DrillLesson(Base):
+    """One lesson in a drill stage (turns at the halt, wheeling, ...)."""
+    __tablename__ = "Drill_Lessons"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    stage_id = Column(Integer, ForeignKey("Drill_Stages.id", ondelete="CASCADE"), nullable=False, index=True)
+    name     = Column(Text,    nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+
+    stage = relationship("DrillStage", back_populates="lessons")
+
+
+class CadetDrillLesson(Base):
+    """Where a cadet is on one drill lesson: taught, then passed. A row with
+    neither is never kept. Who did each is the recorder's email."""
+    __tablename__ = "Cadet_Drill_Lessons"
+    __table_args__ = (UniqueConstraint("cadet_id", "lesson_id", name="uq_drill_cadet_lesson"),)
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    lesson_id = Column(Integer,    ForeignKey("Drill_Lessons.id", ondelete="CASCADE"), nullable=False, index=True)
+    taught_at = Column(DateTime,   nullable=True)
+    taught_by = Column(Text,       nullable=True)
+    passed_at = Column(DateTime,   nullable=True)
+    passed_by = Column(Text,       nullable=True)
+
+    cadet = relationship("Cadet", back_populates="drill_lessons")
+
+
+class CadetDrillTest(Base):
+    """One attempt at a drill stage's test. Every attempt is kept; the stage is
+    passed once any attempt passed."""
+    __tablename__ = "Cadet_Drill_Tests"
+
+    id        = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id  = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    stage_id  = Column(Integer,    ForeignKey("Drill_Stages.id", ondelete="CASCADE"), nullable=False, index=True)
+    tested_on = Column(Date,       nullable=False)
+    score     = Column(Integer,    nullable=True)
+    passed    = Column(Boolean,    nullable=False)
+    notes     = Column(Text,       nullable=True)
+    tested_by = Column(Text,       nullable=False)
+    recorded_at = Column(DateTime, nullable=False)
+
+    cadet = relationship("Cadet", back_populates="drill_tests")

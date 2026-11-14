@@ -1266,6 +1266,111 @@ def seed_training(client, headers: dict, db, now: datetime | None = None) -> Non
     db.commit()
 
 
+def seed_drill(client, headers: dict, db, now: datetime | None = None) -> None:
+    """The drill syllabus (the migration's starter list, which create_all doesn't
+    run) and cadets at every point on it: not started, part taught, ready for a
+    stage test, failed it once, and through to the last stage. Stage 1 has a
+    pass mark so a score decides; the rest leave it to the tester."""
+    from core.drill import STARTER_MAX_SCORE, STARTER_SYLLABUS, STARTER_TEST
+    from database.models import Cadet
+
+    def ok(res, what):
+        assert res.status_code < 300, f"{what}: {res.status_code} {res.text}"
+        return res.json()
+
+    now = now or datetime.now()
+    stages = []
+    for i, (name, lessons) in enumerate(STARTER_SYLLABUS):
+        stage = ok(client.post("/drill/stages", headers=headers, json={
+            "name": name, "test_name": STARTER_TEST, "max_score": STARTER_MAX_SCORE,
+            "pass_mark": 15 if i == 0 else None}), name)
+        stage["lessons"] = [ok(client.post(f"/drill/stages/{stage['id']}/lessons", headers=headers,
+                                           json={"name": lesson}), lesson)["id"] for lesson in lessons]
+        stages.append(stage)
+    colour = ok(client.post("/drill/stages", headers=headers, json={"name": "Colour party"}), "untested stage")
+    colour_lesson = ok(client.post(f"/drill/stages/{colour['id']}/lessons", headers=headers,
+                                   json={"name": "Carrying the colour"}), "colour lesson")["id"]
+
+    cins = [c for (c,) in db.query(Cadet.cin).order_by(Cadet.cin)]
+    one, two, three = stages[0], stages[1], stages[2]
+    tested = (now - timedelta(days=14)).date().isoformat()
+
+    def mark(lesson, group, passed):
+        ok(client.post(f"/drill/lessons/{lesson}/mark", headers=headers,
+                       json={"cins": group, "passed": passed}), "mark")
+
+    def test(cin, stage, **body):
+        ok(client.post(f"/cadets/{cin}/drill/tests", headers=headers,
+                       json={"stage_id": stage["id"], "tested_on": tested, **body}), "test")
+
+    # Cadets 0-29 are through stage 1: lessons passed and the 5x5 passed.
+    for lesson in one["lessons"]:
+        mark(lesson, cins[:30], passed=True)
+    for i, cin in enumerate(cins[:30]):
+        if i % 7 == 3:  # a few failed first time, then passed
+            test(cin, one, score=11, notes="Turns rushed; practise the pause")
+        test(cin, one, score=17 + i % 8)
+    # 0-14 have passed stage 2 too (the tester's call, no pass mark).
+    for lesson in two["lessons"]:
+        mark(lesson, cins[:20], passed=False)
+        mark(lesson, cins[:15], passed=True)
+    for cin in cins[:12]:
+        test(cin, two, score=20, passed=True)
+    # 12-14 are ready for the stage 2 test; 15-19 part way through it.
+    # 0-5 have started stage 3.
+    mark(three["lessons"][0], cins[:6], passed=True)
+    mark(three["lessons"][1], cins[:3], passed=False)
+    # 30-39 are part taught on stage 1; 40+ haven't started.
+    mark(one["lessons"][0], cins[30:40], passed=False)
+    # 0 and 1 have done the lot, colour party included.
+    for stage in stages[2:]:
+        for lesson in stage["lessons"]:
+            mark(lesson, cins[:2], passed=True)
+        for cin in cins[:2]:
+            test(cin, stage, score=22, passed=True)
+    mark(colour_lesson, cins[:2], passed=True)
+
+
+def seed_staff_compliance(db, now: datetime | None = None) -> None:
+    """Portal DBS, BPSS and mandatory training for the seeded staff, in the
+    raw shapes the sync stores: one all clear, one DBS lapsed (already
+    emailed), one due soon, one with BPSS and a module not done, and Priya
+    never synced, so the page shows each state."""
+    from database.models import StaffComplianceAlert, StaffPortalData
+
+    now = now or datetime.now()
+
+    def day(days):
+        return (now + timedelta(days=days)).strftime("%Y-%m-%dT00:00:00")
+
+    def tracker(*modules):
+        return {"passedAllMandatory": all(e is not None and e > 0 for _, e in modules), "mandatoryTraining": [
+            {"criteriaId": n, "displayName": name, "mandatory": True, "statusValue": 1,
+             "dateAchieved": day(-500) if expires is not None else "0001-01-01T00:00:00",
+             "dateExpires": day(expires) if expires is not None else "0001-01-01T00:00:00"}
+            for n, (name, expires) in enumerate(modules, 1)
+        ]}
+
+    people = {
+        3_000: {"dbs": {"dateValidFrom": day(-300)}, "bpss": [{"checkDate": day(-900)}],
+                "training": tracker(("Safeguarding", 40), ("Prevent", 500), ("Data protection", 700))},
+        3_001: {"dbs": [{"dateValidFrom": day(-1_120)}], "bpss": [{"checkDate": day(-1_500)}],
+                "training": tracker(("Safeguarding", 200), ("Prevent", 300), ("Data protection", 400))},
+        3_002: {"dbs": {"items": [{"dateOfCheck": day(-200)}]}, "bpss": [],
+                "training": tracker(("Safeguarding", 250), ("Prevent", None), ("Data protection", 90))},
+        3_003: {"dbs": {"dateValidFrom": day(-100)}, "bpss": [{"checkDate": day(-100)}],
+                "training": tracker(("Safeguarding", 600), ("Prevent", 650), ("Data protection", 700))},
+    }
+    synced = now - timedelta(days=3)
+    for cin, data in people.items():
+        for dataset, raw in data.items():
+            db.add(StaffPortalData(staff_id=cin, dataset=dataset, data=raw, synced_at=synced))
+    lapsed = (now - timedelta(days=1_120)).date()
+    db.add(StaffComplianceAlert(staff_id=3_001, item="dbs", expires_on=lapsed.replace(year=lapsed.year + 3),
+                                stage="expired", sent_at=now - timedelta(days=2)))
+    db.commit()
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if a table the models have is missing, or an existing one lacks a
     column. A missing table would be made empty by create_all and never
@@ -1356,6 +1461,9 @@ def main() -> None:
         with SessionLocal() as db:
             seed_nco_notes(client, headers, db)
             seed_training(client, headers, db)
+        with SessionLocal() as db:
+            seed_drill(client, headers, db)
+            seed_staff_compliance(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

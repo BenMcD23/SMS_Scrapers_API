@@ -49,8 +49,8 @@ def test_cadets_cannot_sign_up_for_notifications(api, pushes, method, path, body
 
 
 @pytest.mark.parametrize("persona,topics", [
-    ("staff", ["orders", "session_plans", "qualifications", "my_session_plans"]),
-    ("owner", ["orders", "session_plans", "qualifications", "my_session_plans"]),
+    ("staff", ["orders", "session_plans", "qualifications", "my_session_plans", "compliance"]),
+    ("owner", ["orders", "session_plans", "qualifications", "my_session_plans", "compliance"]),
     ("snco", ["my_session_plans"]),
     ("nco", ["my_session_plans"]),
 ])

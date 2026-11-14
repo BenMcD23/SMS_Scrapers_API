@@ -200,7 +200,7 @@ def oc_dashboard(
 
 OC_LAYOUT = "oc"
 # The sections, in the order a new OC sees them. The site holds the same ids.
-OC_SECTIONS = ("committee", "strength", "qualifications", "pipeline")
+OC_SECTIONS = ("committee", "strength", "qualifications", "compliance", "pipeline")
 
 
 def _normalise_sections(saved: list) -> list[str]:
