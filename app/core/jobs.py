@@ -172,7 +172,7 @@ def staff_compliance_alert() -> None:
                 )
                 push.notify("compliance", "DBS or training due",
                             ", ".join(i["name"] for i in new[:3]) + (" and more" if len(new) > 3 else ""),
-                            "/staff/compliance", emails=[person["email"]])
+                            "/", emails=[person["email"]])
             stamps += [StaffComplianceAlert(staff_id=person["cin"], item=i["key"], expires_on=i["expires"],
                                             stage=i["status"], sent_at=now) for i in new]
         # The OC hears about everything outstanding, only in weeks something new
