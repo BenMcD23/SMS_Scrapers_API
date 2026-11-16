@@ -36,6 +36,8 @@ STAFF_ONLY = [
     ("post", "/stores/badges/order-lists/entries/1/mark-received"),
     ("post", "/stores/badges/order-lists/entries/1/undo-ordered"),
     ("post", "/stores/badges/order-lists/entries/1/undo-received"),
+    ("post", "/stores/badges/order-lists/mark-ordered"),
+    ("post", "/stores/badges/order-lists/mark-received"),
 ]
 
 
@@ -400,6 +402,93 @@ def test_order_list_queued_entry_can_be_removed(api, db):
                      headers=STAFF).json()
     assert api.delete(f"/stores/badges/order-lists/entries/{entry['id']}", headers=STAFF).status_code == 204
     assert api.get("/stores/badges/order-lists", headers=STAFF).json() == []
+
+
+# ── order list, many at once ──────────────────────────────────────────────────
+
+def _queued(api, db, names=("Leadership – Blue", "First Aid – Red", "Squadron")):
+    """One order holding `names`, each put on the order list. Returns their entry ids in order."""
+    _cadet(db, first_name="Zoë", last_name="Ångström")
+    order = _order(api, items=[{"badgeName": n} for n in names])
+    return [
+        api.post("/stores/badges/order-lists/entries", json={"orderItemId": i["id"]}, headers=STAFF).json()["id"]
+        for i in order["items"]
+    ]
+
+
+def _list(api):
+    return {e["id"]: e for e in api.get("/stores/badges/order-lists", headers=STAFF).json()}
+
+
+def test_marking_several_ordered_stamps_each_with_one_time_and_name(api, db):
+    a, b, c = _queued(api, db)
+    res = api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [a, b]}, headers=STAFF)
+    assert res.status_code == 200, res.text
+    assert [e["id"] for e in res.json()] == [a, b]
+    listed = _list(api)
+    assert listed[a]["orderedBy"] == listed[b]["orderedBy"] == "Sam Staff"
+    assert listed[a]["orderedAt"] == listed[b]["orderedAt"]
+    # The one not chosen is still waiting.
+    assert listed[c]["orderedAt"] is None
+    # Each keeps its own history, like a one-at-a-time mark.
+    assert [h["action"] for h in listed[a]["history"]] == ["added", "ordered"]
+
+
+def test_marking_several_received_closes_out_a_delivery(api, db):
+    a, b, c = _queued(api, db)
+    api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [a, b, c]}, headers=STAFF)
+    # Only two came in the parcel.
+    res = api.post("/stores/badges/order-lists/mark-received", json={"entryIds": [a, c], "by": "QM"}, headers=STAFF)
+    assert res.status_code == 200, res.text
+    listed = _list(api)
+    assert (listed[a]["receivedBy"], listed[c]["receivedBy"], listed[b]["receivedAt"]) == ("QM", "QM", None)
+
+
+def test_a_bulk_mark_is_all_or_nothing_and_names_what_was_wrong(api, db):
+    a, b, c = _queued(api, db)
+    api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [b]}, headers=STAFF)
+    res = api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [a, b, c]}, headers=STAFF)
+    assert res.status_code == 409
+    assert res.json()["detail"] == "Already marked ordered: First Aid – Red (Zoë Ångström)"
+    # a and c weren't ordered by the refused request.
+    listed = _list(api)
+    assert listed[a]["orderedAt"] is None and listed[c]["orderedAt"] is None
+
+
+@pytest.mark.parametrize("setup,detail", [
+    ([], "Not marked ordered yet: Leadership – Blue (Zoë Ångström)"),
+    (["ordered", "received"], "Already marked received: Leadership – Blue (Zoë Ångström)"),
+])
+def test_receiving_refuses_a_badge_in_the_wrong_stage(api, db, setup, detail):
+    a, *_ = _queued(api, db)
+    for step in setup:
+        api.post(f"/stores/badges/order-lists/mark-{step}", json={"entryIds": [a]}, headers=STAFF)
+    res = api.post("/stores/badges/order-lists/mark-received", json={"entryIds": [a]}, headers=STAFF)
+    assert (res.status_code, res.json()["detail"]) == (409, detail)
+
+
+def test_a_bulk_mark_naming_a_removed_entry_changes_nothing(api, db):
+    # Someone took a badge off the list while this screen was open.
+    a, b, _ = _queued(api, db)
+    api.delete(f"/stores/badges/order-lists/entries/{b}", headers=STAFF)
+    res = api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [a, b]}, headers=STAFF)
+    assert res.status_code == 404
+    assert b in res.json()["detail"]
+    assert _list(api)[a]["orderedAt"] is None
+
+
+def test_the_same_entry_twice_counts_once(api, db):
+    a, *_ = _queued(api, db)
+    res = api.post("/stores/badges/order-lists/mark-ordered", json={"entryIds": [a, a]}, headers=STAFF)
+    assert res.status_code == 200
+    assert len(res.json()) == 1
+    assert [h["action"] for h in _list(api)[a]["history"]] == ["added", "ordered"]
+
+
+@pytest.mark.parametrize("step", ["ordered", "received"])
+@pytest.mark.parametrize("body", [{}, {"entryIds": []}, {"entryIds": ["x"]}, {"entryIds": list(range(501))}])
+def test_a_bulk_mark_needs_a_sensible_list_of_ids(api, step, body):
+    assert api.post(f"/stores/badges/order-lists/mark-{step}", json=body, headers=STAFF).status_code == 422
 
 
 def test_order_list_errors(api):

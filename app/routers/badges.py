@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from core import given_events, stock_changes, stock_events
@@ -750,6 +751,72 @@ def badge_order_lists_mark_entry_received(
     db.commit()
     db.refresh(entry)
     return _order_list_entry_to_dict(entry)
+
+
+class BulkListStep(BaseModel):
+    """Several order list entries moved on together: the whole supplier order
+    marked ordered once it's sent, or a delivery marked received."""
+    entryIds: list[int] = Field(min_length=1, max_length=500)
+    by: str | None = None
+
+
+def _entries_for_bulk(db: Session, ids: list[int]) -> list[BadgeOrderListEntry]:
+    """The entries asked for, once each, in list order. 404 naming any that
+    don't exist, so a stale screen can't half-apply a bulk change."""
+    wanted = list(dict.fromkeys(ids))
+    found = {e.id: e for e in db.query(BadgeOrderListEntry).filter(BadgeOrderListEntry.id.in_(wanted))}
+    missing = [i for i in wanted if i not in found]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Not on the order list any more: {', '.join(map(str, missing))}. Refresh and try again.",
+        )
+    return [found[i] for i in wanted]
+
+
+def _refuse_if_any(entries: list[BadgeOrderListEntry], wrong, why: str) -> None:
+    """409 naming every entry in the wrong stage; nothing is changed."""
+    bad = [e for e in entries if wrong(e)]
+    if bad:
+        names = ", ".join(f"{e.badge_name} ({e.cadet_name})" for e in bad)
+        raise HTTPException(status_code=409, detail=f"{why}: {names}")
+
+
+@router.post("/stores/badges/order-lists/mark-ordered")
+def badge_order_lists_mark_many_ordered(
+    body: BulkListStep,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Mark several queued badges ordered at once: the supplier order has gone.
+    All or nothing, stamped with one time and one name."""
+    entries = _entries_for_bulk(db, body.entryIds)
+    _refuse_if_any(entries, lambda e: e.ordered_at is not None, "Already marked ordered")
+    now, by = datetime.now(), body.by or actor_name(idinfo)
+    for entry in entries:
+        entry.ordered_at, entry.ordered_by = now, by
+        _log_list_step(entry, ORDERED, by)
+    db.commit()
+    return [_order_list_entry_to_dict(e) for e in entries]
+
+
+@router.post("/stores/badges/order-lists/mark-received")
+def badge_order_lists_mark_many_received(
+    body: BulkListStep,
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Mark several ordered badges received at once: what came in a delivery.
+    All or nothing; a badge that was never ordered can't be received."""
+    entries = _entries_for_bulk(db, body.entryIds)
+    _refuse_if_any(entries, lambda e: e.ordered_at is None, "Not marked ordered yet")
+    _refuse_if_any(entries, lambda e: e.received_at is not None, "Already marked received")
+    now, by = datetime.now(), body.by or actor_name(idinfo)
+    for entry in entries:
+        entry.received_at, entry.received_by = now, by
+        _log_list_step(entry, RECEIVED, by)
+    db.commit()
+    return [_order_list_entry_to_dict(e) for e in entries]
 
 
 def _undo_received(entry: BadgeOrderListEntry, by: str | None) -> None:
