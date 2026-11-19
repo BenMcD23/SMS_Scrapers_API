@@ -361,7 +361,7 @@ class CadetWht(Base):
 
 
 class CadetPortalData(Base):
-    """One Volunteer Portal data set for a cadet (WHTs, flying history, ...),
+    """One Volunteer Portal data set for a cadet (flying history, fieldcraft, ...),
     exactly as the portal returned it — the import's raw copy. What the squadron
     uses is written into the normal tables from it (flights, theory progress,
     join and classification dates); see routers/volunteer_portal.py."""

@@ -144,3 +144,53 @@ def completed_theory(raw_exams) -> dict[str, datetime]:
             at = datetime(when.year, when.month, when.day)
             out[key] = min(out.get(key, at), at)
     return out
+
+
+# ── Fieldcraft lessons ────────────────────────────────────────────────────────
+# The portal records each fieldcraft lesson a cadet has done, where Bader only
+# has the finished badge. Lessons are identified by the portal's lessonId.
+
+FIELDCRAFT_LEVELS = ("Blue", "Bronze", "Silver", "Gold")
+
+
+def fieldcraft_lessons(raw) -> dict[int, dict]:
+    """{lessonId: lesson} for each fieldcraft lesson the cadet has done, from
+    the portal's completions (a list, or {"completions": [...]})."""
+    rows = _rows(raw.get("completions") if isinstance(raw, dict) else raw)
+    out: dict[int, dict] = {}
+    for r in rows:
+        lesson_id, level = r.get("lessonId"), _text(r, "badgeLevel")
+        if type(lesson_id) is not int or level not in FIELDCRAFT_LEVELS:
+            continue
+        when = _day(r.get("completedDate"))
+        seen = out.get(lesson_id)
+        if seen and seen["completed_on"] and (not when or seen["completed_on"] <= when):
+            continue  # recorded twice: keep the first time it was done
+        out[lesson_id] = {
+            "lesson_id": lesson_id,
+            "level": level,
+            "reference": _text(r, "reference"),
+            "title": _text(r, "title") or f"Lesson {lesson_id}",
+            "completed_on": when,
+            "delivered_by": _text(r, "deliveredBy"),
+        }
+    return out
+
+
+def fieldcraft_syllabus(done_by_cadet) -> list[dict]:
+    """Each level with its lessons in the portal's order:
+    [{"level": "Blue", "lessons": [{lesson_id, reference, title}, ...]}, ...].
+    Levels nobody has a lesson in are left out."""
+    # ponytail: the syllabus is every lesson a cadet here has done, so a lesson
+    # nobody at the unit has had yet isn't listed. If that matters (Silver and
+    # Gold), read fieldcraftmanagement/getLessons in the sync instead.
+    lessons: dict[int, dict] = {}
+    for done in done_by_cadet:
+        for lesson_id, ls in done.items():
+            lessons.setdefault(lesson_id, {k: ls[k] for k in ("lesson_id", "level", "reference", "title")})
+    return [
+        {"level": level, "lessons": sorted((ls for ls in lessons.values() if ls["level"] == level),
+                                           key=lambda ls: ls["lesson_id"])}
+        for level in FIELDCRAFT_LEVELS
+        if any(ls["level"] == level for ls in lessons.values())
+    ]

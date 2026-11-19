@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session, selectinload
 
-from core import cache
+from core import cache, portal_data
 from core.attendance import attendance_state
 from core.audit import record_audit
 from core.db import escape_like, get_db
@@ -36,6 +36,7 @@ from database.models import (
     CadetDietary,
     CadetEvent,
     CadetMedical,
+    CadetPortalData,
     CadetWht,
     NcoComment,
     NcoCommentReply,
@@ -222,6 +223,60 @@ def _build_audit_result(cadets, qualifications, include_medical, include_dietary
             ]
         results.append(entry)
     return results
+
+
+# ─── Fieldcraft lessons (must be before /cadets/{cin}) ────────────────────────
+
+def _fieldcraft_done(db: Session) -> tuple[dict[int, dict[int, dict]], datetime | None]:
+    """{cin: {lessonId: lesson}} from each synced cadet's portal fieldcraft
+    record, and when the newest of those was synced."""
+    rows = (db.query(CadetPortalData.cadet_id, CadetPortalData.data, CadetPortalData.synced_at)
+            .filter(CadetPortalData.dataset == "fieldcraft").all())
+    return ({cin: portal_data.fieldcraft_lessons(data) for cin, data, _ in rows},
+            max((at for *_, at in rows), default=None))
+
+
+@router.get("/cadets/fieldcraft")
+def fieldcraft_progress(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)):
+    """Who has had which fieldcraft lesson, from the Volunteer Portal (Bader
+    only records the finished badge). Read-only: lessons are recorded on the
+    portal. `done` maps lessonId to the date it was done (None when the portal
+    has no date); `synced` is False for a cadet the sync has no record for, so
+    the page can say "unknown" rather than "not done"."""
+    done, synced_at = _fieldcraft_done(db)
+    cadets = db.query(Cadet).order_by(Cadet.last_name, Cadet.first_name).all()
+    return {
+        "synced_at": synced_at.isoformat() if synced_at else None,
+        "levels": portal_data.fieldcraft_syllabus(done.values()),
+        "cadets": [
+            {
+                **_cadet_summary(c),
+                "synced": c.cin in done,
+                "done": {
+                    str(i): ls["completed_on"].isoformat() if ls["completed_on"] else None
+                    for i, ls in done.get(c.cin, {}).items()
+                },
+            }
+            for c in cadets
+        ],
+    }
+
+
+def _cadet_fieldcraft(db: Session, cin: int) -> list[dict] | None:
+    """The cadet's lessons against the syllabus, level by level; None if the
+    sync has no fieldcraft record for them."""
+    done, _ = _fieldcraft_done(db)
+    if cin not in done:
+        return None
+
+    def lesson(entry: dict) -> dict:
+        had = done[cin].get(entry["lesson_id"]) or {}
+        when = had.get("completed_on")
+        return {**entry, "done": bool(had), "completed_on": when.isoformat() if when else None,
+                "delivered_by": had.get("delivered_by")}
+
+    return [{"level": lvl["level"], "lessons": [lesson(e) for e in lvl["lessons"]]}
+            for lvl in portal_data.fieldcraft_syllabus(done.values())]
 
 
 # ─── Audit routes (must be before /cadets/{cin}) ──────────────────────────────
@@ -529,6 +584,7 @@ def get_cadet(
             for f in cadet.flights
         ],
         "flying_blue_stages": flying_blue_stages([q.qual_type for q in cadet.qualifications], cadet.flights),
+        "fieldcraft": _cadet_fieldcraft(db, cin),
         "events": events,
         "assessments": assessments,
         "allergies": [

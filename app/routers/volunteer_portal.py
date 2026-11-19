@@ -59,6 +59,11 @@ Dataset = Literal[
     "exams", "flying", "learning", "unit_history",
 ]
 
+# No longer read: Bader already gives us WHTs, and nothing used the shooting
+# log. Still accepted so a site build from before they were dropped can sync.
+# ponytail: delete once every deployed site has stopped sending them.
+RETIRED = {"whts", "shooting_log"}
+
 StaffDataset = Literal["dbs", "bpss", "training"]
 
 # A squadron's whole sync is a few MB; these stop a bad or hostile client
@@ -143,6 +148,8 @@ def apply_sync(db: Session, payload: PortalSync, now: datetime) -> dict:
             continue
         counts["matched"] += 1
         for dataset, value in cadet.data.items():
+            if dataset in RETIRED:
+                continue
             row = existing.get((cadet.cin, dataset))
             if value is None:
                 counts["failed"] += 1

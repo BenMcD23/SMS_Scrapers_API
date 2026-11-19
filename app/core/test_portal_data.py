@@ -37,8 +37,9 @@ REAL_EXAMS = {
 }
 
 
-@pytest.mark.parametrize("parser", [pd.flights, pd.classification_dates, pd.joined_on, pd.completed_theory])
-@pytest.mark.parametrize("raw", [None, "", 3, [], {}, [None, 1, "x"], {"powered": "nope", "results": "x"},
+@pytest.mark.parametrize("parser", [pd.flights, pd.classification_dates, pd.joined_on, pd.completed_theory,
+                                    pd.fieldcraft_lessons])
+@pytest.mark.parametrize("raw", [None, "", 3, [], {}, [None, 1, "x"], {"powered": "nope", "results": "x", "completions": "x"},
                                  {"powered": [{"entries": [None, {"date": "not a date"}]}]}])
 def test_unexpected_shapes_never_raise(parser, raw):
     parser(raw)
@@ -114,3 +115,55 @@ def test_only_passed_exams_count_as_theory_done():
         "acp_32_2": datetime(2026, 9, 30),
         "rocketry": datetime(2025, 1, 10),
     }
+
+
+# Trimmed from a real prod sync: Blue lessons recorded by the Bader migration.
+REAL_FIELDCRAFT = {"completions": [
+    {"lessonId": 3, "badgeLevel": "Blue", "reference": "Lesson 3", "title": "Why things are seen",
+     "completedDate": "2026-05-16T00:00:00", "contextType": "RPL", "deliveredBy": "Sgt Gareth Lloyd Morris"},
+    {"lessonId": 1, "badgeLevel": "Blue", "reference": "Intro", "title": "Introduction to Fieldcraft and Tactics",
+     "completedDate": "2026-05-16T00:00:00", "deliveredBy": "Sgt Gareth Lloyd Morris"},
+    {"lessonId": 12, "badgeLevel": "Bronze", "reference": "Lesson 4", "title": "Moving with or without personal weapons",
+     "completedDate": "0001-01-01T00:00:00"},
+]}
+
+
+def test_fieldcraft_lessons_from_a_real_record():
+    out = pd.fieldcraft_lessons(REAL_FIELDCRAFT)
+    assert set(out) == {1, 3, 12}
+    assert out[3] == {"lesson_id": 3, "level": "Blue", "reference": "Lesson 3", "title": "Why things are seen",
+                      "completed_on": date(2026, 5, 16), "delivered_by": "Sgt Gareth Lloyd Morris"}
+    assert out[12]["completed_on"] is None  # the portal's "no date"
+
+
+def test_fieldcraft_lessons_also_read_a_bare_list():
+    assert set(pd.fieldcraft_lessons(REAL_FIELDCRAFT["completions"])) == {1, 3, 12}
+
+
+@pytest.mark.parametrize("row", [
+    {"lessonId": "1", "badgeLevel": "Blue"},   # id not a number
+    {"lessonId": True, "badgeLevel": "Blue"},  # bool is an int in Python
+    {"lessonId": 1, "badgeLevel": "Purple"},   # not a fieldcraft level
+    {"lessonId": 1},
+])
+def test_fieldcraft_rows_we_cant_place_are_skipped(row):
+    assert pd.fieldcraft_lessons([row]) == {}
+
+
+def test_a_lesson_recorded_twice_keeps_the_first_time():
+    rows = [{"lessonId": 1, "badgeLevel": "Blue", "completedDate": d} for d in
+            ("2026-05-16T00:00:00", "2025-01-02T00:00:00", "0001-01-01T00:00:00")]
+    assert pd.fieldcraft_lessons(rows)[1]["completed_on"] == date(2025, 1, 2)
+
+
+def test_the_syllabus_is_every_lesson_done_here_in_level_then_portal_order():
+    a = pd.fieldcraft_lessons(REAL_FIELDCRAFT)
+    b = pd.fieldcraft_lessons([{"lessonId": 2, "badgeLevel": "Blue", "title": "Packing"}])
+    out = pd.fieldcraft_syllabus([a, b, {}])
+    assert [(lvl["level"], [ls["lesson_id"] for ls in lvl["lessons"]]) for lvl in out] == [
+        ("Blue", [1, 2, 3]), ("Bronze", [12])]
+    assert out[0]["lessons"][1] == {"lesson_id": 2, "level": "Blue", "reference": None, "title": "Packing"}
+
+
+def test_no_fieldcraft_anywhere_is_an_empty_syllabus():
+    assert pd.fieldcraft_syllabus([]) == []

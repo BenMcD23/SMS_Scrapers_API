@@ -338,12 +338,47 @@ def seed_flying_paperwork(db, cadets, now: datetime) -> None:
 # dates, flights (so Blue Flying has every stage state), passed exams.
 FLYING_MIX = ["none", "none", "ptt", "flight", "both", "both"]
 
+# The Blue and Bronze fieldcraft lessons as the portal lists them (lessonId,
+# reference, title), from prod. A quarter of cadets have no fieldcraft record
+# (never synced); the rest are part-way through Blue, done with Blue, or into Bronze.
+FIELDCRAFT = {
+    "Blue": [(1, "Intro", "Introduction to Fieldcraft and Tactics"),
+             (2, "Lesson 2", "Preparation and packing of personal equipment"), (3, "Lesson 3", "Why things are seen"),
+             (4, "Lesson 7", "Organisation of the section"), (6, "Lesson 8A", "Maintaining Clothing and Equipment"),
+             (9, "Lesson 9", "The two-person shelter"), (10, "Lesson 11", "Observation"),
+             (47, "Assessment", "Blue Fieldcraft assessment")],
+    "Bronze": [(12, "Lesson 4", "Moving with or without personal weapons"), (13, "Lesson 5", "Field signals"),
+               (14, "Lesson 6", "Elementary night movement"), (21, "Lesson 14", "Range Cards"),
+               (48, "Assessment", "Bronze Fieldcraft assessment")],
+}
+
+
+def seed_fieldcraft(db, cadets, rng, now: datetime) -> None:
+    from database.models import CadetPortalData
+
+    for c in cadets:
+        if rng.random() < 0.25:
+            continue
+        blue, bronze = FIELDCRAFT["Blue"], FIELDCRAFT["Bronze"]
+        done = rng.choice([blue[:rng.randint(0, len(blue) - 1)], blue, blue + bronze[:rng.randint(1, len(bronze))]])
+        completions = [
+            {"lessonId": i, "badgeLevel": "Blue" if (i, ref, title) in blue else "Bronze", "reference": ref,
+             "title": title, "deliveredBy": rng.choice(["Sgt Morris", "FS Ó Briain", None]),
+             # One in ten migrated from old SMS without a date, as some are in prod.
+             "completedDate": "0001-01-01T00:00:00" if rng.random() < 0.1
+             else (now - timedelta(days=rng.randint(10, 500))).strftime("%Y-%m-%dT00:00:00")}
+            for i, ref, title in done
+        ]
+        db.add(CadetPortalData(cadet_id=c.cin, dataset="fieldcraft", data={"completions": completions},
+                               synced_at=now - timedelta(days=15)))
+
 
 def seed_portal(db, cadets, rng, now: datetime) -> None:
     from core.theory_lessons import CLASSIFICATION_ORDER, LEADING, SENIOR_MASTER, THEORY_LESSONS
     from database.models import CadetFlight, CadetQualification, CadetTheoryLesson, CadetTheoryProgress
 
     today = now.date()
+    seed_fieldcraft(db, cadets, rng, now)
     for c in cadets:
         c.joined_on = today - timedelta(days=rng.randint(20, 1500))
         # Classification dates climb from joining, a few months a step.

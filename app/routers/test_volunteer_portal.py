@@ -36,9 +36,9 @@ def test_no_token_is_401(api):
 
 @pytest.mark.parametrize("persona", ["snco", "nco", "cadet"])
 def test_non_staff_are_refused_and_nothing_is_saved(api, db, cadet, persona):
-    r = _sync(api, [{"cin": CIN, "data": {"whts": [{"x": 1}]}}], persona)
+    r = _sync(api, [{"cin": CIN, "data": {"learning": [{"x": 1}]}}], persona)
     assert r.status_code == 403
-    assert _stored(db, "whts") is None
+    assert _stored(db, "learning") is None
 
 
 @pytest.mark.parametrize("persona", ["staff", "owner", "oc"])
@@ -49,19 +49,29 @@ def test_staff_can_sync(api, persona):
 # ── what it saves ─────────────────────────────────────────────────────────────
 
 def test_a_sync_saves_each_data_set_and_logs_who_ran_it(api, db, cadet):
-    whts = [{"weaponCategory": "L98A2", "dateExpires": "2027-01-01"}]
-    r = _sync(api, [{"cin": CIN, "data": {"whts": whts, "classification": {"leadingCadetPassed": None}}}])
+    learning = [{"title": "Safeguarding Induction", "satisfied": True}]
+    r = _sync(api, [{"cin": CIN, "data": {"learning": learning, "classification": {"leadingCadetPassed": None}}}])
 
     assert r.json() == {"matched": 1, "unmatched": 0, "saved": 2, "failed": 0, "kept": 0, "theory": 0, "flights": 0,
                         "staff": 0}
-    assert _stored(db, "whts") == whts
+    assert _stored(db, "learning") == learning
     assert _stored(db, "classification") == {"leadingCadetPassed": None}
     run = db.query(ScraperRun).one()
     assert (run.scraper_id, run.ran_by, run.success) == ("vp-sync", "staff@317atc.co.uk", True)
 
 
+def test_retired_data_sets_are_accepted_but_not_stored(api, db, cadet):
+    # A site build from before whts/shooting_log were dropped still sends them;
+    # its sync must go through, and the rest of it still saves.
+    r = _sync(api, [{"cin": CIN, "data": {"whts": [{"x": 1}], "shooting_log": None, "learning": [{"y": 2}]}}])
+    assert r.status_code == 200
+    assert (r.json()["saved"], r.json()["failed"]) == (1, 0)
+    assert _stored(db, "whts") is None and _stored(db, "shooting_log") is None
+    assert _stored(db, "learning") == [{"y": 2}]
+
+
 def test_cadets_not_in_our_roster_are_ignored(api, db, cadet):
-    r = _sync(api, [{"cin": 999, "data": {"whts": [{"x": 1}]}}])
+    r = _sync(api, [{"cin": 999, "data": {"learning": [{"x": 1}]}}])
     assert r.json()["unmatched"] == 1
     assert db.query(CadetPortalData).count() == 0
 
@@ -89,14 +99,14 @@ def test_an_empty_answer_never_wipes_existing_data(api, db, cadet):
 
 
 def test_an_empty_answer_is_stored_when_there_was_nothing_before(api, db, cadet):
-    _sync(api, [{"cin": CIN, "data": {"whts": []}}])
-    assert _stored(db, "whts") == []
+    _sync(api, [{"cin": CIN, "data": {"learning": []}}])
+    assert _stored(db, "learning") == []
 
 
 def test_a_cadet_sent_twice_is_one_row_with_the_last_value(api, db, cadet):
-    _sync(api, [{"cin": CIN, "data": {"whts": [1]}}, {"cin": CIN, "data": {"whts": [2]}}])
+    _sync(api, [{"cin": CIN, "data": {"learning": [1]}}, {"cin": CIN, "data": {"learning": [2]}}])
     assert db.query(CadetPortalData).count() == 1
-    assert _stored(db, "whts") == [2]
+    assert _stored(db, "learning") == [2]
 
 
 def test_non_ascii_survives_the_round_trip(api, db, cadet):
@@ -105,7 +115,7 @@ def test_non_ascii_survives_the_round_trip(api, db, cadet):
 
 
 def test_the_scrapers_page_sees_the_last_sync(api, cadet):
-    _sync(api, [{"cin": CIN, "data": {"whts": []}}])
+    _sync(api, [{"cin": CIN, "data": {"learning": []}}])
     last = api.get("/scraper-last-runs", headers=api.as_("staff")).json()["vp-sync"]
     assert last["ran_by"] == "staff@317atc.co.uk"
 
