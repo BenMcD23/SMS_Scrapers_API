@@ -369,7 +369,7 @@ UNSEEDED_TABLES = {
     "317_Events", "All_Events", "Attachment_Check_Quals",
     "Bader_Credentials",  # secrets: a preview never scrapes
     "Ban_Notifications", "Cadet_Absences", "Cadet_Events", "Cadet_Leaving_Process",
-    "Cadet_Portal_Data", "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
+    "Cadet_Snapshots", "Committee_Request_Receipts", "Committee_Requests",
     "Location", "Logs_Form_Entries", "Logs_Forms", "NCO_Appraisal_Reminders",
     "NCO_Comment_Replies", "NCO_Comments", "NCO_Holidays", "Parade_Night_Messages",
     "Removed_Cadets", "Scraper_Runs", "Scraper_Schedules", "Session_Plan_Attachments",
