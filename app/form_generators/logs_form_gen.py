@@ -2,10 +2,17 @@
 
 Live Demands: write Qty per demanded line, drop the lines that weren't
 demanded. Cadet Nominal Roll: list the cadets the demand is for.
+
+openpyxl drops the drop-down menus that Excel stores as an extension (the
+Information Sheet's unit/wing pickers and the Nominal Roll's rank and issue
+type), so `_restore_menus` copies them back from the template after saving.
+It can't keep the form's EMF crest either; that one only shows on screen.
 """
 
 import io
+import posixpath
 import re
+import zipfile
 from collections import Counter
 from datetime import date, timedelta
 
@@ -101,4 +108,57 @@ def generate_logs_form(
 
     buffer = io.BytesIO()
     wb.save(buffer)
-    return buffer.getvalue()
+    return _restore_menus(TEMPLATE_PATH, buffer.getvalue())
+
+
+_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _sheet_paths(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Sheet name -> its XML part, read from the workbook and its rels so it
+    holds whatever order Excel or openpyxl numbered the parts in."""
+    import xml.etree.ElementTree as ET
+
+    rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    targets = {r.get("Id"): r.get("Target") for r in rels}
+    book = ET.fromstring(zf.read("xl/workbook.xml"))
+    paths = {}
+    for sheet in book.iter(f"{{{_MAIN_NS}}}sheet"):
+        target = targets[sheet.get(f"{{{_REL_NS}}}id")]
+        paths[sheet.get("name")] = (target.lstrip("/") if target.startswith("/")
+                                    else posixpath.normpath(posixpath.join("xl", target)))
+    return paths
+
+
+# The <extLst> holding Excel 2010 list validations; namespaces are declared
+# inside it, apart from the xr:uid revision ids, which are dropped because
+# openpyxl's root element doesn't declare xr.
+_EXT_MENUS = re.compile(r"<extLst>(?:(?!</extLst>).)*x14:dataValidations.*?</extLst>", re.S)
+_XR_UID = re.compile(r'\s+xr:uid="[^"]*"')
+
+
+def _restore_menus(template_path: str, xlsx: bytes) -> bytes:
+    with zipfile.ZipFile(template_path) as tpl:
+        tpl_paths = _sheet_paths(tpl)
+        menus = {}
+        for name, path in tpl_paths.items():
+            found = _EXT_MENUS.search(tpl.read(path).decode("utf-8"))
+            if found:
+                menus[name] = _XR_UID.sub("", found.group(0))
+    if not menus:
+        return xlsx
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(xlsx)) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        by_path = {path: menus[name] for name, path in _sheet_paths(src).items() if name in menus}
+        for info in src.infolist():
+            data = src.read(info.filename)
+            ext = by_path.get(info.filename)
+            if ext:
+                xml = data.decode("utf-8")
+                if "<extLst>" not in xml:  # openpyxl writes none; never add a second
+                    xml = xml.replace("</worksheet>", ext + "</worksheet>")
+                data = xml.encode("utf-8")
+            dst.writestr(info, data)
+    return out.getvalue()
