@@ -935,6 +935,120 @@ def seed_programme(db, now: datetime | None = None) -> None:
         programme.import_month(db, month, year, use_ai=False, nights=month_nights)
 
 
+PROGRAMME_ROOMS = [
+    {"name": "Drill hall", "capacity": 80},
+    {"name": "Classroom 1", "capacity": 20},
+    {"name": "Classroom 2", "capacity": 14},
+    {"name": "Flight sim room", "capacity": 6, "notes": "Two sims, three cadets on each"},
+    {"name": "Parade square"},
+    {"name": "Old radio room", "capacity": 8, "active": False},
+]
+PROGRAMME_BANK = [
+    {"title": "Map Reading 1", "category": "lessons", "subject_key": "acp_32_2", "part": 1, "room": "Classroom 1"},
+    {"title": "Map Reading 2", "category": "lessons", "subject_key": "acp_32_2", "part": 2, "room": "Classroom 1"},
+    {"title": "Map Reading 3", "category": "lessons", "subject_key": "acp_32_2", "part": 3, "room": "Classroom 1"},
+    {"title": "Principles of Flight 1", "category": "classifications", "subject_key": "acp_33_2", "part": 1,
+     "room": "Classroom 2"},
+    {"title": "Principles of Flight 2", "category": "classifications", "subject_key": "acp_33_2", "part": 2,
+     "room": "Classroom 2"},
+    {"title": "Flight Sim", "category": "stem", "room": "Flight sim room", "instructor": "CI Doe",
+     "notes": "Six at a time: rotate every 10 minutes"},
+    {"title": "Inter Flight Sports Night", "category": "sport", "whole_night": True, "room": "Drill hall",
+     "instructor": "PTI"},
+    {"title": "Christmas Social", "category": "social", "whole_night": True, "room": "Drill hall"},
+]
+
+
+def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: datetime | None = None) -> None:
+    """The programme builder with something in every part of it: rooms, a
+    bank (some from the record's history), this month started from the
+    record and published, and next month filled from the suggestions with a
+    clash, a room too small and a run of comment threads between staff and
+    the dev NCO: a mention, an assigned action, a reply, an edit and a
+    resolved thread. Through the real endpoints, so it all passes validation."""
+    from database.models import Cadet, Staff
+
+    now = now or datetime.now()
+
+    def ok(res, what):
+        assert res.status_code < 300, f"programme builder seed: {what}: {res.status_code} {res.text}"
+        return res.json()
+
+    base = "/programme-builder"
+    rooms = {}
+    for room in PROGRAMME_ROOMS:
+        rooms[room["name"]] = ok(client.post(f"{base}/rooms", headers=headers, json=room), "room")["id"]
+    history = ok(client.get(f"{base}/bank/history", headers=headers), "history")
+    ok(client.post(f"{base}/bank/import", headers=headers, json={"titles": [h["title"] for h in history[:14]]}),
+       "import")
+    for item in PROGRAMME_BANK:
+        body = {k: v for k, v in item.items() if k != "room"}
+        ok(client.post(f"{base}/bank", headers=headers, json={**body, "room_id": rooms[item["room"]]}), "bank")
+    drill = next((b for b in ok(client.get(f"{base}/bank", headers=headers), "bank") if b["title"] == "Drill"), None)
+    if drill:
+        ok(client.put(f"{base}/bank/{drill['id']}", headers=headers, json={
+            **{k: drill[k] for k in ("title", "category", "whole_night", "subject_key", "part", "active")},
+            "room_id": rooms["Drill hall"], "instructor": "Sgt Hughes", "notes": "Bring the drill cards"}), "drill")
+
+    this_month = f"{now:%Y-%m}"
+    following = (now.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
+    current = ok(client.post(f"{base}/months", headers=headers, json={"month": this_month, "start": "record"}),
+                 "this month")
+    if any(n["slots"] for n in current["nights"]):
+        ok(client.post(f"{base}/months/{this_month}/publish", headers=headers,
+                       json={"website": False, "record": True}), "publish")
+
+    ok(client.post(f"{base}/months", headers=headers, json={"month": following, "start": "empty"}), "next month")
+    ok(client.patch(f"{base}/months/{following}", headers=headers, json={
+        "notes": "Remembrance and Christmas plans to follow from the OC."}), "notes")
+    programme = ok(client.post(f"{base}/months/{following}/fill", headers=headers, json={}), "fill")["programme"]
+    nights = programme["nights"]
+    snco = db.query(Cadet).filter(Cadet.cin == FIRST_CIN).one()
+    nco = db.query(Cadet).filter(Cadet.cin == FIRST_CIN + 1).one()
+    sarah = db.query(Staff).filter(Staff.cin == 3_001).one()
+    for i, night in enumerate(nights):
+        ok(client.patch(f"{base}/nights/{night['id']}", headers=headers, json={
+            "uniform": UNIFORMS[i % len(UNIFORMS)] if i < len(nights) - 1 else None,
+            "duty_nco": f"Cpl {LAST_NAMES[i % len(LAST_NAMES)]}" if i else None,
+            **({"notes": "Parents' evening in the classroom block from 20:00"} if i == 1 else {})}), "night")
+    first = nights[0]
+    slots = first["slots"]
+    if len(slots) >= 2:
+        # Sgt Hughes on two things in the same half, and a whole flight in the sim room.
+        a, b = slots[0], next((s for s in slots[1:] if s["period"] == slots[0]["period"]), slots[1])
+        ok(client.patch(f"{base}/slots/{a['id']}", headers=headers, json={
+            "people": [f"staff:{sarah.cin}", f"cadet:{nco.cin}"], "notes": "Squad drill, then the 5x5 test"}),
+           "people")
+        ok(client.patch(f"{base}/slots/{b['id']}", headers=headers, json={
+            "people": [f"staff:{sarah.cin}"], "room_id": rooms["Flight sim room"]}), "clash")
+    if len(nights) > 1:
+        ok(client.post(f"{base}/months/{following}/slots", headers=headers, json={
+            "night_id": nights[1]["id"], "period": None, "flights": [],
+            "title": "Squadron Christmas Quiz", "category": "social", "instructor": "SNCOs",
+            "people": [f"cadet:{snco.cin}"]}), "whole night")
+
+    def mention(person, key):
+        return f"@[{person.rank} {person.first_name} {person.last_name}]({key})"
+
+    if slots:
+        thread = ok(client.post(f"{base}/months/{following}/comments", headers=headers, json={
+            "body": f"{mention(nco, f'cadet:{nco.cin}')} can you take the junior squad for this one?",
+            "slot_id": slots[0]["id"], "assign": True}), "thread")["comments"][0]
+        ok(client.post(f"{base}/months/{following}/comments", headers=nco_headers, json={
+            "body": "Yes, happy to. Can I have the drill hall end by the stage?", "parent_id": thread["id"]}),
+           "reply")
+    night_thread = ok(client.post(f"{base}/months/{following}/comments", headers=nco_headers, json={
+        "body": f"{mention(sarah, f'staff:{sarah.cin}')} is this the night of the band concert? A few of B "
+                "Flight will be away.", "night_id": nights[-1]["id"]}), "night thread")
+    own = next(c for c in night_thread["comments"] if c["night_id"] == nights[-1]["id"])
+    ok(client.patch(f"{base}/comments/{own['id']}", headers=nco_headers, json={
+        "body": own["body"] + " (about six of them)"}), "edit")
+    done = ok(client.post(f"{base}/months/{following}/comments", headers=headers, json={
+        "body": "Uniform for the first night should be No.2s, not 3s."}), "general")["comments"]
+    general = next(c for c in done if c["slot_id"] is None and c["night_id"] is None)
+    ok(client.post(f"{base}/comments/{general['id']}/resolve", headers=headers), "resolve")
+
+
 def seed_check_ins(client, headers: dict, db, now: datetime | None = None) -> None:
     """Tonight's door list part-filled, so the check-in page and the session
     planner have ticks to show: most cadets in by the QR code or NFC tag, a few
@@ -1499,6 +1613,8 @@ def main() -> None:
             seed_assistant(db)
         with SessionLocal() as db:
             seed_programme(db)
+        with SessionLocal() as db:
+            seed_programme_builder(client, headers, {"Authorization": "Bearer dev-fake-token:nco"}, db)
         seed_session_bank(client, headers)
         seed_theory_custom(client, headers)
         with SessionLocal() as db:

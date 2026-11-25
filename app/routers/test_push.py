@@ -49,10 +49,10 @@ def test_cadets_cannot_sign_up_for_notifications(api, pushes, method, path, body
 
 
 @pytest.mark.parametrize("persona,topics", [
-    ("staff", ["orders", "session_plans", "qualifications", "my_session_plans", "compliance"]),
-    ("owner", ["orders", "session_plans", "qualifications", "my_session_plans", "compliance"]),
-    ("snco", ["my_session_plans"]),
-    ("nco", ["my_session_plans"]),
+    ("staff", ["orders", "session_plans", "qualifications", "my_session_plans", "programme", "compliance"]),
+    ("owner", ["orders", "session_plans", "qualifications", "my_session_plans", "programme", "compliance"]),
+    ("snco", ["my_session_plans", "programme"]),
+    ("nco", ["my_session_plans", "programme"]),
 ])
 def test_config_offers_each_role_only_its_own_topics(api, pushes, persona, topics):
     res = api.get("/push/config", headers=api.as_(persona))

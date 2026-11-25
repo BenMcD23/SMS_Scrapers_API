@@ -49,6 +49,8 @@ TOPICS: dict[str, Topic] = {
     "session_plans": Topic("Session plans to review", "An NCO submits a session plan for approval", STAFF),
     "qualifications": Topic("Expiring qualifications", "Friday's list of qualifications expiring in 3 months", STAFF),
     "my_session_plans": Topic("My session plans", "Your session plan is approved or sent back", EVERYONE),
+    "programme": Topic("The programme", "The month's programme is out, or someone mentions you, assigns you "
+                       "something or replies in a thread you're in", EVERYONE),
     "compliance": Topic("DBS and mandatory training", "Your DBS, BPSS or mandatory training is due or has lapsed",
                         STAFF),
 }

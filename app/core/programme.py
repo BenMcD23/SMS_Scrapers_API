@@ -224,6 +224,25 @@ def import_month(db: Session, month: int, year: int, use_ai: bool = True, nights
         return {"month": f"{year}-{month:02d}", "nights": 0, "sessions": 0, "skipped": "no nights in the doc"}
 
     tidy = tidy_cells(db, [s["text"] for n in nights for s in n["sessions"]], use_ai=use_ai)
+    rows = []
+    for n in nights:
+        sessions = []
+        for s in n["sessions"]:
+            acts = tidy.get(s["text"], [])
+            split = s["split"] or len(acts) > 1
+            sessions += [{"period": s["period"], "flight": flight, "activity": act.name, "category": act.category,
+                          "instructor": act.instructor, "split": split, "raw": s["text"]}
+                         for act in acts for flight in s["flights"]]
+        rows.append({"date": n["date"].date() if isinstance(n["date"], datetime) else n["date"],
+                     "uniform": n.get("uniform"), "duty_nco": n.get("dnco"), "sessions": sessions})
+    return replace_month(db, month, year, rows)
+
+
+def replace_month(db: Session, month: int, year: int, nights: list[dict]) -> dict:
+    """Store a month's nights in place of what the record had for it. Shared
+    by the doc import and the programme builder's publish, so a month reads
+    the same whichever wrote it. Each night is {date, uniform, duty_nco,
+    sessions: [{period, flight, activity, category, instructor, split, raw}]}."""
     first = date(year, month, 1)
     after = date(year + month // 12, month % 12 + 1, 1)
     # Through the ORM so the sessions go with their nights on every database,
@@ -235,18 +254,11 @@ def import_month(db: Session, month: int, year: int, use_ai: bool = True, nights
     now = datetime.now()
     sessions = 0
     for n in nights:
-        night = ProgrammeNight(date=n["date"].date() if isinstance(n["date"], datetime) else n["date"],
-                               uniform=n.get("uniform") or None, duty_nco=n.get("dnco") or None,
-                               imported_at=now)
+        night = ProgrammeNight(date=n["date"], uniform=n.get("uniform") or None,
+                               duty_nco=n.get("duty_nco") or None, imported_at=now)
         for s in n["sessions"]:
-            acts = tidy.get(s["text"], [])
-            split = s["split"] or len(acts) > 1
-            for act in acts:
-                for flight in s["flights"]:
-                    night.sessions.append(ProgrammeSession(
-                        period=s["period"], flight=flight, activity=act.name, category=act.category,
-                        instructor=act.instructor, split=split, raw=s["text"]))
-                    sessions += 1
+            night.sessions.append(ProgrammeSession(**s))
+            sessions += 1
         db.add(night)
     db.commit()
     return {"month": f"{year}-{month:02d}", "nights": len(nights), "sessions": sessions}

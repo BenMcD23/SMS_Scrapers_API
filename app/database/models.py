@@ -2158,3 +2158,158 @@ class CadetDrillTest(Base):
     recorded_at = Column(DateTime, nullable=False)
 
     cadet = relationship("Cadet", back_populates="drill_tests")
+
+
+# ─── Programme builder ───────────────────────────────────────────────────────
+# The monthly programme built in the SMS site instead of a Google Doc
+# (routers/programme_builder.py, core/programme_builder.py). Staff drag
+# sessions from the bank onto nights; NCOs read it and comment. Publishing
+# writes the PDF to the website and the month into Programme_Nights, which
+# stats and training already read, so nothing downstream changes.
+
+class ProgrammeRoom(Base):
+    """Somewhere a session can run. Capacity is optional: without it the
+    builder can't say a room is too small, only that it's double-booked."""
+    __tablename__ = "Programme_Rooms"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    name     = Column(Text,    nullable=False, unique=True)
+    capacity = Column(Integer, nullable=True)
+    notes    = Column(Text,    nullable=True)
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    active   = Column(Boolean, nullable=False, default=True, server_default="1")
+
+
+class ProgrammeBankItem(Base):
+    """A session in the bank: something the squadron runs, ready to drop onto
+    a night. A placed session copies what it needs, so editing or retiring a
+    bank item never rewrites a programme that used it."""
+    __tablename__ = "Programme_Bank_Items"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    title       = Column(Text,    nullable=False)
+    category    = Column(Text,    nullable=False)  # a core.programme.CATEGORIES key
+    whole_night = Column(Boolean, nullable=False, default=False, server_default="0")
+    room_id     = Column(Integer, ForeignKey("Programme_Rooms.id", ondelete="SET NULL"), nullable=True, index=True)
+    instructor  = Column(Text,    nullable=True)
+    # A theory catalogue lesson, so the builder can keep lessons in order.
+    subject_key = Column(Text,    nullable=True)
+    part        = Column(Integer, nullable=True)
+    notes       = Column(Text,    nullable=True)
+    active      = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at  = Column(DateTime, nullable=False)
+    created_by  = Column(Text,    nullable=True)
+
+    room = relationship("ProgrammeRoom")
+
+
+class ProgrammeDraft(Base):
+    """One month's programme in the builder, "YYYY-MM". ``published_at`` is
+    the last publish; an ``updated_at`` after it means there are changes the
+    website and the record haven't had yet."""
+    __tablename__ = "Programme_Drafts"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    month        = Column(Text,    nullable=False, unique=True)
+    notes        = Column(Text,    nullable=True)
+    created_at   = Column(DateTime, nullable=False)
+    created_by   = Column(Text,    nullable=True)
+    updated_at   = Column(DateTime, nullable=False)
+    updated_by   = Column(Text,    nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    published_by = Column(Text,    nullable=True)
+
+    nights   = relationship("ProgrammeDraftNight", back_populates="programme", cascade="all, delete-orphan",
+                            order_by="ProgrammeDraftNight.date")
+    comments = relationship("ProgrammeComment", back_populates="programme", cascade="all, delete-orphan",
+                            order_by="ProgrammeComment.id")
+    changes  = relationship("ProgrammeChange", back_populates="programme", cascade="all, delete-orphan",
+                            order_by="ProgrammeChange.id")
+
+
+class ProgrammeDraftNight(Base):
+    """A parade night in a month's programme."""
+    __tablename__ = "Programme_Draft_Nights"
+    __table_args__ = (UniqueConstraint("programme_id", "date", name="uq_programme_draft_night"),)
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    programme_id = Column(Integer, ForeignKey("Programme_Drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    date         = Column(Date,    nullable=False)
+    uniform      = Column(Text,    nullable=True)
+    duty_nco     = Column(Text,    nullable=True)
+    notes        = Column(Text,    nullable=True)
+
+    programme = relationship("ProgrammeDraft", back_populates="nights")
+    slots     = relationship("ProgrammeSlot", back_populates="night", cascade="all, delete-orphan",
+                             order_by="ProgrammeSlot.id")
+
+
+class ProgrammeSlot(Base):
+    """A session placed on a night: which half (``period`` None is the whole
+    night), which flights ([] is everyone), where, and who. ``people`` are
+    person keys ("staff:3001", "cadet:1234"): staff and NCOs running it, or
+    cadets pulled out of their flight for it."""
+    __tablename__ = "Programme_Slots"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    night_id    = Column(Integer, ForeignKey("Programme_Draft_Nights.id", ondelete="CASCADE"), nullable=False,
+                         index=True)
+    period      = Column(Integer, nullable=True)
+    flights     = Column(JSON,    nullable=False, default=list)
+    title       = Column(Text,    nullable=False)
+    category    = Column(Text,    nullable=False)
+    bank_item_id = Column(Integer, ForeignKey("Programme_Bank_Items.id", ondelete="SET NULL"), nullable=True,
+                          index=True)
+    room_id     = Column(Integer, ForeignKey("Programme_Rooms.id", ondelete="SET NULL"), nullable=True, index=True)
+    instructor  = Column(Text,    nullable=True)   # free text, for a guest or "Flight NCOs"
+    people      = Column(JSON,    nullable=False, default=list)
+    subject_key = Column(Text,    nullable=True)
+    part        = Column(Integer, nullable=True)
+    notes       = Column(Text,    nullable=True)
+
+    night = relationship("ProgrammeDraftNight", back_populates="slots")
+    room  = relationship("ProgrammeRoom")
+
+
+class ProgrammeComment(Base):
+    """A comment on a programme, Google Docs style: a thread starts on the
+    programme, a night or a session (``quote`` keeps what it was about, so a
+    thread still reads once the session has moved or gone), replies carry
+    ``parent_id``, and anyone who can comment can resolve it. ``mentions``
+    are the person keys @'d in the body; ``assignee`` is the one asked to act."""
+    __tablename__ = "Programme_Comments"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    programme_id = Column(Integer, ForeignKey("Programme_Drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id    = Column(Integer, ForeignKey("Programme_Comments.id", ondelete="CASCADE"), nullable=True, index=True)
+    night_id     = Column(Integer, ForeignKey("Programme_Draft_Nights.id", ondelete="SET NULL"), nullable=True,
+                          index=True)
+    slot_id      = Column(Integer, ForeignKey("Programme_Slots.id", ondelete="SET NULL"), nullable=True, index=True)
+    quote        = Column(Text,    nullable=True)
+    author_id    = Column(Integer, ForeignKey("Users.id", ondelete="CASCADE"), nullable=False, index=True)
+    body         = Column(Text,    nullable=False)
+    mentions     = Column(JSON,    nullable=False, default=list)
+    assignee     = Column(Text,    nullable=True)
+    created_at   = Column(DateTime, nullable=False)
+    edited_at    = Column(DateTime, nullable=True)
+    resolved_at  = Column(DateTime, nullable=True)
+    resolved_by  = Column(Text,    nullable=True)
+
+    programme = relationship("ProgrammeDraft", back_populates="comments")
+    author    = relationship("User")
+    replies   = relationship("ProgrammeComment", cascade="all, delete-orphan", order_by="ProgrammeComment.id",
+                             backref=backref("parent", remote_side=[id]))
+
+
+class ProgrammeChange(Base):
+    """One line of a programme's history ("Moved Drill to 2nd half on 7 Dec"),
+    so staff editing the same month can see who changed what."""
+    __tablename__ = "Programme_Changes"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    programme_id = Column(Integer, ForeignKey("Programme_Drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    at           = Column(DateTime, nullable=False)
+    by           = Column(Text,    nullable=True)
+    summary      = Column(Text,    nullable=False)
+
+    programme = relationship("ProgrammeDraft", back_populates="changes")

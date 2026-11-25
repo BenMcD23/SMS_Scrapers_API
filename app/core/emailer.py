@@ -590,3 +590,94 @@ def recruit_form_link_html(cadet_first_name: str, link: str, expires: str,
         Replies to this email go to {_esc(contact_name)}.</p>
     </div>
     """
+
+
+# ── Programme comments ───────────────────────────────────────────────────────
+# Modelled on Google Docs' comment emails: who did what, the bit of the
+# programme the thread is about, the thread itself with the new comment
+# picked out, and buttons straight to it. Bodies are free text from staff and
+# NCOs, so everything goes through _esc.
+
+PROGRAMME_COMMENT_VERBS = {
+    "mention": "mentioned you in a comment",
+    "assigned": "assigned you an action item",
+    "reply": "replied to a comment",
+    "resolved": "resolved a comment",
+    "reopened": "reopened a comment",
+}
+
+PROGRAMME_COMMENT_REASONS = {
+    "mention": "You got this email because you were mentioned in this thread.",
+    "assigned": "You got this email because this action item is assigned to you.",
+    "reply": "You got this email because you're in this thread.",
+    "resolved": "You got this email because you're in this thread.",
+    "reopened": "You got this email because you're in this thread.",
+}
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in (name or "").split() if p[:1].isalpha()]
+    return ((parts[0][0] if parts else "?") + (parts[-1][0] if len(parts) > 1 else "")).upper()
+
+
+def programme_comment_subject(kind: str, actor: str, programme_name: str) -> str:
+    return f"{actor} {PROGRAMME_COMMENT_VERBS[kind]} on the {programme_name}"
+
+
+def programme_comment_email_html(kind: str, actor: str, programme_name: str, quote: str | None,
+                                 thread: list[tuple[str, str, bool]], link: str,
+                                 assignee: str | None = None) -> str:
+    """One email for every kind of comment notification.
+
+    ``thread`` is ``(author, body, is_new)`` oldest first, bodies already in
+    plain text (mentions as "@Name"); the newest few are shown, as Docs does,
+    with the comment this email is about highlighted. ``link`` opens the
+    programme on the thread."""
+    verb = PROGRAMME_COMMENT_VERBS[kind]
+    shown = thread[-4:]
+    earlier = len(thread) - len(shown)
+    rows = []
+    if earlier:
+        rows.append(f'<p style="margin:0 0 10px;font-size:13px;color:#777">'
+                    f'{earlier} earlier comment{"s" if earlier != 1 else ""}</p>')
+    for author, body, is_new in shown:
+        background = "#eef3fb" if is_new else "#ffffff"
+        rows.append(
+            f'<table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 8px;'
+            f'background:{background};border-radius:8px"><tr>'
+            f'<td style="width:40px;padding:10px 0 10px 10px;vertical-align:top">'
+            f'<div style="width:30px;height:30px;border-radius:15px;background:#1f3a68;color:#fff;'
+            f'font-size:12px;line-height:30px;text-align:center;font-weight:bold">{_esc(_initials(author))}</div></td>'
+            f'<td style="padding:10px;vertical-align:top;font-size:14px">'
+            f'<div style="font-weight:bold;margin:0 0 2px">{_esc(author)}</div>'
+            f'<div style="white-space:pre-wrap;color:#222">{_esc(body)}</div></td></tr></table>'
+        )
+    quote_html = (
+        f'<div style="margin:0 0 16px;padding:8px 12px;border-left:4px solid #f0b400;background:#fff8e1;'
+        f'font-size:13px;color:#444">{_esc(quote)}</div>' if quote else ""
+    )
+    assignee_html = (
+        f'<p style="margin:0 0 12px;font-size:13px;color:#1f3a68"><strong>Assigned to {_esc(assignee)}</strong></p>'
+        if assignee else ""
+    )
+    button = ("display:inline-block;text-decoration:none;padding:9px 18px;border-radius:6px;"
+              "font-size:14px;margin:0 8px 0 0")
+    reply_link = f"{link}&reply=1" if "?" in link else f"{link}?reply=1"
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">
+      <p style="margin:0 0 6px;font-size:12px;color:#777">317 SMS · Programme</p>
+      <h2 style="margin:0 0 16px;font-size:18px;font-weight:normal">
+        <strong>{_esc(actor)}</strong> {verb} on the
+        <a href="{_esc(link)}" style="color:#1565c0">{_esc(programme_name)}</a></h2>
+      {quote_html}
+      {assignee_html}
+      {''.join(rows)}
+      <p style="margin:18px 0 0">
+        <a href="{_esc(reply_link)}" style="{button}background:#1f3a68;color:#fff">Reply</a>
+        <a href="{_esc(link)}" style="{button}border:1px solid #1f3a68;color:#1f3a68">Open</a>
+      </p>
+      <p style="margin:20px 0 0;font-size:12px;color:#777">{PROGRAMME_COMMENT_REASONS[kind]}
+        Reply in 317 SMS: replies to this email aren't read.</p>
+      {FOOTER}
+    </div>
+    """
