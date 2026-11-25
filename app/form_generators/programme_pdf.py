@@ -114,7 +114,7 @@ def build_programme_pdf(data: dict) -> bytes:
             end = c
             while end + 1 < len(columns) and [s["id"] for s in covering[end + 1]] == ids and ids:
                 end += 1
-            text = "\n— or —\n".join(
+            text = "\n\n".join(
                 s["title"] + (f"\n{s['running']}" if s.get("running") else "") for s in covering[c])
             row.append(_p(text, st["cell"]))
             row += [""] * (end - c)
