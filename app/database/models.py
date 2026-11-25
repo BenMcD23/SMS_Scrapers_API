@@ -1564,6 +1564,21 @@ class StoresStockChange(Base):
 # Entries snapshot item/cadet details at add-time so later order edits or
 # deletions can't change a batch that has already been sent to RAFAC.
 
+class StoresNsn(Base):
+    """A stock number (NSN) staff have told us the meaning of, for labels the
+    Logs Form 202 doesn't list: older contracts, polos, kit from elsewhere.
+    Numbers on the form are read from the form itself (core/nsn.py) and are
+    never stored here, so a new version of the form needs no data step."""
+    __tablename__ = "Stores_Nsns"
+
+    id        = Column(Integer,  primary_key=True, autoincrement=True)
+    nsn       = Column(Text,     nullable=False, unique=True)  # 13 digits, no dashes
+    item_type = Column(Text,     nullable=False)  # a catalogue item name
+    size      = Column(Text,     nullable=False)  # as stock lines store it ("N/A" for unsized items)
+    added_by  = Column(Text,     nullable=True)
+    added_at  = Column(DateTime, nullable=False)
+
+
 class LogsForm(Base):
     __tablename__ = "Logs_Forms"
 

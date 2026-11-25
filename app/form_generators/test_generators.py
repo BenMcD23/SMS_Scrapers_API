@@ -26,8 +26,15 @@ def test_every_catalogue_size_has_a_template_demand_line():
     catalogue = {**UNIFORM_SIZES, "Belt": [""]}
     missing = [(t, s) for t, sizes in catalogue.items() for s in sizes
                if build_description(t, s) is not None and _norm(build_description(t, s)) not in rows]
-    # Known template typo: the template says 80/70/99 where the catalogue has 80/75/99.
-    assert missing == [("Slacks", "80/75/99")]
+    # Version 1 of the form said 80/70/99 for the 80/75/99 slacks; 3.1 fixed it.
+    assert missing == []
+
+
+def test_template_is_the_current_form():
+    # Bader says to always download the newest form; this pins which one we ship
+    # so an older copy can't be dropped back in by mistake.
+    info = openpyxl.load_workbook(TEMPLATE_PATH)["Information Sheet"]
+    assert "3.1" in str(info["C1"].value)
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +49,7 @@ def test_logs_form_demands_only_what_was_ordered(logs_form):
     assert {d: q for d, (q, _) in rows.items()} == {
         "Beret RAF Size 56": 2,
         "Necktie Black (Unisex Item) Standard": 1,
-        "Trousers Woman's RAF 80/75/99": 1,  # no template row, so appended
+        "Trousers Woman’s RAF 80/75/99": 1,  # the template's own spelling, curly quote and all
     }
     rdds = {v.date() if hasattr(v, "date") else v for _, v in rows.values()}
     assert rdds == {date.today() + timedelta(days=21)}
@@ -60,6 +67,47 @@ def test_build_description():
     assert build_description("Beret", "55") == "Beret RAF Size 55"
     assert build_description("Belt", "anything") == "Belt Waist RAF (Unisex Item) Size 64-114cm"
     assert build_description("Brassard", "") is None
+
+
+def test_demand_lines_not_in_the_template_are_still_demanded(monkeypatch):
+    import form_generators.logs_form_gen as gen
+    monkeypatch.setitem(gen.DESCRIPTION_TEMPLATES, "Beret", "Beret RAF Size {size} (new)")
+    rows = _live_demands(generate_logs_form([("Beret", "56")], []))
+    assert rows["Beret RAF Size 56 (new)"][0] == 1
+
+
+def _menus(xlsx: bytes, sheet: str) -> str:
+    """The raw XML of one sheet, where Excel keeps its list menus."""
+    import zipfile
+
+    from form_generators.logs_form_gen import _sheet_paths
+    zf = zipfile.ZipFile(io.BytesIO(xlsx))
+    return zf.read(_sheet_paths(zf)[sheet]).decode()
+
+
+def test_the_generated_form_keeps_the_templates_drop_down_menus(logs_form):
+    # openpyxl drops Excel's extension menus on save; without putting them back
+    # the QM types the unit, wing, ranks and issue types by hand.
+    info = _menus(logs_form, "Information Sheet")
+    assert info.count("<x14:dataValidation ") == 8
+    assert "'Data Sheet for menus'!$B$3:$B$36" in info
+    roll = _menus(logs_form, "Cadet Nominal Roll")
+    assert roll.count("<x14:dataValidation ") == 2
+    assert "xr:uid" not in info + roll  # openpyxl's root doesn't declare xr
+    assert info.count("<extLst>") == 1
+    # Still a workbook openpyxl (and so Excel's stricter parser's subset) reads.
+    import xml.etree.ElementTree as ET
+    ET.fromstring(info.encode())
+    ET.fromstring(roll.encode())
+    openpyxl.load_workbook(io.BytesIO(logs_form))
+
+
+def test_menus_are_left_alone_when_the_template_has_none(tmp_path):
+    from form_generators.logs_form_gen import _restore_menus
+    plain = tmp_path / "plain.xlsx"
+    openpyxl.Workbook().save(plain)
+    data = plain.read_bytes()
+    assert _restore_menus(str(plain), data) == data
 
 
 @pytest.mark.parametrize("a,b", [("Female115/42 ", "female 115/42"), ("Woman’s", "Woman's")])
