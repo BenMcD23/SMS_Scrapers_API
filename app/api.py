@@ -54,6 +54,7 @@ from routers import (
     nco_staff_notes,
     newsletters,
     oc,
+    parade_reports,
     portal,
     programme,
     programme_record,
@@ -246,6 +247,7 @@ app.include_router(nco_appraisals.router)
 app.include_router(nco_comments.router)
 app.include_router(nco_staff_notes.router)
 app.include_router(attendance.router)
+app.include_router(parade_reports.router)
 app.include_router(leaving.router)
 app.include_router(appointments.router)
 app.include_router(classification_day.router)
