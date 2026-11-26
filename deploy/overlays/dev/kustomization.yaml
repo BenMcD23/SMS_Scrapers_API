@@ -19,12 +19,14 @@ configMapGenerator:
       - config.env
 
 patches:
-  # One instance: no HA, and no switchover CronJob.
+  # One instance: no HA, no synchronous replica, and no switchover CronJob.
   - target: { kind: Cluster, name: sms-db }
     patch: |-
       - op: replace
         path: /spec/instances
         value: 1
+      - op: remove
+        path: /spec/postgresql/synchronous
   - target: { kind: Ingress, name: sms-api }
     patch: |-
       - op: replace
