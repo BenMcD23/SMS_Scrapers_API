@@ -1,11 +1,11 @@
-# Keeps the database primary - and the API with it - on home. squadron's
-# wifi/mobile link stalls often enough to trip failovers, so it only holds the
-# replica. (It used to be the other way round, with home only on Wednesday and
-# Friday evenings.)
+# Keeps the database primary - and the API with it - on oracle2. Home's
+# broadband and squadron's wifi/mobile link both drop often enough to trip
+# failovers; oracle2 (OCI) is the steadiest node. (It used to prefer home, and
+# before that squadron.)
 #
 # It is a reconciler, not a one-shot: every 10 minutes it works out where the
 # primary should be and moves it if it isn't there. That also covers failing
-# back to home after an outage, once home's replica has been Ready for
+# back to oracle2 after an outage, once oracle2's replica has been Ready for
 # STABLE_SECONDS - so a flapping link doesn't bounce the primary back and forth.
 #
 # A switchover drops connections for a few seconds, and restarting the API
@@ -33,7 +33,7 @@ spec:
               image: alpine/k8s:1.33.5
               env:
                 - { name: CLUSTER, value: sms-db }
-                - { name: PREFERRED_NODE, value: home }
+                - { name: PREFERRED_NODE, value: oracle2 }
                 - { name: STABLE_SECONDS, value: "1800" }
               command: [sh, -euc]
               args:
