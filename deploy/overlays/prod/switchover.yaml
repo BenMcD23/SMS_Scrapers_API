@@ -10,6 +10,13 @@
 #
 # A switchover drops connections for a few seconds, and restarting the API
 # kills any scrape that is running at that moment.
+#
+# It also reclones a replica that can't rejoin. After a failover, the old
+# primary has to pg_rewind back to where the histories split, and that needs
+# its own WAL from before the crash. If that WAL is gone (an empty segment
+# after a hard stop, 2026-11-25), pg_rewind fails and CNPG retries it forever,
+# leaving the cluster with one instance until someone deletes the replica.
+# Deleting its PVC and pod makes CNPG clone a fresh one from the primary.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -35,10 +42,29 @@ spec:
                 - { name: CLUSTER, value: sms-db }
                 - { name: PREFERRED_NODE, value: oracle2 }
                 - { name: STABLE_SECONDS, value: "1800" }
+                - { name: RECLONE_AFTER_SECONDS, value: "900" }
               command: [sh, -euc]
               args:
                 - |
                   want=$PREFERRED_NODE
+
+                  # Reclone a replica stuck failing pg_rewind, but only when the
+                  # primary is Ready and exactly one other instance is not.
+                  primary=$(kubectl get cluster "$CLUSTER" -o jsonpath='{.status.currentPrimary}')
+                  primary_ready=$(kubectl get pod "$primary" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+                  stuck=$(kubectl get pods -l "cnpg.io/cluster=$CLUSTER,cnpg.io/podRole=instance" -o json | jq -r \
+                    --arg primary "$primary" --argjson after "$RECLONE_AFTER_SECONDS" '
+                    .items[] | select(.metadata.name != $primary)
+                    | select(any(.status.conditions[]?; .type == "Ready" and .status != "True"
+                        and (now - (.lastTransitionTime | fromdateiso8601)) > $after))
+                    | .metadata.name')
+                  if [ "$primary_ready" = True ] && [ -n "$stuck" ] && [ "$(echo "$stuck" | wc -l)" -eq 1 ] \
+                    && kubectl logs "$stuck" -c postgres --since=10m | grep -q "Failed to execute pg_rewind"; then
+                    echo "$stuck has failed pg_rewind for over ${RECLONE_AFTER_SECONDS}s; recloning it from $primary"
+                    kubectl delete pvc "$stuck" --wait=false
+                    kubectl delete pod "$stuck"
+                    exit 0
+                  fi
 
                   phase=$(kubectl get cluster "$CLUSTER" -o jsonpath='{.status.phase}')
                   if [ "$phase" != "Cluster in healthy state" ]; then
@@ -95,7 +121,13 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [pods]
-    verbs: [get, list]
+    verbs: [get, list, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [delete]
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get]
