@@ -130,18 +130,27 @@ def _read_contact_methods(page: Page, view_id: str):
     return _parse_methods(rows)
 
 
-def get_contacts(page: Page):
+def get_contacts(page: Page, warn=None):
     """Every contact on the Contacts tab with their contact methods, in Bader's
     order, or None if the tab or any contact's details couldn't be read: a
-    half-read list would drop a parent from the audit, so it's all or nothing."""
+    half-read list would drop a parent from the audit, so it's all or nothing.
+
+    ``warn`` gets the reason, so the scrape's own log says which cadet and
+    why; the audit page can only say "not checked".
+    """
+    step = "the Contacts tab didn't open"
     try:
         _open_contacts_tab(page)
+        step = "the contacts list couldn't be read"
         contacts = _parse_contact_rows(page.evaluate(_READ_CONTACT_ROWS, CONTACTS_GRID))
         for i, contact in enumerate(contacts):
+            step = f"{contact['name']}'s details didn't open"
             if i:
                 _open_contacts_tab(page)  # the View replaced the list
             contact["contact_methods"] = _read_contact_methods(page, contact.pop("view_id"))
         return contacts
     except Exception as e:
-        logger.error(f"Warning: Could not read the cadet's contacts: {e}")
+        logger.error(f"Warning: Could not read the cadet's contacts: {step}: {e}")
+        if warn:
+            warn(f"{step} ({str(e).splitlines()[0] if str(e) else type(e).__name__})")
         return None
