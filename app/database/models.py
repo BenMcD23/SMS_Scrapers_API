@@ -2035,6 +2035,7 @@ class ProgrammeSession(Base):
     # so being there that night doesn't say a cadet did this one.
     split      = Column(Boolean, nullable=False, default=False, server_default="0")
     raw        = Column(Text,    nullable=False)   # the cell as written, which a re-import matches on
+    room       = Column(Text,    nullable=True)    # as the doc's roomings page or the builder named it
 
     night = relationship("ProgrammeNight", back_populates="sessions")
 

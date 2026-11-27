@@ -21,6 +21,7 @@ built month is indistinguishable downstream from an imported one.
 import io
 import logging
 import re
+from collections import Counter
 from datetime import date, datetime
 from datetime import date as Date  # NightBody has a field called date
 from typing import Literal
@@ -34,8 +35,8 @@ from sqlalchemy.orm import Session
 
 import database.database as database
 from core import programme as programme_record
+from core import programme_ai, push
 from core import programme_builder as pb
-from core import push
 from core.actor import actor_name
 from core.config import SITE_BASE_URL
 from core.db import get_db, get_or_create_user
@@ -117,9 +118,20 @@ class CopySlot(BaseModel):
     night_ids: list[int] = Field(min_length=1, max_length=MAX_NIGHTS)
 
 
+class Pick(BaseModel):
+    """One suggestion to accept as it was offered: a bank session, or joining a session already there."""
+    night_id: int
+    period: int
+    flight: str
+    bank_item_id: int | None = None
+    slot_id: int | None = None
+
+
 class FillBody(BaseModel):
     # Each {night_id, period, flight}; none fills every gap.
     cells: list[dict] | None = None
+    # Or exactly these, as offered (the AI draft's picks): cells are then ignored.
+    picks: list[Pick] | None = Field(None, max_length=200)
 
 
 class BankBody(BaseModel):
@@ -375,16 +387,30 @@ def _record_nights(db: Session, month: str) -> list[ProgrammeNight]:
             .order_by(ProgrammeNight.date).all())
 
 
-def _from_record(n: ProgrammeNight, on: date) -> ProgrammeDraftNight:
+# The old docs' names for rooms that have since been renamed, or misspelt.
+ROOM_ALIASES = {"drill hall": "main parade hall", "hanger": "hangar", "outdoors": "outside"}
+
+
+def _room_ids(db: Session) -> dict[str, int]:
+    """Lower-cased room name (and old names for it) to its id, for record rooms."""
+    ids = {r.name.casefold(): r.id for r in db.query(ProgrammeRoom)}
+    ids.update({old: ids[new] for old, new in ROOM_ALIASES.items() if new in ids and old not in ids})
+    return ids
+
+
+def _from_record(n: ProgrammeNight, on: date, room_ids: dict[str, int]) -> ProgrammeDraftNight:
     """A night of the record as a builder night on ``on``: one slot per
-    activity per half, with every flight that did it."""
+    activity per half, with every flight that did it, in the room the record
+    has when it's one of ours."""
     night = ProgrammeDraftNight(date=on, uniform=n.uniform, duty_nco=n.duty_nco)
-    grouped: dict[tuple, list[str]] = {}
+    grouped: dict[tuple, list] = {}
     for s in sorted(n.sessions, key=lambda s: (s.period, s.id)):
-        grouped.setdefault((s.period, s.activity, s.category, s.instructor), []).append(s.flight)
-    for (period, activity, category, instructor), fl in grouped.items():
-        night.slots.append(ProgrammeSlot(period=period, flights=sorted(set(fl)), title=activity,
-                                         category=category, instructor=instructor, people=[]))
+        grouped.setdefault((s.period, s.activity, s.category, s.instructor), []).append(s)
+    for (period, activity, category, instructor), rows in grouped.items():
+        rooms = Counter(i for r in rows if (i := room_ids.get((r.room or "").strip().casefold())))
+        night.slots.append(ProgrammeSlot(period=period, flights=sorted({r.flight for r in rows}), title=activity,
+                                         category=category, instructor=instructor, people=[],
+                                         room_id=rooms.most_common(1)[0][0] if rooms else None))
     return night
 
 
@@ -435,7 +461,7 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
         if not nights:
             raise HTTPException(status_code=404, detail="The record has nothing for that month")
         for n in nights:
-            draft.nights.append(_from_record(n, n.date))
+            draft.nights.append(_from_record(n, n.date, _room_ids(db)))
         summary = "Started from the programme record"
     elif body.start == "copy":
         if not body.copy_from:
@@ -450,7 +476,7 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
             if i >= len(old_nights):
                 draft.nights.append(ProgrammeDraftNight(date=d))
             elif not source:
-                draft.nights.append(_from_record(old_nights[i], d))
+                draft.nights.append(_from_record(old_nights[i], d, _room_ids(db)))
             else:
                 old = old_nights[i]
                 night = ProgrammeDraftNight(date=d, uniform=old.uniform, duty_nco=old.duty_nco)
@@ -694,6 +720,13 @@ def fill(month: str, body: FillBody, db: Session = Depends(get_db), idinfo: dict
     draft = _draft(db, month)
     ctx = pb.build_context(db, draft)
     bank = _bank(db)
+    if body.picks is not None:
+        added = _apply_picks(draft, ctx, {b.id: b for b in bank}, body.picks)
+        if added:
+            _touch(draft, idinfo, f"Added {added} suggested session{'s' if added != 1 else ''}")
+        db.commit()
+        db.refresh(draft)
+        return {"filled": added, "programme": _detail(db, draft, idinfo)}
     if body.cells:
         try:
             cells = [(int(c["night_id"]), int(c["period"]), str(c["flight"])) for c in body.cells]
@@ -728,6 +761,55 @@ def fill(month: str, body: FillBody, db: Session = Depends(get_db), idinfo: dict
     db.commit()
     db.refresh(draft)
     return {"filled": added, "programme": _detail(db, draft, idinfo)}
+
+
+def _apply_picks(draft: ProgrammeDraft, ctx: pb.Context, bank: dict[int, ProgrammeBankItem],
+                 picks: list[Pick]) -> int:
+    """Put each pick in its gap. A gap filled since it was suggested is left
+    alone; the same bank session picked for two flights in one half becomes
+    one session for both; each gets a room free at the time."""
+    nights = {n.id: n for n in draft.nights}
+    made: dict[tuple[int, int, int], ProgrammeSlot] = {}
+    added = 0
+    for pick in picks:
+        night = nights.get(pick.night_id)
+        if not night or pick.period not in pb.PERIODS or pick.flight not in ctx.flights:
+            raise HTTPException(status_code=422, detail="That suggestion isn't for a gap in this programme")
+        taken = any(pick.period in pb.slot_periods(s) and pick.flight in pb.slot_flights(s, ctx.flights)
+                    for s in night.slots)
+        if taken:
+            continue
+        if pick.slot_id is not None:
+            slot = next((s for s in night.slots if s.id == pick.slot_id and pick.period in pb.slot_periods(s)
+                         and s.flights), None)
+            if not slot:
+                continue
+            slot.flights = sorted(set(slot.flights) | {pick.flight}, key=ctx.flights.index)
+        elif (item := bank.get(pick.bank_item_id)) is not None:
+            key = (night.id, pick.period, item.id)
+            if key in made:
+                made[key].flights = sorted(set(made[key].flights) | {pick.flight}, key=ctx.flights.index)
+            else:
+                busy = {s.room_id for s in night.slots if s.room_id and pick.period in pb.slot_periods(s)}
+                room = pb.free_room(ctx, busy, ctx.expected.get(pick.flight, 0) + 1, item.room_id)
+                made[key] = ProgrammeSlot(
+                    period=pick.period, flights=[pick.flight], title=item.title, category=item.category,
+                    bank_item_id=item.id, room_id=room.id if room else None, instructor=item.instructor,
+                    people=list(item.people or []), subject_key=item.subject_key, part=item.part)
+                night.slots.append(made[key])
+        else:
+            continue
+        added += 1
+    return added
+
+
+@router.post("/months/{month}/ai-draft")
+def ai_draft(month: str, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)) -> dict:
+    """The AI's pick for each gap, from the rules' options, with the past
+    programmes in mind. Changes nothing: staff accept the picks (POST /fill
+    with ``picks``)."""
+    draft = _draft(db, month)
+    return programme_ai.draft(db, draft, pb.build_context(db, draft), _bank(db))
 
 
 # ── PDF and publishing ──────────────────────────────────────────────────────

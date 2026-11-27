@@ -62,7 +62,8 @@ def doc(monkeypatch):
             return self
 
         def execute(self):
-            return {"body": {"content": [{"paragraph": {}}, {"table": holder["table"]}]}}
+            return {"body": {"content": [{"paragraph": {}}, {"table": holder["table"]},
+                                         *({"table": t} for t in holder.get("more", []))]}}
 
     monkeypatch.setattr(pp, "_docs_clients", lambda: (object(), Docs()))
     monkeypatch.setattr(pp, "_find_programme_doc_id", lambda drive, m, y: "doc-1")
@@ -237,3 +238,53 @@ def test_sessions_and_texts_agree_on_nights_and_continuations(doc):
     doc["table"] = table(night("Wed 2nd", uniform="No.2a SD"), night("", uniform="Civvies"), night("TBC"))
     [n] = pp.parse_programme_sessions(9, 2026)
     assert n["uniform"] == "No.2a SD, Civvies" and n["sessions"] == []
+
+
+# ─── The roomings page: where each session ran ───────────────────────────────
+
+ROOMS_TOP = row(cell("Date"), cell("Probationary"), cell("1st Period", 2), cell(), cell("Break"),
+                cell("Probationary"), cell("2nd Period", 3), cell(), cell(), cell("Uniform"))
+IMPORTANT_DATES = {"columns": 2, "tableRows": [row(cell("1st March"), cell("Sunday Parade"))] * 3}
+
+
+def roomings(*nights):
+    return {"columns": COLS, "tableRows": [ROOMS_TOP, HEADER_SUB, *nights]}
+
+
+def rooms(n):
+    return [(s["period"], s["flights"], s["text"], s["room"]) for s in n["sessions"]]
+
+
+def test_each_session_gets_its_room_from_the_roomings_page(doc):
+    # The important dates sit between the programme and the roomings, and
+    # aren't mistaken for either.
+    doc["table"] = table(
+        night("2nd", p1=("Intro", "Drill", "Radio"), p2=("", "Shooting", "Swim", "Drill")),
+        night("4th", p1=("Sqn parade", "", ""), spans={1: 3}),
+    )
+    doc["more"] = [IMPORTANT_DATES, roomings(
+        night("Wednesday 2nd", p1=("Hangar", "Drill  Hall", "Upstairs"), p2=("", "Range", "Pool", "Drill Hall")),
+        night("4th", p1=("Outside", "", ""), spans={1: 3}),
+    )]
+    wed, fri = pp.parse_programme_sessions(9, 2026)
+    assert rooms(wed) == [
+        (1, ["C"], "Intro", "Hangar"), (1, ["A"], "Drill", "Drill Hall"), (1, ["B"], "Radio", "Upstairs"),
+        # A Flight split two ways: each half of the split gets the room in the same position.
+        (2, ["A"], "Shooting", "Range"), (2, ["A"], "Swim", "Pool"), (2, ["B"], "Drill", "Drill Hall"),
+    ]
+    assert rooms(fri) == [(1, ["C", "A", "B"], "Sqn parade", "Outside")]
+
+
+def test_a_room_is_kept_as_written_and_a_blank_one_is_none(doc):
+    # A "Hangar / Outside" cell is what the doc says; B's blank room isn't guessed.
+    doc["table"] = table(night("2nd", p1=("", "Drill", "Radio")))
+    doc["more"] = [roomings(night("2nd", p1=("", "Hangar / Outside", "")), night("9th", p1=("", "Range", "")))]
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert rooms(n) == [(1, ["A"], "Drill", "Hangar / Outside"), (1, ["B"], "Radio", None)]
+
+
+def test_a_doc_with_no_roomings_page_still_imports_without_rooms(doc):
+    doc["table"] = table(night("2nd", p1=("Intro", "", "")))
+    doc["more"] = [IMPORTANT_DATES]
+    [n] = pp.parse_programme_sessions(9, 2026)
+    assert rooms(n) == [(1, ["C"], "Intro", None)]

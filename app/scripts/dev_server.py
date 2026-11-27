@@ -928,6 +928,9 @@ def seed_programme(db, now: datetime | None = None) -> None:
             else:
                 sessions += [{"period": period, "flights": [f], "text": t, "split": False}
                              for f, t in zip("CAB", cells, strict=True)]
+        # Rooms as the old docs' roomings page gave them, for most sessions.
+        for j, session in enumerate(sessions):
+            session["room"] = SEED_ROOMS[(i + j) % len(SEED_ROOMS)]
         by_month.setdefault((night.month, night.year), []).append({
             "date": night, "uniform": UNIFORMS[i % len(UNIFORMS)], "dnco": f"Cpl {LAST_NAMES[i % len(LAST_NAMES)]}",
             "sessions": sessions})
@@ -935,6 +938,7 @@ def seed_programme(db, now: datetime | None = None) -> None:
         programme.import_month(db, month, year, use_ai=False, nights=month_nights)
 
 
+SEED_ROOMS = ["Main Parade Hall", "Range", "Hangar", None, "Outside"]
 PROGRAMME_ROOMS = [
     {"name": "Main Parade Hall", "capacity": 80},
     {"name": "Range", "capacity": 20, "notes": "Shooting, and a normal room for lessons"},

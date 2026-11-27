@@ -301,7 +301,7 @@ def _cells(draft: ProgrammeDraft, ctx: Context):
     return cells
 
 
-def _free_room(ctx: Context, busy: set[int], need: int, prefer: int | None = None) -> ProgrammeRoom | None:
+def free_room(ctx: Context, busy: set[int], need: int, prefer: int | None = None) -> ProgrammeRoom | None:
     """A room not in use that fits `need`: the preferred one if it can, else
     the smallest that fits, so the hall stays free for what needs it."""
     candidates = [r for r in ctx.rooms.values() if r.active and r.id not in busy
@@ -354,7 +354,7 @@ def check(draft: ProgrammeDraft, ctx: Context) -> list[dict]:
                 if len(clashing) > 1:
                     room = ctx.rooms.get(room_id)
                     other = clashing[-1]
-                    spare = _free_room(ctx, busy, slot_headcount(other, ctx.expected, ctx.flights))
+                    spare = free_room(ctx, busy, slot_headcount(other, ctx.expected, ctx.flights))
                     issues.append(Issue(
                         "clash", "room_double_booked",
                         f"{room.name if room else 'A room'} has {' and '.join(s.title for s in clashing)} "
@@ -390,7 +390,7 @@ def check(draft: ProgrammeDraft, ctx: Context) -> list[dict]:
             if room and room.capacity and need > room.capacity:
                 busy = {s.room_id for s in night.slots if s.room_id and s.id != slot.id
                         and set(slot_periods(s)) & set(slot_periods(slot))}
-                bigger = _free_room(ctx, busy | {room.id}, need)
+                bigger = free_room(ctx, busy | {room.id}, need)
                 issues.append(Issue(
                     "clash", "room_too_small",
                     f"{label} expects about {need} but {room.name} holds {room.capacity}", night.id, [slot.id],
@@ -398,7 +398,7 @@ def check(draft: ProgrammeDraft, ctx: Context) -> list[dict]:
             if not room and ctx.rooms:
                 busy = {s.room_id for s in night.slots if s.room_id and s.id != slot.id
                         and set(slot_periods(s)) & set(slot_periods(slot))}
-                spare = _free_room(ctx, busy, need)
+                spare = free_room(ctx, busy, need)
                 issues.append(Issue("info", "no_room", f"{label} has no room", night.id, [slot.id],
                                     {"slot_id": slot.id, "room_id": spare.id, "label": f"Use {spare.name}"}
                                     if spare else None))
@@ -495,7 +495,7 @@ def suggest(draft: ProgrammeDraft, ctx: Context, bank: list[ProgrammeBankItem], 
                                     month_titles[flight])
                     if option is None:
                         continue
-                    room = _free_room(ctx, busy_rooms, ctx.expected.get(flight, 0) + 1, item.room_id)
+                    room = free_room(ctx, busy_rooms, ctx.expected.get(flight, 0) + 1, item.room_id)
                     option.update({"kind": "bank", "bank_item_id": item.id, "title": item.title,
                                    "category": item.category, "room_id": room.id if room else None})
                     options.append(option)
@@ -588,7 +588,8 @@ def record_nights(draft: ProgrammeDraft, ctx: Context) -> list[dict]:
                 for flight in slot_flights(slot, ctx.flights):
                     sessions.append({"period": period, "flight": flight, "activity": slot.title,
                                      "category": slot.category, "instructor": instructor,
-                                     "split": cover[(period, flight)] > 1, "raw": f"builder:{slot.id}"})
+                                     "split": cover[(period, flight)] > 1, "raw": f"builder:{slot.id}",
+                                     "room": ctx.rooms[slot.room_id].name if slot.room_id in ctx.rooms else None})
         nights.append({"date": night.date, "uniform": night.uniform, "duty_nco": night.duty_nco,
                        "sessions": sessions})
     return nights

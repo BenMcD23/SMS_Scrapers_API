@@ -255,7 +255,7 @@ def import_month(db: Session, month: int, year: int, use_ai: bool = True, nights
             acts = tidy.get(s["text"], [])
             split = s["split"] or len(acts) > 1
             sessions += [{"period": s["period"], "flight": flight, "activity": act.name, "category": act.category,
-                          "instructor": act.instructor, "split": split, "raw": s["text"]}
+                          "instructor": act.instructor, "split": split, "raw": s["text"], "room": s.get("room")}
                          for act in acts for flight in s["flights"]]
         rows.append({"date": n["date"].date() if isinstance(n["date"], datetime) else n["date"],
                      "uniform": n.get("uniform"), "duty_nco": n.get("dnco"), "sessions": sessions})

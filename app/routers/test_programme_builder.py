@@ -7,6 +7,7 @@ from datetime import date, datetime
 import pytest
 from pypdf import PdfReader
 
+import core.programme_ai as programme_ai
 import routers.programme as website
 import routers.programme_builder as router  # binds core.push before the fixtures patch sessions
 from core.config import GITHUB_REPO
@@ -86,6 +87,7 @@ STAFF_ONLY = [
     ("post", f"{BASE}/slots/1/copy", {"night_ids": [2]}),
     ("get", f"{BASE}/months/{MONTH}/suggestions", None),
     ("post", f"{BASE}/months/{MONTH}/fill", {}),
+    ("post", f"{BASE}/months/{MONTH}/ai-draft", None),
     ("post", f"{BASE}/months/{MONTH}/publish", {}),
     ("post", f"{BASE}/bank", {"title": "x", "category": "drill"}),
     ("put", f"{BASE}/bank/1", {"title": "x", "category": "drill"}),
@@ -225,6 +227,22 @@ def test_a_month_can_copy_an_old_doc_from_the_record_week_by_week(api, db, roste
     assert [(s["title"], s["flights"], s["period"]) for s in first["slots"]] == [("Drill", ["A", "B"], 1)]
     # November had three nights; the rest of December starts empty.
     assert len(programme["nights"]) == 9 and not programme["nights"][3]["slots"]
+
+
+def test_rooms_from_an_old_doc_are_matched_to_ours_by_name_and_old_name(api, db, roster):
+    db.add_all([ProgrammeRoom(name="Main Parade Hall"), ProgrammeRoom(name="Hangar")])
+    night = db.query(ProgrammeNight).filter(ProgrammeNight.date == date(2026, 11, 2)).one()
+    night.sessions += [
+        ProgrammeSession(period=1, flight="A", activity="Drill", category="drill", raw="x", room="Drill Hall"),
+        ProgrammeSession(period=1, flight="B", activity="Drill", category="drill", raw="x", room=" drill hall"),
+        ProgrammeSession(period=2, flight="A", activity="Archery", category="sport", raw="x", room="Hanger"),
+        ProgrammeSession(period=2, flight="B", activity="Quiz", category="social", raw="x", room="The Bar"),
+    ]
+    db.commit()
+    rooms = {r.id: r.name for r in db.query(ProgrammeRoom)}
+    first = new_month(api, start="copy", copy_from="2026-11")["nights"][0]
+    assert {s["title"]: rooms.get(s["room_id"]) for s in first["slots"]} == {
+        "Drill": "Main Parade Hall", "Archery": "Hangar", "Quiz": None}
 
 
 def test_copying_a_month_with_nothing_anywhere_is_a_404(api, roster):
@@ -949,3 +967,116 @@ def test_a_session_with_a_kind_that_doesnt_exist_is_refused(api, roster):
     res = api.post(f"{BASE}/months/{MONTH}/slots", headers=staff(api),
                    json={"night_id": night["id"], "title": "x", "category": "nope"})
     assert res.status_code == 422
+
+
+# ── the AI draft ──────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def model(monkeypatch):
+    """The model chain, faked: ``model["reply"]`` is what it answers (or raises),
+    ``model["prompt"]`` what it was asked."""
+    state = {}
+
+    def fake(prompt, system, **_kw):
+        state["prompt"] = prompt
+        if isinstance(state["reply"], Exception):
+            raise state["reply"]
+        return state["reply"], "fake-model"
+
+    monkeypatch.setattr(programme_ai, "generate", fake)
+    return state
+
+
+def _bank3(api):
+    for title, category in (("Drill", "drill"), ("Volleyball", "sport"), ("First Aid", "first_aid")):
+        api.post(f"{BASE}/bank", headers=staff(api), json={"title": title, "category": category})
+
+
+def test_the_ai_picks_each_gap_from_the_rules_options_with_its_reason(api, db, model, roster):
+    # Last December's history, rooms and all, is in front of the model.
+    db.add(ProgrammeNight(date=date(2025, 12, 3), imported_at=datetime.now(), sessions=[
+        ProgrammeSession(period=1, flight="A", activity="Carol Practice", category="music", raw="x",
+                         room="Main Parade Hall")]))
+    db.commit()
+    _bank3(api)
+    new_month(api)
+    # In a code fence and cut off part-way, as a model's answer can be: every
+    # pick with its option still counts (g3 keeps the rules' reason); picks for
+    # no gap or an option not offered don't.
+    model["reply"] = '```json\n{"picks": [{"g": 0, "o": "b2", "why": "Not done since October"}, ' \
+                     '{"g": 0, "o": "b1"}, {"g": 1, "o": "b99"}, {"g": 2, "o": "j5"}, {"g": 500, "o": "b1"}, ' \
+                     '{"g": 3, "o": "b3", "wh'
+    res = api.post(f"{BASE}/months/{MONTH}/ai-draft", headers=staff(api))
+    assert res.status_code == 200
+    body = res.json()
+    assert (body["ai"], body["picked"], body["note"]) == (True, 2, None)
+    first = body["suggestions"][0]
+    assert first["options"][0]["title"] == "Volleyball"
+    rules = api.get(f"{BASE}/months/{MONTH}/suggestions", headers=staff(api)).json()[0]
+    # Its pick goes first with its reason; the rest keep the rules' order.
+    assert first["options"][0]["ai"] is True and first["options"][0]["reason"] == "Not done since October"
+    assert "ai" not in body["suggestions"][1]["options"][0]
+    third = body["suggestions"][3]["options"][0]
+    assert third["ai"] is True and third["title"] == "First Aid" and third["reason"]
+    assert {o["title"] for o in first["options"]} <= {"Drill", "Volleyball", "First Aid"}
+    assert len(rules["options"]) == 3
+    assert "Wed 03 Dec 2025 1st: A Carol Practice @Main Parade Hall" in model["prompt"]
+    assert "g0 Wed 02 Dec 1st C: b" in model["prompt"] and "b2 Volleyball [sport]" in model["prompt"]
+    # It only suggests: nothing on the month changed.
+    assert not any(n["slots"] for n in api.get(f"{BASE}/months/{MONTH}", headers=staff(api)).json()["nights"])
+
+
+@pytest.mark.parametrize("reply,note", [
+    (RuntimeError("every model in the chain failed"), "The AI isn't answering just now"),
+    ("no json here", "couldn't be read"),
+    ('{"picks": []}', "had nothing to add"),
+])
+def test_when_the_ai_fails_the_usual_suggestions_come_back_with_why(api, model, roster, reply, note):
+    _bank3(api)
+    new_month(api)
+    model["reply"] = reply
+    body = api.post(f"{BASE}/months/{MONTH}/ai-draft", headers=staff(api)).json()
+    assert note in body["note"] and body["picked"] == 0
+    assert len(body["suggestions"]) == 9 * 2 * 3
+
+
+def test_the_ai_isnt_asked_when_theres_nothing_to_fill(api, model, roster):
+    new_month(api)  # an empty bank: no options anywhere
+    body = api.post(f"{BASE}/months/{MONTH}/ai-draft", headers=staff(api)).json()
+    assert body == {"suggestions": [], "ai": False, "picked": 0, "note": "No gaps to fill, or nothing in the bank fits."}
+    assert "prompt" not in model
+
+
+def test_accepting_picks_merges_flights_joins_and_skips_filled_gaps(api, db, roster):
+    db.add(ProgrammeRoom(name="Main Parade Hall"))
+    db.commit()
+    drill = api.post(f"{BASE}/bank", headers=staff(api), json={
+        "title": "Drill", "category": "drill", "room_id": 1, "people": ["staff:3001"]}).json()
+    nights = new_month(api)["nights"]
+    band = slot_named(add(api, nights[1]["id"], "Band", period=2, flights=["A"]), "Band")
+    add(api, nights[0]["id"], "Already here", flights=["C"])
+    picks = [
+        {"night_id": nights[0]["id"], "period": 1, "flight": "A", "bank_item_id": drill["id"]},
+        {"night_id": nights[0]["id"], "period": 1, "flight": "B", "bank_item_id": drill["id"]},
+        {"night_id": nights[0]["id"], "period": 1, "flight": "C", "bank_item_id": drill["id"]},  # filled since
+        {"night_id": nights[1]["id"], "period": 2, "flight": "B", "slot_id": band["id"]},
+        {"night_id": nights[1]["id"], "period": 1, "flight": "B", "bank_item_id": 999},  # gone from the bank
+    ]
+    res = api.post(f"{BASE}/months/{MONTH}/fill", headers=staff(api), json={"picks": picks})
+    assert res.status_code == 200 and res.json()["filled"] == 3
+    programme = res.json()["programme"]
+    first = [s for s in programme["nights"][0]["slots"] if s["title"] == "Drill"]
+    assert [(s["flights"], s["room_id"], [p["key"] for p in s["people"]]) for s in first] == [
+        (["A", "B"], 1, ["staff:3001"])]
+    assert slot_named(programme, "Band")["flights"] == ["A", "B"]
+    assert programme["history"][0]["summary"] == "Added 3 suggested sessions"
+
+
+@pytest.mark.parametrize("pick", [{"night_id": 999, "period": 1, "flight": "A"},
+                                  {"night_id": 1, "period": 3, "flight": "A"},
+                                  {"night_id": 1, "period": 1, "flight": "Z"},
+                                  {"night_id": 1, "flight": "A"}])
+def test_a_pick_for_a_gap_that_isnt_there_is_refused(api, roster, pick):
+    new_month(api)
+    assert api.post(f"{BASE}/months/{MONTH}/fill", headers=staff(api),
+                    json={"picks": [{"bank_item_id": 1, **pick}]}).status_code == 422
