@@ -4,10 +4,60 @@ import logging
 
 from PIL import Image as PILImage
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import ArrayObject, DictionaryObject, NameObject, StreamObject
 from reportlab.lib.colors import black
 from reportlab.lib.utils import ImageReader
 
 logger = logging.getLogger(__name__)
+
+
+def _flatten_widgets(writer: PdfWriter, page) -> None:
+    """Paint each form-field widget's appearance into the page, then drop the
+    widget. pypdf's own flatten drops appearances it can't regenerate, which
+    would blank the entry; this draws the stored appearance stream as-is."""
+    annots = page.get("/Annots")
+    if annots is None:
+        return
+    resources = page.setdefault(NameObject("/Resources"), DictionaryObject())
+    resources = resources.get_object()
+    xobjs = resources.setdefault(NameObject("/XObject"), DictionaryObject()).get_object()
+    ops, keep = [], ArrayObject()
+    for n, ref in enumerate(annots.get_object()):
+        annot = ref.get_object()
+        if annot.get("/Subtype") != "/Widget":
+            keep.append(ref)
+            continue
+        ap = annot.get("/AP")
+        normal = ap.get_object().get("/N") if ap is not None else None
+        normal = normal.get_object() if normal is not None else None
+        if normal is None:
+            continue
+        if not isinstance(normal, StreamObject):
+            # Checkbox/radio: /N maps state names to streams.
+            normal = normal.get(annot.get("/AS"))
+            normal = normal.get_object() if normal is not None else None
+            if normal is None:
+                continue
+        if int(annot.get("/F", 0)) & 2:  # hidden
+            continue
+        rect = [float(v) for v in annot["/Rect"]]
+        bbox = [float(v) for v in normal.get("/BBox", [0, 0, rect[2] - rect[0], rect[3] - rect[1]])]
+        bw, bh = (bbox[2] - bbox[0]) or 1, (bbox[3] - bbox[1]) or 1
+        sx, sy = (rect[2] - rect[0]) / bw, (rect[3] - rect[1]) / bh
+        name = NameObject(f"/FlatW{n}")
+        xobjs[name] = writer._add_object(normal)
+        ops.append(f"q {sx:.4f} 0 0 {sy:.4f} {rect[0] - bbox[0] * sx:.4f} {rect[1] - bbox[1] * sy:.4f} cm {name} Do Q")
+    if ops:
+        stream = StreamObject()
+        stream.set_data("\n".join(ops).encode())
+        existing = page.get("/Contents")
+        contents = ArrayObject()
+        if existing is not None:
+            e = existing.get_object()
+            contents.extend(e if isinstance(e, list) else [existing])
+        contents.append(writer._add_object(stream))
+        page[NameObject("/Contents")] = contents
+    page[NameObject("/Annots")] = keep
 
 
 def merge_pdfs(pdf_blobs: list[bytes | None]) -> bytes:
@@ -21,8 +71,17 @@ def merge_pdfs(pdf_blobs: list[bytes | None]) -> bytes:
         if not blob:
             continue
         try:
-            pages = PdfReader(io.BytesIO(blob)).pages
-            for page in pages:
+            reader = PdfReader(io.BytesIO(blob))
+            # Fillable lesson plans: add_page() leaves the field widgets orphaned
+            # (no AcroForm), so typed-in entries can render blank; append() keeps
+            # them live but same-named fields across two sheets then share one
+            # value. Bake each plan's entries into its pages instead, so every
+            # sheet keeps exactly what was typed into it.
+            part = PdfWriter()
+            part.append(reader, import_outline=False)
+            for page in part.pages:
+                _flatten_widgets(part, page)
+            for page in part.pages:
                 writer.add_page(page)
         except Exception as e:
             logger.warning(f"merge_pdfs: skipping unreadable PDF #{i}: {e}")
