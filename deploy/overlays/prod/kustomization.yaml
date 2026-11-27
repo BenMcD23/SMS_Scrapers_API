@@ -11,10 +11,25 @@ resources:
 # newTag is rewritten by .github/workflows/deploy.yml on every push to main.
 images:
   - name: ghcr.io/benmcd23/sms_scrapers_api
-    newTag: v1.0.859
+    newTag: v1.0.874
 
 configMapGenerator:
   - name: sms-api-config
     behavior: merge
     envs:
       - config.env
+
+patches:
+  # The database runs on home and oracle2 only. Replication is synchronous, so
+  # a replica on squadron's wifi/mobile link would stall commits whenever that
+  # link stalls. (Dev keeps the base's wider list: its one instance and its
+  # local-path volume are on squadron.)
+  - target: { kind: Cluster, name: sms-db }
+    patch: |-
+      - op: replace
+        path: /spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution/nodeSelectorTerms
+        value:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [home, oracle2]

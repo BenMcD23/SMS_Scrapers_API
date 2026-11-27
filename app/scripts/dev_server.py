@@ -492,6 +492,16 @@ def seed_stores(client, headers: dict) -> None:
     for size in ref["sizes"]["Polo"][1:4]:
         post("/stores/stock", {"itemType": "Polo", "size": size, "box": "A", "section": "1", "quantity": 3})
 
+    # Two stock numbers the logs form doesn't list, taught as the Book in page
+    # does (made-up numbers: a polo has no NSN on the form), then a few scans so
+    # the stock history shows bookings in. One taught number stays unscanned.
+    for number, item, size in (("8415-99-000-0001", "Polo", ref["sizes"]["Polo"][2]),
+                               ("8415-99-000-0002", "Polo", ref["sizes"]["Polo"][3])):
+        res = client.put(f"/stores/nsns/{number}", json={"itemType": item, "size": size}, headers=headers)
+        assert res.status_code == 200, res.text
+    for number in ("8405-99-845-6634", "8405-99-845-6634", "8405-99-127-8130", "8415-99-000-0001"):
+        post("/stores/stock/book-in", {"nsn": number, "box": "B", "section": "2"})
+
     for n, cin in enumerate((FIRST_CIN + 4, FIRST_CIN + 11, FIRST_CIN + 18, FIRST_CIN + 25)):
         item = sized[n % len(sized)]
         post("/stores/orders", {"cadetCin": cin, "items": [

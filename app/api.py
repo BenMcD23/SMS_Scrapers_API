@@ -68,6 +68,7 @@ from routers import (
     staff_compliance,
     stats,
     stores,
+    stores_scan,
     texts,
     theory,
     training,
@@ -235,6 +236,7 @@ app.include_router(website_people.router)
 app.include_router(assessments.router)
 app.include_router(stats.router)
 app.include_router(stores.router)
+app.include_router(stores_scan.router)
 app.include_router(badges.router)
 app.include_router(texts.router)
 app.include_router(backups.router)
