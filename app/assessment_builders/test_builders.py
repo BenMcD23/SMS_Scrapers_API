@@ -93,3 +93,50 @@ def test_inspection_pdf_with_no_flights():
 def test_decode_rejects_non_base64():
     # Non-base64 decodes to nothing, which callers treat as "no file sent".
     assert not decode_pdf_data_url("data:application/pdf;base64,%%%")
+
+
+# ── merge_pdfs: lesson plans with typed-in form fields ──────────────────────
+
+def _form_pdf(value: str) -> bytes:
+    import io
+
+    from reportlab.pdfgen import canvas
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.acroForm.textfield(name="entry", value=value, x=50, y=600, width=200, height=20, borderStyle="solid")
+    c.acroForm.checkbox(name="tick", x=50, y=500, checked=True)
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def _ink(pdf: bytes) -> list[int]:
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(pdf)
+    return [int((p.render(scale=1, may_draw_forms=False).to_numpy()[..., :3] < 200).sum()) for p in doc]
+
+
+def test_merge_keeps_filled_form_fields_visible_and_separate():
+    """add_page() orphaned the widgets so a fillable lesson plan came out blank;
+    two plans with the same field name must also each keep their own entry."""
+    import io
+
+    from pypdf import PdfReader
+
+    from assessment_builders.pdf_utils import merge_pdfs
+
+    merged = merge_pdfs([_form_pdf("ONE"), _form_pdf("TWO")])
+    assert len(PdfReader(io.BytesIO(merged)).pages) == 2
+    assert all(n > 1000 for n in _ink(merged))  # entry + tick are painted into the page
+    assert _ink(merged)[0] != _ink(merged)[1]
+
+
+def test_merge_still_skips_unreadable_blob_between_good_ones():
+    import io
+
+    from pypdf import PdfReader
+
+    from assessment_builders.pdf_utils import merge_pdfs
+
+    merged = merge_pdfs([_form_pdf("A"), b"not a pdf", None, _form_pdf("B")])
+    assert len(PdfReader(io.BytesIO(merged)).pages) == 2
