@@ -6,7 +6,7 @@ emailed to and who (besides staff) may read past reports. Parade_Reports and
 Parade_Report_Entries are each night's cadet register as it was sent.
 
 Revision ID: p1a2r3a4d5e6
-Revises: d1r2i3l4l5c6
+Revises: s1t2n3s4n5s6
 Create Date: 2026-11-25 12:00:00.000000
 
 """
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'p1a2r3a4d5e6'
-down_revision: Union[str, Sequence[str], None] = 'd1r2i3l4l5c6'
+down_revision: Union[str, Sequence[str], None] = 's1t2n3s4n5s6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
