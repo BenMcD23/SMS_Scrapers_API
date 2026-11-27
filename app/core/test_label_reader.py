@@ -97,6 +97,42 @@ def test_every_model_failing_is_an_error_for_the_caller(gemini):
         label_reader.read_label(b"x", "image/jpeg")
 
 
+def test_a_stalled_model_is_given_a_short_timeout_then_the_next_is_tried(gemini):
+    gemini.replies[label_reader.GEMINI_MODELS[0]] = httpx.ReadTimeout("The read operation timed out")
+    read, model = label_reader.read_label(b"x", "image/jpeg")
+    assert model == label_reader.GEMINI_MODELS[1]
+    assert read["nsn"] == "8405-99-845-6634"
+    # Not the old 60s: a hung model must not make the cadet wait a minute.
+    assert gemini.calls[0][1]["timeout"] == label_reader.MODEL_TIMEOUT <= 15
+
+
+def test_every_model_timing_out_is_an_error_for_the_caller(gemini):
+    for model in label_reader.GEMINI_MODELS:
+        gemini.replies[model] = httpx.ReadTimeout("The read operation timed out")
+    with pytest.raises(RuntimeError, match="every model failed"):
+        label_reader.read_label(b"x", "image/jpeg")
+    assert len(gemini.calls) == len(label_reader.GEMINI_MODELS)
+
+
+def test_the_deadline_caps_the_wait_and_skips_models_it_has_no_time_for(gemini, monkeypatch):
+    # The first model eats the whole deadline, so the second is not even tried.
+    clock = iter([0.0, 0.0, label_reader.DEADLINE])
+    monkeypatch.setattr(label_reader.time, "monotonic", lambda: next(clock))
+    gemini.replies[label_reader.GEMINI_MODELS[0]] = httpx.ReadTimeout("slow")
+    with pytest.raises(RuntimeError, match="every model failed"):
+        label_reader.read_label(b"x", "image/jpeg")
+    assert len(gemini.calls) == 1
+
+
+def test_a_late_fallback_gets_only_the_time_that_is_left(gemini, monkeypatch):
+    clock = iter([0.0, 0.0, 20.0])
+    monkeypatch.setattr(label_reader.time, "monotonic", lambda: next(clock))
+    gemini.replies[label_reader.GEMINI_MODELS[0]] = httpx.ReadTimeout("slow")
+    _, model = label_reader.read_label(b"x", "image/jpeg")
+    assert model == label_reader.GEMINI_MODELS[1]
+    assert gemini.calls[1][1]["timeout"] == label_reader.DEADLINE - 20.0
+
+
 def test_without_a_key_nothing_is_sent(monkeypatch):
     monkeypatch.setattr(label_reader, "GEMINI_API_KEY", None)
     monkeypatch.setattr(httpx, "post", lambda *a, **k: pytest.fail("sent without a key"))

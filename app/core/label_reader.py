@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import re
+import time
 
 import httpx
 
@@ -68,7 +69,15 @@ def parse_reply(text: str) -> dict:
     return {key: _text(data.get(key)) for key in ("nsn", "size", "description")}
 
 
-def _gemini(model: str, image: bytes, content_type: str) -> dict:
+# A stalled model must not hold the cadet up: each model gets this long, and the
+# whole chain gets the deadline, after which the caller offers typing the number.
+MODEL_TIMEOUT = 15
+DEADLINE = 30
+# Not worth starting another model with less than this left.
+MIN_ATTEMPT = 5
+
+
+def _gemini(model: str, image: bytes, content_type: str, timeout: float = MODEL_TIMEOUT) -> dict:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY not configured")
     resp = httpx.post(
@@ -82,7 +91,7 @@ def _gemini(model: str, image: bytes, content_type: str) -> dict:
             "generationConfig": {"temperature": 0, "maxOutputTokens": 2000,
                                  "responseMimeType": "application/json"},
         },
-        timeout=60,
+        timeout=timeout,
     )
     data = resp.json()
     if "candidates" not in data:
@@ -98,9 +107,14 @@ def read_label(image: bytes, content_type: str) -> tuple[dict, str]:
     Raises RuntimeError when every model fails, so the caller can offer typing
     the number or picking the item instead."""
     last_error: Exception | None = None
+    started = time.monotonic()
     for model in GEMINI_MODELS:
+        remaining = DEADLINE - (time.monotonic() - started)
+        if last_error is not None and remaining < MIN_ATTEMPT:
+            logger.error(f"label read deadline reached, skipping {model}")
+            break
         try:
-            return _gemini(model, image, content_type), model
+            return _gemini(model, image, content_type, min(MODEL_TIMEOUT, remaining)), model
         except Exception as e:
             last_error = e
             logger.error(f"{model} label read failed, trying next: {e}")
