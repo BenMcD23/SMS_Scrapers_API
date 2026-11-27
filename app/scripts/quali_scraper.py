@@ -379,7 +379,14 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
 
         cadetWhts = get_whts(page)
         cadetAttendance = get_attendance(page)
-        contacts = get_contacts(page)
+        def contacts_warning(reason, name=cadetNames[i]):
+            with scraper_lock:
+                scraper_messages.append(json.dumps({
+                    "type": "warning",
+                    "value": f"[CONTACTS NOT READ] {name}: {reason}. Their parent contacts stay as they were.",
+                }))
+
+        contacts = get_contacts(page, warn=contacts_warning)
 
         cadet_data.append({
             "cin": cin,

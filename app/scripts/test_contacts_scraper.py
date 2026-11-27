@@ -197,9 +197,14 @@ def test_a_cadet_with_no_contacts_reads_as_an_empty_list(page):
 def test_one_contact_that_wont_open_drops_the_whole_read(page):
     # Saving only Marian would tell the audit the grandparent was never there.
     page.set_content(_profile(broken_view="ctl03"))
-    assert get_contacts(page) is None
+    warnings = []
+    assert get_contacts(page, warn=warnings.append) is None
+    # Says whose details failed, so the run log points at the contact on Bader.
+    assert len(warnings) == 1 and warnings[0].startswith("Olufunke Adeniyi's details didn't open")
 
 
 def test_no_contacts_tab_is_none(page):
     page.set_content("<p>Not a profile</p>")
-    assert get_contacts(page) is None
+    warnings = []
+    assert get_contacts(page, warn=warnings.append) is None
+    assert warnings[0].startswith("the Contacts tab didn't open")
