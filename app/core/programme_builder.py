@@ -101,6 +101,26 @@ def month_dates(month: str, weekdays: list[int]) -> list[date]:
             if (first + timedelta(days=i)).weekday() in weekdays]
 
 
+def align_nights(old: list[date], new: list[date]) -> dict[int, int]:
+    """Which new night each old night goes on: {old index: new index}. In
+    order, each takes the free new night nearest its day of the month, the
+    same weekday counting 3 days nearer, so a month the squadron came back to
+    halfway through (January) lands halfway through, not on the first nights,
+    and a Wednesday stays a Wednesday. Each leaves room for the old nights
+    after it; any that still don't fit are dropped."""
+    out: dict[int, int] = {}
+    start = 0
+    for i, day in enumerate(old):
+        last = min(len(new) - 1, max(start, len(new) - (len(old) - i)))
+        if start > last:
+            break
+        j = min(range(start, last + 1),
+                key=lambda j: (abs(new[j].day - day.day) + (0 if new[j].weekday() == day.weekday() else 3), j))
+        out[i] = j
+        start = j + 1
+    return out
+
+
 def night_label(d: date) -> str:
     """"Mon 7 Dec": short enough for a quote or a list."""
     return f"{d:%a} {d.day} {d:%b}"

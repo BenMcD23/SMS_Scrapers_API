@@ -76,7 +76,8 @@ class CreateProgramme(BaseModel):
     month: str = Field(pattern=MONTH)
     # "empty": the month's parade nights with nothing on them; "record": what
     # the programme record already has for the month (an imported doc);
-    # "copy": another built month's sessions, week by week.
+    # "copy": another month's sessions (built or an old doc), each night on the
+    # new night nearest its date (core.programme_builder.align_nights).
     start: Literal["empty", "record", "copy"] = "empty"
     copy_from: str | None = Field(None, pattern=MONTH)
 
@@ -471,14 +472,16 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
         old_nights = source.nights if source else _record_nights(db, body.copy_from)
         if not old_nights:
             raise HTTPException(status_code=404, detail="There's nothing to copy for that month")
-        dates = pb.month_dates(body.month, pb.PARADE_WEEKDAYS) or []
-        for i, d in enumerate(dates[:MAX_NIGHTS]):
-            if i >= len(old_nights):
+        dates = pb.month_dates(body.month, pb.PARADE_WEEKDAYS)[:MAX_NIGHTS]
+        onto = pb.align_nights([n.date for n in old_nights], dates)
+        copied = {j: old_nights[i] for i, j in onto.items()}
+        for j, d in enumerate(dates):
+            old = copied.get(j)
+            if old is None:
                 draft.nights.append(ProgrammeDraftNight(date=d))
             elif not source:
-                draft.nights.append(_from_record(old_nights[i], d, _room_ids(db)))
+                draft.nights.append(_from_record(old, d, _room_ids(db)))
             else:
-                old = old_nights[i]
                 night = ProgrammeDraftNight(date=d, uniform=old.uniform, duty_nco=old.duty_nco)
                 draft.nights.append(night)
                 for s in old.slots:
