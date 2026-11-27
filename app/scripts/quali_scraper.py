@@ -7,6 +7,7 @@ from playwright.sync_api import Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scripts.attendance import get_attendance
+from scripts.contacts_scraper import get_contacts, get_own_contact_methods
 from scripts.profiles import CADETS, collect_profile_links, open_profile
 from scripts.reports import page_through_report
 from scripts.tables import ensure_all_rows_shown, entries_total, read_rows, wait_for_full_draw
@@ -354,6 +355,9 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
         except Exception:
             flight = None
 
+        # Only on the summary the profile opens on, so read before any tab.
+        contact_methods = get_own_contact_methods(page)
+
         # Classification
         classification = classifications_by_name.get(_norm_name(f"{first_name} {last_name}"))
         if classification is None:
@@ -375,6 +379,7 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
 
         cadetWhts = get_whts(page)
         cadetAttendance = get_attendance(page)
+        contacts = get_contacts(page)
 
         cadet_data.append({
             "cin": cin,
@@ -387,6 +392,8 @@ def get_cadet_info_and_qualifications(page: Page, cadetNames, numberOfCadets, sc
             "qualifications": cadetQualifications,
             "whts": cadetWhts,
             "attendance": cadetAttendance,
+            "contact_methods": contact_methods,
+            "contacts": contacts,
         })
 
     with scraper_lock:

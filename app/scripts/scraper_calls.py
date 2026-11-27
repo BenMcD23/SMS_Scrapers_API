@@ -20,6 +20,7 @@ from database.models import (
     Cadet,
     CadetAbsence,
     CadetAttendance,
+    CadetContact,
     CadetDietary,
     CadetEvent,
     CadetMedical,
@@ -76,6 +77,32 @@ def remove_stale_qualifications(db_session, cadet, scraped_types):
     for cq in stale:
         db_session.delete(cq)
     return len(stale)
+
+
+def save_contacts(db_session, cadet, entry, now):
+    """Store the contact details one cadet's profile gave.
+
+    None means that part of the page didn't read, so what's stored stays. The
+    contacts are otherwise replaced wholesale: Bader is the record, and a
+    parent removed there should leave the audit too.
+    """
+    methods = entry.get("contact_methods")
+    if methods is not None:
+        cadet.contact_methods = methods
+
+    contacts = entry.get("contacts")
+    if contacts is None:
+        return
+    db_session.query(CadetContact).filter(CadetContact.cadet_id == cadet.cin).delete(synchronize_session=False)
+    db_session.add_all([
+        CadetContact(
+            cadet_id=cadet.cin, position=i, name=c["name"], title=c.get("title"),
+            relation=c.get("relationship"), next_of_kin=bool(c.get("next_of_kin")),
+            contact_methods=c.get("contact_methods") or [],
+        )
+        for i, c in enumerate(contacts)
+    ])
+    cadet.contacts_checked_at = now
 
 
 def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, stop_event, on_context_ready=None):
@@ -251,6 +278,8 @@ def info_and_quali_scraper(scraper_messages, scraper_lock, user_id, db_session, 
                 db_session.query(CadetWht).filter(CadetWht.cadet_id == cin).delete(synchronize_session=False)
                 db_session.add_all([CadetWht(cadet_id=cin, **w) for w in whts])
                 wht_rows += len(whts)
+
+            save_contacts(db_session, cadet, entry, datetime.now())
 
             saved += 1
 

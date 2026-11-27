@@ -28,8 +28,14 @@ def _cell_value(value):
     return value
 
 
-def table_to_xlsx(headers: list[str], rows: list[list], sheet_title: str = "Sheet1") -> bytes:
-    """A single-sheet workbook of ``rows`` under ``headers``, as bytes."""
+def table_to_xlsx(
+    headers: list[str], rows: list[list], sheet_title: str = "Sheet1", fills: dict[str, str] | None = None,
+) -> bytes:
+    """A single-sheet workbook of ``rows`` under ``headers``, as bytes.
+
+    ``fills`` colours every cell whose value is exactly a key, e.g.
+    {"Good": "D1FAE5", "Bad": "FEE2E2"}, so a pass/fail sheet reads at a glance.
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
     # Excel caps sheet names at 31 chars and forbids a handful of characters.
@@ -46,6 +52,8 @@ def table_to_xlsx(headers: list[str], rows: list[list], sheet_title: str = "Shee
     widths = [len(str(h)) for h in headers]
     for row in ws.iter_rows(min_row=2):
         for i, cell in enumerate(row):
+            if fills and isinstance(cell.value, str) and cell.value in fills:
+                cell.fill = PatternFill("solid", fgColor=fills[cell.value])
             if isinstance(cell.value, date):
                 cell.number_format = "DD/MM/YYYY"
                 length = 10

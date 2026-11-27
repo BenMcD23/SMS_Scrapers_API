@@ -18,6 +18,7 @@ from database.models import (
     Cadet,
     CadetAbsence,
     CadetAttendance,
+    CadetContact,
     CadetDietary,
     CadetEvent,
     CadetLeavingProcess,
@@ -152,6 +153,63 @@ def test_attendance_is_replaced_only_when_something_was_read(db, bader, monkeypa
     calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
     db.expire_all()
     assert sorted(a.date.day for a in db.query(CadetAttendance).all()) == [1, 8]
+
+
+MUM = {"name": "Sarah Able", "title": "Mrs", "relationship": "Mother", "next_of_kin": True,
+       "contact_methods": [{"method": "Mobile Phone", "detail": "07700900111"}]}
+DAD = {"name": "David Able", "title": None, "relationship": "Father", "next_of_kin": False, "contact_methods": []}
+OWN = [{"method": "Primary Email", "detail": "amy@317atc.co.uk"}]
+
+
+def test_contacts_and_the_cadets_own_methods_are_saved_in_baders_order(db, bader, monkeypatch):
+    _quali(monkeypatch, [_amy(contact_methods=OWN, contacts=[MUM, DAD])])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    amy = db.get(Cadet, 1001)
+    assert amy.contact_methods == OWN and amy.contacts_checked_at is not None
+    assert [(c.position, c.name, c.relation, c.next_of_kin, c.contact_methods) for c in amy.contacts] == [
+        (0, "Sarah Able", "Mother", True, MUM["contact_methods"]),
+        (1, "David Able", "Father", False, []),
+    ]
+
+
+def test_a_new_read_replaces_the_contacts_so_a_removed_parent_goes(db, bader, monkeypatch):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
+    db.add(CadetContact(cadet_id=1001, position=0, name="Old Contact", next_of_kin=True, contact_methods=[]))
+    db.commit()
+    _quali(monkeypatch, [_amy(contacts=[MUM])])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert [c.name for c in db.query(CadetContact).all()] == ["Sarah Able"]
+
+
+def test_a_cadet_bader_lists_nobody_for_is_saved_as_checked_with_none(db, bader, monkeypatch):
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able"))
+    db.add(CadetContact(cadet_id=1001, position=0, name="Old Contact", next_of_kin=True, contact_methods=[]))
+    db.commit()
+    _quali(monkeypatch, [_amy(contacts=[])])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    assert db.query(CadetContact).count() == 0
+    assert db.get(Cadet, 1001).contacts_checked_at is not None
+
+
+def test_contacts_or_methods_that_didnt_read_keep_what_is_stored(db, bader, monkeypatch):
+    seen = datetime(2026, 1, 1)
+    db.add(Cadet(cin=1001, first_name="Amy", last_name="Able", contact_methods=OWN, contacts_checked_at=seen))
+    db.add(CadetContact(cadet_id=1001, position=0, name="Sarah Able", next_of_kin=True, contact_methods=[]))
+    db.commit()
+    # _amy() has neither key, like a profile whose grids never loaded.
+    _quali(monkeypatch, [_amy(contact_methods=None, contacts=None)])
+    run = Run()
+    calls.info_and_quali_scraper(run.messages, run.lock, 1, db, run.stop)
+    db.expire_all()
+    amy = db.get(Cadet, 1001)
+    assert amy.contact_methods == OWN and amy.contacts_checked_at == seen
+    assert [c.name for c in amy.contacts] == ["Sarah Able"]
 
 
 @pytest.mark.parametrize("unread", [None, []])
