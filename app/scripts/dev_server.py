@@ -184,6 +184,7 @@ def seed(db, now: datetime | None = None) -> bool:
 
     seed_portal(db, cadets, rng, now)
     seed_flying_paperwork(db, cadets, now)
+    seed_contacts(db, cadets, now)
 
     db.add(CadetMedical(cadet_id=cadets[3].cin, allergy_name="Peanuts", auto_injector="Yes",
                         severity="Severe", details="Carries two pens"))
@@ -209,6 +210,52 @@ def seed(db, now: datetime | None = None) -> bool:
 
     db.commit()
     return True
+
+
+def _methods(phone: str | None = None, email: str | None = None, bader: str | None = None) -> list[dict]:
+    """Contact methods as the scraper stores them, in Bader's names."""
+    return [m for m in (
+        {"method": "Mobile Phone", "detail": phone} if phone else None,
+        {"method": "Personal Account (Bader)", "detail": bader} if bader else None,
+        {"method": "Primary Email", "detail": email} if email else None,
+    ) if m]
+
+
+def seed_contacts(db, cadets, now: datetime) -> None:
+    """Bader contact details for the contact audit, with every way to fail it:
+    most cadets pass with two parents; others have no phone, a parent's phone
+    or email, one parent missing an email, no contacts at all, or haven't been
+    scraped since the contacts were added (so "Not checked" shows)."""
+    from database.models import CadetContact
+
+    for i, c in enumerate(cadets):
+        if i % 11 == 10:
+            continue  # contact_methods and contacts_checked_at stay None
+        last, low = c.last_name, f"{c.first_name}.{c.last_name}".lower()
+        mum = (f"07700902{i:03d}", f"{last.lower()}.mum{i}@example.com")
+        dad = (f"07700903{i:03d}", f"{last.lower()}.dad{i}@example.com")
+        own_phone, own_email = f"07700904{i:03d}", f"{low}{i}@example.com"
+        if i % 7 == 1:
+            own_phone = mum[0].replace("07700", "+447700")  # the same phone, written the other way
+        elif i % 7 == 3:
+            own_phone = None
+        elif i % 7 == 6:
+            own_email = dad[1].upper()
+        c.contact_methods = _methods(own_phone, own_email, f"{low}{i}@rafac.mod.gov.uk")
+        c.contacts_checked_at = now - timedelta(days=i % 5)
+
+        if i % 9 == 5:
+            continue  # read, and nobody listed
+        contacts = [("Mother", "Mrs", f"Sarah {last}", _methods(*mum), True)]
+        if i % 7 == 4:
+            contacts = [("Grandparent", "Mrs", f"Joan {last}", _methods(phone=mum[0]), True)]
+        elif i % 3 != 0:
+            contacts.append(("Father", "Mr", f"David {last}", _methods(*dad), False))
+        db.add_all([
+            CadetContact(cadet_id=c.cin, position=n, name=name, title=title, relation=relation,
+                         next_of_kin=nok, contact_methods=methods)
+            for n, (relation, title, name, methods, nok) in enumerate(contacts)
+        ])
 
 
 def ensure_dev_cadet(db, now: datetime | None = None) -> bool:

@@ -31,6 +31,15 @@ class Cadet(Base):
     # Bader's next-of-kin addresses; the OC can add more on the OC dashboard. It
     # only ever adds, so nothing the OC typed is lost.
     parent_emails = Column(Text, nullable=True)
+    # The cadet's own contact methods as Bader lists them on their profile:
+    # [{"method": "Mobile Phone", "detail": "07700900000"}, ...]. None until a
+    # scrape has read them. Kept apart from email/phone_number above, which
+    # come from Workspace and the cadet themselves; this is what Bader holds,
+    # and that is what the contact audit checks.
+    contact_methods = Column(JSON, nullable=True)
+    # When the scraper last read the Contacts tab. None means never, so the
+    # audit can say "not checked" rather than "no parent contacts".
+    contacts_checked_at = Column(DateTime, nullable=True)
 
     date_of_birth = Column(DateTime, nullable=True)
     rank          = Column(Text, nullable=True)
@@ -74,6 +83,8 @@ class Cadet(Base):
     activity_logs     = relationship("ActivityLog", back_populates="cadet", cascade="all, delete-orphan")
     drill_lessons     = relationship("CadetDrillLesson", back_populates="cadet", cascade="all, delete-orphan")
     drill_tests       = relationship("CadetDrillTest",   back_populates="cadet", cascade="all, delete-orphan")
+    contacts          = relationship("CadetContact", back_populates="cadet", cascade="all, delete-orphan",
+                                     order_by="CadetContact.position")
 
 class RemovedCadet(Base):
     """A cadet staff removed after they left SMS. The quali scraper skips these
@@ -170,6 +181,26 @@ class CadetDietary(Base):
     details  = Column(Text,       nullable=True)
 
     cadet = relationship("Cadet", back_populates="dietary")
+
+
+class CadetContact(Base):
+    """A parent, guardian or other contact from the Contacts tab of a cadet's
+    Bader profile. Replaced wholesale each time the tab is read."""
+    __tablename__ = "Cadet_Contacts"
+
+    id           = Column(Integer,    primary_key=True, autoincrement=True)
+    cadet_id     = Column(BigInteger, ForeignKey("Cadets.cin", ondelete="CASCADE"), nullable=False, index=True)
+    position     = Column(Integer,    nullable=False, default=0)  # Bader's order
+    name         = Column(Text,       nullable=False)
+    title        = Column(Text,       nullable=True)
+    # Named for Bader's column; the attribute can't be "relationship", which
+    # would hide SQLAlchemy's relationship() in this class body.
+    relation     = Column("relationship", Text, nullable=True)  # "Mother", "Grandparent", ...
+    next_of_kin  = Column(Boolean,    nullable=False, default=False)
+    # Same shape as Cadet.contact_methods.
+    contact_methods = Column(JSON,    nullable=False, default=list)
+
+    cadet = relationship("Cadet", back_populates="contacts")
 
 
 class CadetTheoryProgress(Base):

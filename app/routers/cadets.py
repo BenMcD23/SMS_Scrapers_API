@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import Session, selectinload
 
-from core import cache, portal_data
+from core import cache, contact_audit, portal_data
 from core.attendance import attendance_state
 from core.audit import record_audit
 from core.db import escape_like, get_db
@@ -442,6 +442,54 @@ def audit_export(
         io.BytesIO(xlsx),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": content_disposition("attachment", f"{body.filename}.xlsx", "Audit.xlsx")},
+    )
+
+
+# ─── Contact details audit ────────────────────────────────────────────────────
+
+def _contact_audit_rows(db: Session) -> list[dict]:
+    cadets = (
+        db.query(Cadet)
+        .filter(Cadet.missing_since.is_(None))  # gone from SMS: nobody to chase
+        .options(selectinload(Cadet.contacts))
+        .order_by(Cadet.last_name, Cadet.first_name)
+        .all()
+    )
+    return [contact_audit.audit_cadet(c) for c in cadets]
+
+
+@router.get("/cadets/audit/contacts")
+def audit_contacts(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """Each cadet's Bader contact details checked: their own email and phone,
+    that neither is a parent's, and a parent contact with both. See
+    core/contact_audit.py for the rules."""
+    rows = _contact_audit_rows(db)
+    # Every parent's phone and email in one answer: worth a record of who read it.
+    record_audit(db, idinfo, action="read", resource="cadet_contacts", detail={"cadet_count": len(rows)})
+    return {"checks": [{"key": k, "label": label} for k, label in contact_audit.CHECKS], "cadets": rows}
+
+
+@router.get("/cadets/audit/contacts/export")
+def audit_contacts_export(
+    db: Session = Depends(get_db),
+    idinfo: dict = Depends(require_staff),
+):
+    """The contact audit for every cadet as an .xlsx, Good/Bad per check.
+    Built here rather than from the page's rows so the sheet always holds
+    every cadet, whatever the page was filtered to."""
+    rows = _contact_audit_rows(db)
+    record_audit(db, idinfo, action="export", resource="cadet_contacts", detail={"cadet_count": len(rows)})
+    headers, table = contact_audit.export_table(rows)
+    xlsx = table_to_xlsx(headers, table, sheet_title="Contact audit",
+                         fills={"Good": "D1FAE5", "Bad": "FEE2E2", "Not checked": "FEF3C7"})
+    name = f"Contact audit {date.today().isoformat()}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": content_disposition("attachment", name, "Contact audit.xlsx")},
     )
 
 
