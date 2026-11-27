@@ -20,6 +20,7 @@ built month is indistinguishable downstream from an imported one.
 
 import io
 import logging
+import re
 from datetime import date, datetime
 from datetime import date as Date  # NightBody has a field called date
 from typing import Literal
@@ -40,21 +41,22 @@ from core.config import SITE_BASE_URL
 from core.db import get_db, get_or_create_user
 from core.emailer import programme_comment_email_html, programme_comment_subject, send_email
 from core.http import content_disposition
-from core.programme import CATEGORIES
 from core.security import get_user_role, require_staff, require_staff_or_nco
 from database.models import (
+    Event317,
     ProgrammeBankItem,
     ProgrammeChange,
     ProgrammeComment,
     ProgrammeDraft,
     ProgrammeDraftNight,
+    ProgrammeKind,
     ProgrammeNight,
     ProgrammeRoom,
     ProgrammeSession,
     ProgrammeSlot,
     User,
 )
-from form_generators.programme_pdf import build_programme_pdf
+from form_generators.programme_pdf import build_programme_pdf, when_label
 from routers import programme as website
 
 logger = logging.getLogger(__name__)
@@ -78,8 +80,15 @@ class CreateProgramme(BaseModel):
     copy_from: str | None = Field(None, pattern=MONTH)
 
 
+class KeyDate(BaseModel):
+    when: str = Field(min_length=1, max_length=40)
+    what: str = Field(min_length=1, max_length=120)
+
+
 class ProgrammeBody(BaseModel):
+    # Only the fields sent change.
     notes: str | None = Field(None, max_length=2000)
+    key_dates: list[KeyDate] | None = Field(None, max_length=15)
 
 
 class NightBody(BaseModel):
@@ -127,6 +136,12 @@ class BankBody(BaseModel):
 
 class BankImport(BaseModel):
     titles: list[str] = Field(min_length=1, max_length=100)
+
+
+class KindBody(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    colour: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    hidden: bool = False
 
 
 class RoomBody(BaseModel):
@@ -238,7 +253,7 @@ def _validate_slot(db: Session, draft: ProgrammeDraft, body: SlotBody, ctx: pb.C
         unknown = [f for f in body.flights if f not in ctx.flights]
         if unknown:
             raise HTTPException(status_code=422, detail=f"There's no {unknown[0]} Flight")
-    if body.category is not None and body.category not in CATEGORIES:
+    if body.category is not None and body.category not in programme_record.kind_labels(db):
         raise HTTPException(status_code=422, detail="Pick a kind of session from the list")
     if body.title is not None and not body.title.strip():
         raise HTTPException(status_code=422, detail="Give the session a name")
@@ -311,6 +326,7 @@ def _detail(db: Session, draft: ProgrammeDraft, idinfo: dict) -> dict:
         "name": _programme_name(draft.month),
         "status": _status(draft),
         "notes": draft.notes,
+        "key_dates": draft.key_dates or [],
         "can_edit": is_staff,
         "updated_at": _iso(draft.updated_at), "updated_by": draft.updated_by,
         "published_at": _iso(draft.published_at), "published_by": draft.published_by,
@@ -338,6 +354,17 @@ def _bank_json(item: ProgrammeBankItem, usage: dict) -> dict:
             "room_id": item.room_id, "instructor": item.instructor, "subject_key": item.subject_key,
             "part": item.part, "notes": item.notes, "active": item.active, "times_run": times,
             "last_run": _iso(last)}
+
+
+def _event_dates(db: Session, first: date, after: date) -> list[dict]:
+    """The squadron's events (from Bader) in a month, as a new programme's
+    important dates to start from."""
+    events = (db.query(Event317)
+              .filter(Event317.date_from < datetime.combine(after, datetime.min.time()),
+                      Event317.date_to >= datetime.combine(first, datetime.min.time()))
+              .order_by(Event317.date_from, Event317.title).limit(15))
+    return [{"when": when_label(e.date_from.date(), e.date_to.date())[:40], "what": e.title.strip()[:120]}
+            for e in events]
 
 
 # ── months ──────────────────────────────────────────────────────────────────
@@ -376,7 +403,7 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
     first, after = pb.month_bounds(body.month)
     now = datetime.now()
     draft = ProgrammeDraft(month=body.month, created_at=now, created_by=actor_name(idinfo), updated_at=now,
-                           updated_by=actor_name(idinfo))
+                           updated_by=actor_name(idinfo), key_dates=_event_dates(db, first, after))
     db.add(draft)
 
     if body.start == "record":
@@ -431,8 +458,13 @@ def get_month(month: str, db: Session = Depends(get_db), idinfo: dict = Depends(
 def edit_month(month: str, body: ProgrammeBody, db: Session = Depends(get_db),
                idinfo: dict = Depends(require_staff)) -> dict:
     draft = _draft(db, month)
-    draft.notes = (body.notes or "").strip() or None
-    _touch(draft, idinfo, "Changed the programme's notes")
+    sent = body.model_fields_set
+    if "notes" in sent:
+        draft.notes = (body.notes or "").strip() or None
+        _touch(draft, idinfo, "Changed the programme's notes")
+    if "key_dates" in sent:
+        draft.key_dates = [{"when": d.when.strip(), "what": d.what.strip()} for d in body.key_dates or []]
+        _touch(draft, idinfo, "Changed the important dates")
     db.commit()
     return _detail(db, draft, idinfo)
 
@@ -680,22 +712,27 @@ def fill(month: str, body: FillBody, db: Session = Depends(get_db), idinfo: dict
 def _pdf(db: Session, draft: ProgrammeDraft) -> bytes:
     ctx = pb.build_context(db, draft)
     first, _ = pb.month_bounds(draft.month)
+    colours = {k["key"]: k["colour"] for k in programme_record.kinds(db)}
 
     def running(slot: ProgrammeSlot) -> str:
-        names = [ctx.people[k].name for k in slot.people or []
-                 if k in ctx.people and ctx.people[k].kind in ("staff", "nco")]
-        return ", ".join(filter(None, [(slot.instructor or "").strip(), *names]))
+        # The doc's "Sgt Davies & Cpl Malik": rank and surname.
+        names = [" ".join(filter(None, [p.rank, p.last_name])) for k in slot.people or []
+                 if (p := ctx.people.get(k)) and p.kind in ("staff", "nco")]
+        return " & ".join(filter(None, [(slot.instructor or "").strip(), *names]))
 
+    rooms = sorted(ctx.rooms.values(), key=lambda r: (r.position, r.name))
+    used = {s.room_id for n in draft.nights for s in n.slots}
     return build_programme_pdf({
-        "title": f"317 (City of Ely) Squadron — {first:%B %Y} programme",
-        "subtitle": "Parade nights 19:15–21:15. Check the SMS for changes after this was printed.",
+        "title": f"{first:%B %Y}",
         "notes": draft.notes,
-        "flights": [{"key": f, "label": pb.flight_label(f)} for f in ctx.flights],
+        "key_dates": draft.key_dates or [],
+        "rooms": [{"name": r.name, "show": r.active or r.id in used} for r in rooms],
+        "flights": [{"key": f, "label": f"{pb.FLIGHT_LABELS[f]} Flight" if f in pb.FLIGHT_LABELS else f"{f} Flight",
+                     "apart": f in pb.FLIGHT_LABELS} for f in ctx.flights],
         "nights": [{
-            "date": n.date, "uniform": n.uniform, "duty_nco": n.duty_nco, "notes": n.notes,
+            "date": n.date, "uniform": n.uniform, "duty_nco": n.duty_nco,
             "slots": [{"id": s.id, "period": s.period, "flights": pb.slot_flights(s, ctx.flights),
-                       "title": s.title, "category": s.category, "running": running(s),
-                       "who": pb.who_label(s.flights or [], ctx.flights),
+                       "title": s.title, "colour": colours.get(s.category), "running": running(s),
                        "room": ctx.rooms[s.room_id].name if s.room_id in ctx.rooms else None}
                       for s in n.slots],
         } for n in draft.nights],
@@ -767,7 +804,7 @@ def list_bank(db: Session = Depends(get_db), idinfo: dict = Depends(require_staf
 
 
 def _check_bank(db: Session, body: BankBody) -> None:
-    if body.category not in CATEGORIES:
+    if body.category not in programme_record.kind_labels(db):
         raise HTTPException(status_code=422, detail="Pick a kind of session from the list")
     if body.room_id is not None and not db.get(ProgrammeRoom, body.room_id):
         raise HTTPException(status_code=422, detail="That room isn't in the list")
@@ -858,6 +895,69 @@ def import_bank(body: BankImport, db: Session = Depends(get_db), idinfo: dict = 
         added += 1
     db.commit()
     return {"added": added}
+
+
+# ── kinds ───────────────────────────────────────────────────────────────────
+
+@router.get("/kinds")
+def list_kinds(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff_or_nco)) -> list[dict]:
+    return programme_record.kinds(db)
+
+
+def _label_free(db: Session, label: str, key: str | None = None) -> None:
+    if any(k["label"].casefold() == label.casefold() and k["key"] != key for k in programme_record.kinds(db)):
+        raise HTTPException(status_code=409, detail="There's already a kind with that name")
+
+
+@router.post("/kinds", status_code=201)
+def add_kind(body: KindBody, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)) -> list[dict]:
+    """A new kind of session. Its key comes from its name and never changes,
+    so renaming it later keeps every session that has it."""
+    label = body.label.strip()
+    key = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:40]
+    if not key:
+        raise HTTPException(status_code=422, detail="Give the kind a name with a letter or number in it")
+    _label_free(db, label)
+    if key in programme_record.kind_labels(db):
+        raise HTTPException(status_code=409, detail="There's already a kind with that name")
+    position = (db.query(func.max(ProgrammeKind.position)).scalar() or 0) + 1
+    db.add(ProgrammeKind(key=key, label=label, colour=body.colour, hidden=body.hidden, position=position))
+    db.commit()
+    return programme_record.kinds(db)
+
+
+@router.put("/kinds/{key}")
+def edit_kind(key: str, body: KindBody, db: Session = Depends(get_db),
+              idinfo: dict = Depends(require_staff)) -> list[dict]:
+    """Rename, colour or hide a kind, built-in ones included. Hiding takes it
+    out of the pickers; sessions that have it keep it."""
+    if key not in programme_record.kind_labels(db):
+        raise HTTPException(status_code=404, detail="That kind isn't in the list")
+    label = body.label.strip()
+    _label_free(db, label, key)
+    row = db.get(ProgrammeKind, key) or ProgrammeKind(key=key, position=0)
+    row.label, row.colour, row.hidden = label, body.colour, body.hidden
+    db.merge(row)
+    db.commit()
+    return programme_record.kinds(db)
+
+
+@router.delete("/kinds/{key}")
+def delete_kind(key: str, db: Session = Depends(get_db), idinfo: dict = Depends(require_staff)) -> list[dict]:
+    """Only a kind staff added and nothing has: the built-in ones and any in
+    use are hidden instead, so no session or past night loses its kind."""
+    if key in programme_record.CATEGORIES:
+        raise HTTPException(status_code=409, detail="That kind is built in: hide it instead")
+    row = db.get(ProgrammeKind, key)
+    if not row:
+        raise HTTPException(status_code=404, detail="That kind isn't in the list")
+    used = any(db.query(model).filter(model.category == key).first()
+               for model in (ProgrammeSlot, ProgrammeBankItem, ProgrammeSession))
+    if used:
+        raise HTTPException(status_code=409, detail="Sessions have that kind: hide it instead")
+    db.delete(row)
+    db.commit()
+    return programme_record.kinds(db)
 
 
 # ── rooms ───────────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.llm import generate
-from database.models import Cadet, CadetAttendance, ProgrammeNight, ProgrammeSession
+from database.models import Cadet, CadetAttendance, ProgrammeKind, ProgrammeNight, ProgrammeSession
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,28 @@ CATEGORIES: dict[str, str] = {
     "social": "Social and events",
     "other": "Other",
 }
+
+
+
+def kinds(db: Session) -> list[dict]:
+    """Every kind of session, built-in first in their order then the ones
+    staff added: [{key, label, colour, hidden, builtin}]. A Programme_Kinds row
+    with a built-in key renames, colours or hides it."""
+    rows = {k.key: k for k in db.query(ProgrammeKind).order_by(ProgrammeKind.position, ProgrammeKind.label)}
+    out = []
+    for key, label in CATEGORIES.items():
+        row = rows.pop(key, None)
+        out.append({"key": key, "label": row.label if row else label, "colour": row.colour if row else None,
+                    "hidden": bool(row and row.hidden), "builtin": True})
+    out += [{"key": r.key, "label": r.label, "colour": r.colour, "hidden": r.hidden, "builtin": False}
+            for r in rows.values()]
+    return out
+
+
+def kind_labels(db: Session) -> dict[str, str]:
+    """Key to label for every kind, hidden ones included: old sessions keep theirs."""
+    return {k["key"]: k["label"] for k in kinds(db)}
+
 
 # First match wins, so the specific come before the general ("drill" is in
 # "Blue Drill Training" and "Remembrance Parade Practice" is drill too).
@@ -363,17 +385,18 @@ def programme_stats(db: Session, days: int = 365, today: date | None = None) -> 
             "sessions": _night_summary(n),
         })
 
+    labels = kind_labels(db)
     return {
         "days": days,
         "nights": night_rows,
         "categories": [
-            {"key": key, "label": CATEGORIES[key], "nights": len(c["nights"]), "rate": _rate(c["present"], c["total"]),
+            {"key": key, "label": labels[key], "nights": len(c["nights"]), "rate": _rate(c["present"], c["total"]),
              "authorised_rate": _rate(c["authorised"], c["total"]), "cadet_nights": c["total"]}
-            for key in CATEGORIES if (c := by_category.get(key)) and c["total"]
+            for key in labels if (c := by_category.get(key)) and c["total"]
         ],
         # Activities seen at least twice: once is one night, not a pattern.
         "activities": sorted(
-            ({"name": a["name"], "category": a["category"], "label": CATEGORIES[a["category"]],
+            ({"name": a["name"], "category": a["category"], "label": labels.get(a["category"], a["category"]),
               "times": len(a["nights"]), "rate": _rate(a["present"], a["total"])}
              for a in by_activity.values() if len(a["nights"]) >= 2 and a["total"]),
             key=lambda a: (a["rate"], a["name"]),
@@ -420,11 +443,12 @@ def cadet_sessions(db: Session, cin: int, days: int = 365, today: date | None = 
             totals[category][state] += 1
         rows.append({"date": n.date.isoformat(), "state": state,
                      "activities": sorted({s.activity for s in mine})})
+    labels = kind_labels(db)
     return {
         "flight": flight or None,
         "nights": rows,
         "by_category": [
-            {"category": CATEGORIES[k], **totals[k], "rate": _rate(totals[k][PRESENT], sum(totals[k].values()))}
-            for k in CATEGORIES if k in totals
+            {"category": labels[k], **totals[k], "rate": _rate(totals[k][PRESENT], sum(totals[k].values()))}
+            for k in labels if k in totals
         ],
     }

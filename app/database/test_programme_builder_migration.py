@@ -13,7 +13,7 @@ import database.models  # noqa: F401  (registers every table on Base)
 from database.database import Base
 
 MIGRATION = Path(__file__).parent / "alembic/versions/p7b8u9i0l1d2_add_programme_builder.py"
-TABLES = {"Programme_Rooms", "Programme_Bank_Items", "Programme_Drafts", "Programme_Draft_Nights",
+TABLES = {"Programme_Rooms", "Programme_Kinds", "Programme_Bank_Items", "Programme_Drafts", "Programme_Draft_Nights",
           "Programme_Slots", "Programme_Comments", "Programme_Changes"}
 
 
@@ -57,3 +57,21 @@ def test_downgrade_removes_every_table():
     assert TABLES <= set(sa.inspect(engine).get_table_names())
     _run(engine, "downgrade")
     assert TABLES & set(sa.inspect(engine).get_table_names()) == set()
+
+
+def test_upgrade_seeds_the_rooms_and_a_bank_of_common_sessions():
+    # Production starts with the old docs' rooms and most-run sessions, each
+    # a valid kind and in a room that exists, so the builder works on day one.
+    from core.programme import CATEGORIES
+
+    engine = sa.create_engine("sqlite://")
+    _before(engine)
+    _run(engine, "upgrade")
+    with engine.connect() as conn:
+        rooms = dict(conn.execute(sa.text('SELECT id, name FROM "Programme_Rooms"')).all())
+        bank = conn.execute(sa.text('SELECT title, category, room_id FROM "Programme_Bank_Items"')).all()
+    assert "Drill Hall" in rooms.values()
+    assert len(bank) == len({t.lower() for t, _, _ in bank}) > 30
+    assert all(k in CATEGORIES for _, k, _ in bank)
+    assert all(r is None or r in rooms for _, _, r in bank)
+    assert ("Drill", "drill", next(i for i, n in rooms.items() if n == "Drill Hall")) in bank

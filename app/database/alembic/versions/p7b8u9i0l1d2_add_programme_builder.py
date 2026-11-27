@@ -5,12 +5,18 @@ session bank, rooms, each month's nights and placed sessions, the comment
 threads NCOs and staff leave on it, and its change history
 (routers/programme_builder.py).
 
+It also fills in the squadron's rooms and a bank of the sessions the old
+programme docs (2024-26) ran most, so the builder is useful on day one. They
+are ordinary rows: staff edit or delete them like any they add.
+
 Revision ID: p7b8u9i0l1d2
 Revises: s1t2n3s4n5s6
 Create Date: 2026-11-25 20:00:00.000000
 
 """
 from typing import Sequence, Union
+
+from datetime import datetime
 
 from alembic import op
 import sqlalchemy as sa
@@ -26,8 +32,58 @@ def _index(table: str, column: str) -> None:
     op.create_index(f'ix_{table}_{column}', table, [column])
 
 
+# In the order of the old docs' room key, which the printed programme colours by.
+ROOMS = ['Drill Hall', 'Upstairs Classroom', 'Hangar', 'IT Suite', 'Outside', 'AR Classroom']
+
+# (title, kind, whole night, room): the old docs' most-run sessions.
+BANK = [
+    ('Drill', 'drill', False, 'Drill Hall'),
+    ('Inspection', 'drill', False, 'Drill Hall'),
+    ('Progressive Drill', 'drill', False, 'Drill Hall'),
+    ('5x5 Practice', 'drill', False, 'Drill Hall'),
+    ('Inter Flight Drill', 'drill', False, 'Drill Hall'),
+    ('Passing Out Parade Practice', 'drill', False, 'Drill Hall'),
+    ('Banner Drill', 'drill', False, 'Drill Hall'),
+    ('Classifications', 'classifications', False, None),
+    ('Classification Exams', 'classifications', False, None),
+    ('History of the ATC', 'lessons', False, None),
+    ('History of the RAF', 'lessons', False, None),
+    ('History of Flight', 'lessons', False, None),
+    ('Rank System', 'lessons', False, None),
+    ('Squadron Security', 'lessons', False, None),
+    ('Principles of Flight', 'lessons', False, None),
+    ('Fieldcraft', 'fieldcraft', False, None),
+    ('Map Reading', 'fieldcraft', False, None),
+    ('Field Cooking', 'fieldcraft', False, 'Outside'),
+    ('Essential First Aid', 'first_aid', False, None),
+    ('Casualty Simulation', 'first_aid', False, None),
+    ('Flight Sim', 'stem', False, 'IT Suite'),
+    ('Space', 'stem', False, None),
+    ('Basic Radio Comms', 'stem', False, None),
+    ('Bronze Cyber', 'stem', False, 'IT Suite'),
+    ('Sports', 'sport', False, 'Outside'),
+    ('Inter Flight Sports', 'sport', False, 'Outside'),
+    ('Archery', 'sport', False, 'Hangar'),
+    ('Air Rifle Training', 'sport', False, 'AR Classroom'),
+    ('DofE Physical', 'dofe', False, None),
+    ('DofE Prep', 'dofe', False, None),
+    ('Band', 'music', False, None),
+    ('Leadership', 'leadership', False, None),
+    ('Cadets Own Session', 'leadership', False, None),
+    ('NCO Session', 'leadership', False, None),
+    ('MOI Lesson', 'leadership', False, None),
+    ('Flight Time', 'admin', False, None),
+    ('Uniform Preparation', 'admin', False, None),
+    ('Uniform Measurement', 'admin', False, None),
+    ('Logbook Catchup', 'admin', False, None),
+    ('Recruitment Night', 'admin', True, None),
+    ('Social Night', 'social', True, None),
+    ('Flight Social', 'social', False, None),
+]
+
+
 def upgrade() -> None:
-    op.create_table(
+    rooms = op.create_table(
         'Programme_Rooms',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('name', sa.Text(), nullable=False, unique=True),
@@ -37,6 +93,14 @@ def upgrade() -> None:
         sa.Column('active', sa.Boolean(), nullable=False, server_default='1'),
     )
     op.create_table(
+        'Programme_Kinds',
+        sa.Column('key', sa.Text(), primary_key=True),
+        sa.Column('label', sa.Text(), nullable=False),
+        sa.Column('colour', sa.Text(), nullable=True),
+        sa.Column('position', sa.Integer(), nullable=False, server_default='0'),
+        sa.Column('hidden', sa.Boolean(), nullable=False, server_default='0'),
+    )
+    bank = op.create_table(
         'Programme_Bank_Items',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('title', sa.Text(), nullable=False),
@@ -57,6 +121,7 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column('month', sa.Text(), nullable=False, unique=True),
         sa.Column('notes', sa.Text(), nullable=True),
+        sa.Column('key_dates', sa.JSON(), nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('created_by', sa.Text(), nullable=True),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
@@ -129,8 +194,14 @@ def upgrade() -> None:
     )
     _index('Programme_Changes', 'programme_id')
 
+    op.bulk_insert(rooms, [{'name': n, 'position': i, 'active': True} for i, n in enumerate(ROOMS)])
+    room_ids = dict(op.get_bind().execute(sa.select(rooms.c.name, rooms.c.id)).all())
+    now = datetime.now()
+    op.bulk_insert(bank, [{'title': t, 'category': k, 'whole_night': w, 'room_id': room_ids.get(r),
+                           'active': True, 'created_at': now, 'created_by': 'Default'} for t, k, w, r in BANK])
+
 
 def downgrade() -> None:
     for table in ('Programme_Changes', 'Programme_Comments', 'Programme_Slots', 'Programme_Draft_Nights',
-                  'Programme_Drafts', 'Programme_Bank_Items', 'Programme_Rooms'):
+                  'Programme_Drafts', 'Programme_Bank_Items', 'Programme_Kinds', 'Programme_Rooms'):
         op.drop_table(table)

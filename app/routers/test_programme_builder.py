@@ -1,18 +1,23 @@
 """The programme builder over HTTP: who can do what, every rejection, the
 Google Docs style comment emails, the PDF and publishing."""
 
+import io
 from datetime import date, datetime
 
 import pytest
+from pypdf import PdfReader
 
 import routers.programme as website
 import routers.programme_builder as router  # binds core.push before the fixtures patch sessions
 from core.config import GITHUB_REPO
 from database.models import (
     Cadet,
+    Event317,
+    Location,
     NcoHoliday,
     ProgrammeBankItem,
     ProgrammeNight,
+    ProgrammeRoom,
     ProgrammeSession,
     Staff,
     User,
@@ -90,6 +95,9 @@ STAFF_ONLY = [
     ("post", f"{BASE}/rooms", {"name": "x"}),
     ("put", f"{BASE}/rooms/1", {"name": "x"}),
     ("delete", f"{BASE}/rooms/1", None),
+    ("post", f"{BASE}/kinds", {"label": "x"}),
+    ("put", f"{BASE}/kinds/drill", {"label": "x"}),
+    ("delete", f"{BASE}/kinds/x", None),
 ]
 READ_AND_COMMENT = [
     ("get", f"{BASE}/months", None),
@@ -97,6 +105,7 @@ READ_AND_COMMENT = [
     ("get", f"{BASE}/months/{MONTH}/pdf", None),
     ("get", f"{BASE}/bank", None),
     ("get", f"{BASE}/rooms", None),
+    ("get", f"{BASE}/kinds", None),
     ("get", f"{BASE}/people", None),
     ("post", f"{BASE}/months/{MONTH}/comments", {"body": "x"}),
     ("patch", f"{BASE}/comments/1", {"body": "x"}),
@@ -404,6 +413,33 @@ def test_an_empty_month_still_makes_a_pdf(api, db, roster):
     for night in api.get(f"{BASE}/months/{MONTH}", headers=staff(api)).json()["nights"]:
         api.delete(f"{BASE}/nights/{night['id']}", headers=staff(api))
     assert api.get(f"{BASE}/months/{MONTH}/pdf", headers=staff(api)).content[:4] == b"%PDF"
+
+
+def _pdf_text(api) -> list[str]:
+    res = api.get(f"{BASE}/months/{MONTH}/pdf", headers=staff(api))
+    assert res.status_code == 200
+    return [page.extract_text() for page in PdfReader(io.BytesIO(res.content)).pages]
+
+
+def test_the_pdf_is_laid_out_like_the_old_programme_doc(api, db, roster):
+    # The old doc: the month as the title (no other squadron's name), each
+    # session over who runs it by rank and surname, the duty NCO, the
+    # important dates, and a second page of roomings with a room key.
+    db.add(ProgrammeRoom(name="Drill Hall", position=0))
+    db.commit()
+    nights = new_month(api)["nights"]
+    api.patch(f"{BASE}/nights/{nights[0]['id']}", headers=staff(api),
+              json={"uniform": "No.2c SD", "duty_nco": "Cpl Ó Briain / Fg Off Barker"})
+    add(api, nights[0]["id"], "Drill", flights=["A", "B"], people=["staff:3001"], room_id=1)
+    api.patch(f"{BASE}/months/{MONTH}", headers=staff(api),
+              json={"key_dates": [{"when": "13th December", "what": "Carol Service"}]})
+    page1, page2 = _pdf_text(api)
+    assert page1.startswith("December 2026") and "Ely" not in page1
+    for text in ("Probationary Flight", "1st Period", "Break", "Duty NCO", "Monday", "07/12/26", "Drill",
+                 "Sgt Second", "No.2c SD", "Cpl Ó Briain", "Fg Off Barker", "Important Dates", "13th December",
+                 "Carol Service"):
+        assert text in page1, text
+    assert "Drill Hall" in page2 and "Room Key" in page2
 
 
 # ── publishing ────────────────────────────────────────────────────────────────
@@ -749,3 +785,118 @@ def test_a_failing_email_never_fails_the_comment(api, roster, monkeypatch):
     res = api.post(f"{BASE}/months/{MONTH}/comments", headers=staff(api),
                    json={"body": f"{mention('Nina', 'cadet:1')} hi"})
     assert res.status_code == 201 and res.json()["comments"][0]["body"].endswith("hi")
+
+
+# ── important dates ───────────────────────────────────────────────────────────
+
+def test_a_new_month_starts_with_the_squadrons_events_as_its_important_dates(api, db, roster):
+    # Only events touching the month, in date order, in the doc's wording.
+    loc = Location(first_line="x", postcode="x")
+    db.add(loc)
+    db.flush()
+    for title, start, end in (("Wing Training Weekend", datetime(2026, 12, 12), datetime(2026, 12, 13)),
+                              ("Carol Service", datetime(2026, 12, 6), datetime(2026, 12, 6)),
+                              ("Last month", datetime(2026, 11, 1), datetime(2026, 11, 2))):
+        db.add(Event317(title=title, reference="r", adult_ic="x", contact_number=1, date_from=start, date_to=end,
+                        location_id=loc.id, cost=0, dress="x", description="x"))
+    db.commit()
+    assert new_month(api)["key_dates"] == [{"when": "6th December", "what": "Carol Service"},
+                                           {"when": "12-13th December", "what": "Wing Training Weekend"}]
+
+
+def test_important_dates_are_edited_without_touching_the_notes(api, roster):
+    new_month(api)
+    api.patch(f"{BASE}/months/{MONTH}", headers=staff(api), json={"notes": "Keep"})
+    res = api.patch(f"{BASE}/months/{MONTH}", headers=staff(api),
+                    json={"key_dates": [{"when": " 1st Dec ", "what": " Zoë's parade "}]})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["key_dates"] == [{"when": "1st Dec", "what": "Zoë's parade"}] and body["notes"] == "Keep"
+    assert body["history"][0]["summary"] == "Changed the important dates"
+    assert api.patch(f"{BASE}/months/{MONTH}", headers=staff(api), json={"key_dates": []}).json()["key_dates"] == []
+
+
+@pytest.mark.parametrize("dates", [[{"when": "", "what": "x"}], [{"when": "x"}], [{"when": "x" * 41, "what": "x"}],
+                                   [{"when": "x", "what": "y"}] * 16])
+def test_important_dates_that_wont_print_are_refused(api, roster, dates):
+    new_month(api)
+    assert api.patch(f"{BASE}/months/{MONTH}", headers=staff(api), json={"key_dates": dates}).status_code == 422
+
+
+def test_important_dates_on_a_missing_month_are_a_404(api, roster):
+    assert api.patch(f"{BASE}/months/{MONTH}", headers=staff(api), json={"key_dates": []}).status_code == 404
+
+
+# ── kinds ─────────────────────────────────────────────────────────────────────
+
+def _kind(kinds, key):
+    return next((k for k in kinds if k["key"] == key), None)
+
+
+def test_staff_add_a_kind_and_use_it_for_sessions_and_the_bank(api, db, roster):
+    res = api.post(f"{BASE}/kinds", headers=staff(api), json={"label": " Shooting & Range ", "colour": "#4a86e8"})
+    assert res.status_code == 201
+    assert _kind(res.json(), "shooting_range") == {"key": "shooting_range", "label": "Shooting & Range",
+                                                   "colour": "#4a86e8", "hidden": False, "builtin": False}
+    night = new_month(api)["nights"][0]
+    programme = add(api, night["id"], "Air Rifle", category="shooting_range")
+    assert slot_named(programme, "Air Rifle")["category"] == "shooting_range"
+    assert api.post(f"{BASE}/bank", headers=staff(api),
+                    json={"title": "Air Rifle", "category": "shooting_range"}).status_code == 201
+    # Published, the record's stats label it by name rather than failing on an unknown key.
+    api.post(f"{BASE}/months/{MONTH}/publish", headers=staff(api), json={"website": False})
+    assert {"key": "shooting_range", "label": "Shooting & Range"} in api.get(
+        "/programme/stats", headers=staff(api)).json()["categories_all"]
+
+
+@pytest.mark.parametrize("body,status", [({"label": "Drill and inspection"}, 409), ({"label": "drill"}, 409),
+                                         ({"label": "!!!"}, 422), ({"label": ""}, 422),
+                                         ({"label": "x", "colour": "blue"}, 422)])
+def test_a_kind_that_would_clash_or_cant_be_keyed_is_refused(api, roster, body, status):
+    assert api.post(f"{BASE}/kinds", headers=staff(api), json=body).status_code == status
+
+
+def test_a_built_in_kind_is_renamed_coloured_and_hidden_but_never_deleted(api, roster):
+    res = api.put(f"{BASE}/kinds/first_aid", headers=staff(api),
+                  json={"label": "Courses", "colour": "#4a86e8", "hidden": True})
+    assert res.status_code == 200
+    assert _kind(res.json(), "first_aid") == {"key": "first_aid", "label": "Courses", "colour": "#4a86e8",
+                                              "hidden": True, "builtin": True}
+    # Built-ins stay in their place in the list.
+    assert [k["key"] for k in res.json()][:5] == ["drill", "classifications", "lessons", "fieldcraft", "first_aid"]
+    # Hidden, a session can still have it: old sessions keep their kind.
+    add(api, new_month(api)["nights"][0]["id"], "First aid", category="first_aid")
+    assert api.delete(f"{BASE}/kinds/first_aid", headers=staff(api)).status_code == 409
+
+
+def test_renaming_a_kind_to_anothers_name_is_refused(api, roster):
+    assert api.put(f"{BASE}/kinds/drill", headers=staff(api), json={"label": "band"}).status_code == 409
+    assert api.put(f"{BASE}/kinds/drill", headers=staff(api), json={"label": "DRILL AND INSPECTION"}).status_code == 200
+
+
+def test_editing_or_deleting_a_missing_kind_is_a_404(api, roster):
+    assert api.put(f"{BASE}/kinds/nope", headers=staff(api), json={"label": "x"}).status_code == 404
+    assert api.delete(f"{BASE}/kinds/nope", headers=staff(api)).status_code == 404
+
+
+def test_a_kind_is_only_deleted_while_nothing_has_it(api, db, roster):
+    api.post(f"{BASE}/kinds", headers=staff(api), json={"label": "Shooting"})
+    api.post(f"{BASE}/kinds", headers=staff(api), json={"label": "Unused"})
+    db.add(ProgrammeSession(night=ProgrammeNight(date=date(2026, 1, 5), imported_at=datetime.now()),
+                            period=1, flight="A", activity="Range", category="shooting", split=False, raw="Range"))
+    db.commit()
+    assert api.delete(f"{BASE}/kinds/shooting", headers=staff(api)).status_code == 409
+    res = api.delete(f"{BASE}/kinds/unused", headers=staff(api))
+    assert res.status_code == 200 and _kind(res.json(), "unused") is None
+
+
+def test_ncos_read_the_kinds(api, roster):
+    res = api.get(f"{BASE}/kinds", headers=api.as_("nco"))
+    assert res.status_code == 200 and _kind(res.json(), "drill")["label"] == "Drill and inspection"
+
+
+def test_a_session_with_a_kind_that_doesnt_exist_is_refused(api, roster):
+    night = new_month(api)["nights"][0]
+    res = api.post(f"{BASE}/months/{MONTH}/slots", headers=staff(api),
+                   json={"night_id": night["id"], "title": "x", "category": "nope"})
+    assert res.status_code == 422

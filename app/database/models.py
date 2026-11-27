@@ -2180,6 +2180,20 @@ class ProgrammeRoom(Base):
     active   = Column(Boolean, nullable=False, default=True, server_default="1")
 
 
+class ProgrammeKind(Base):
+    """A kind of session beyond, or changing, the built-in ones in
+    core.programme.CATEGORIES. A row with a built-in key renames, colours or
+    hides it; any other key is a kind staff added. ``colour`` fills the
+    session's cell on the printed programme (the old doc's blue courses)."""
+    __tablename__ = "Programme_Kinds"
+
+    key      = Column(Text,    primary_key=True)
+    label    = Column(Text,    nullable=False)
+    colour   = Column(Text,    nullable=True)   # "#4a86e8"
+    position = Column(Integer, nullable=False, default=0, server_default="0")
+    hidden   = Column(Boolean, nullable=False, default=False, server_default="0")
+
+
 class ProgrammeBankItem(Base):
     """A session in the bank: something the squadron runs, ready to drop onto
     a night. A placed session copies what it needs, so editing or retiring a
@@ -2188,7 +2202,7 @@ class ProgrammeBankItem(Base):
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     title       = Column(Text,    nullable=False)
-    category    = Column(Text,    nullable=False)  # a core.programme.CATEGORIES key
+    category    = Column(Text,    nullable=False)  # a kind's key (core.programme.kinds)
     whole_night = Column(Boolean, nullable=False, default=False, server_default="0")
     room_id     = Column(Integer, ForeignKey("Programme_Rooms.id", ondelete="SET NULL"), nullable=True, index=True)
     instructor  = Column(Text,    nullable=True)
@@ -2212,6 +2226,8 @@ class ProgrammeDraft(Base):
     id           = Column(Integer, primary_key=True, autoincrement=True)
     month        = Column(Text,    nullable=False, unique=True)
     notes        = Column(Text,    nullable=True)
+    # The printed programme's "Important Dates": [{"when": "22-23 Nov", "what": "Blue Fieldcraft Weekend"}].
+    key_dates    = Column(JSON,    nullable=False, default=list)
     created_at   = Column(DateTime, nullable=False)
     created_by   = Column(Text,    nullable=True)
     updated_at   = Column(DateTime, nullable=False)

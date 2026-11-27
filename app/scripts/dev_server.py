@@ -956,7 +956,10 @@ PROGRAMME_BANK = [
     {"title": "Inter Flight Sports Night", "category": "sport", "whole_night": True, "room": "Drill hall",
      "instructor": "PTI"},
     {"title": "Christmas Social", "category": "social", "whole_night": True, "room": "Drill hall"},
+    {"title": "Heartstart Course", "category": "courses", "room": "Classroom 2", "instructor": "1st Aid Team"},
 ]
+# A kind staff added, coloured like the old doc's blue courses, and one hidden.
+PROGRAMME_KINDS = [{"label": "Courses", "colour": "#4a86e8"}, {"label": "Shooting", "hidden": True}]
 
 
 def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: datetime | None = None) -> None:
@@ -975,6 +978,8 @@ def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: da
         return res.json()
 
     base = "/programme-builder"
+    for kind in PROGRAMME_KINDS:
+        ok(client.post(f"{base}/kinds", headers=headers, json=kind), "kind")
     rooms = {}
     for room in PROGRAMME_ROOMS:
         rooms[room["name"]] = ok(client.post(f"{base}/rooms", headers=headers, json=room), "room")["id"]
@@ -1000,7 +1005,10 @@ def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: da
 
     ok(client.post(f"{base}/months", headers=headers, json={"month": following, "start": "empty"}), "next month")
     ok(client.patch(f"{base}/months/{following}", headers=headers, json={
-        "notes": "Remembrance and Christmas plans to follow from the OC."}), "notes")
+        "notes": "Remembrance and Christmas plans to follow from the OC.",
+        "key_dates": [{"when": "1st", "what": "Staff Meeting"}, {"when": "8-9th", "what": "Wing Training Weekend"},
+                      {"when": "14th", "what": "Sunday Parade"}, {"when": "21st", "what": "Region 5-a-Side"}]}),
+       "notes")
     programme = ok(client.post(f"{base}/months/{following}/fill", headers=headers, json={}), "fill")["programme"]
     nights = programme["nights"]
     snco = db.query(Cadet).filter(Cadet.cin == FIRST_CIN).one()
@@ -1009,7 +1017,8 @@ def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: da
     for i, night in enumerate(nights):
         ok(client.patch(f"{base}/nights/{night['id']}", headers=headers, json={
             "uniform": UNIFORMS[i % len(UNIFORMS)] if i < len(nights) - 1 else None,
-            "duty_nco": f"Cpl {LAST_NAMES[i % len(LAST_NAMES)]}" if i else None,
+            # The doc's two duty names, the cadet then the adult, on some nights.
+            "duty_nco": (f"Cpl {LAST_NAMES[i % len(LAST_NAMES)]}" + (" / Sgt Hughes" if i % 2 else "")) if i else None,
             **({"notes": "Parents' evening in the classroom block from 20:00"} if i == 1 else {})}), "night")
     first = nights[0]
     slots = first["slots"]
