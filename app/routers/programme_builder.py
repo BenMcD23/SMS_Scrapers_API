@@ -369,6 +369,25 @@ def _event_dates(db: Session, first: date, after: date) -> list[dict]:
             for e in events]
 
 
+def _record_nights(db: Session, month: str) -> list[ProgrammeNight]:
+    first, after = pb.month_bounds(month)
+    return (db.query(ProgrammeNight).filter(ProgrammeNight.date >= first, ProgrammeNight.date < after)
+            .order_by(ProgrammeNight.date).all())
+
+
+def _from_record(n: ProgrammeNight, on: date) -> ProgrammeDraftNight:
+    """A night of the record as a builder night on ``on``: one slot per
+    activity per half, with every flight that did it."""
+    night = ProgrammeDraftNight(date=on, uniform=n.uniform, duty_nco=n.duty_nco)
+    grouped: dict[tuple, list[str]] = {}
+    for s in sorted(n.sessions, key=lambda s: (s.period, s.id)):
+        grouped.setdefault((s.period, s.activity, s.category, s.instructor), []).append(s.flight)
+    for (period, activity, category, instructor), fl in grouped.items():
+        night.slots.append(ProgrammeSlot(period=period, flights=sorted(set(fl)), title=activity,
+                                         category=category, instructor=instructor, people=[]))
+    return night
+
+
 # ── months ──────────────────────────────────────────────────────────────────
 
 @router.get("/months")
@@ -388,10 +407,13 @@ def list_months(db: Session = Depends(get_db), idinfo: dict = Depends(require_st
     built = {d.month for d in drafts}
     # Casting a date to text gives ISO on Postgres and SQLite alike.
     month_col = func.substr(cast(ProgrammeNight.date, Text), 1, 7)
-    record = sorted({m for (m,) in db.query(month_col).distinct()} - built, reverse=True)
+    in_record = {m for (m,) in db.query(month_col).distinct()}
+    record = sorted(in_record - built, reverse=True)
     today = date.today()
     nxt = f"{today.year + today.month // 12}-{today.month % 12 + 1:02d}"
-    return {"programmes": out, "record_months": record[:24], "parade_weekdays": pb.PARADE_WEEKDAYS,
+    return {"programmes": out, "record_months": record[:24],
+            # Every month a new one can copy: built ones and the record's (old docs).
+            "copy_months": sorted(in_record | built, reverse=True), "parade_weekdays": pb.PARADE_WEEKDAYS,
             "next_month": nxt if nxt not in built else None}
 
 
@@ -409,32 +431,30 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
     db.add(draft)
 
     if body.start == "record":
-        nights = (db.query(ProgrammeNight).filter(ProgrammeNight.date >= first, ProgrammeNight.date < after)
-                  .order_by(ProgrammeNight.date).all())
+        nights = _record_nights(db, body.month)
         if not nights:
             raise HTTPException(status_code=404, detail="The record has nothing for that month")
         for n in nights:
-            night = ProgrammeDraftNight(date=n.date, uniform=n.uniform, duty_nco=n.duty_nco)
-            draft.nights.append(night)
-            # One slot per activity per half, with every flight that did it.
-            grouped: dict[tuple, list[str]] = {}
-            for s in sorted(n.sessions, key=lambda s: (s.period, s.id)):
-                grouped.setdefault((s.period, s.activity, s.category, s.instructor), []).append(s.flight)
-            for (period, activity, category, instructor), fl in grouped.items():
-                night.slots.append(ProgrammeSlot(period=period, flights=sorted(set(fl)), title=activity,
-                                                 category=category, instructor=instructor, people=[]))
+            draft.nights.append(_from_record(n, n.date))
         summary = "Started from the programme record"
     elif body.start == "copy":
         if not body.copy_from:
             raise HTTPException(status_code=422, detail="Say which month to copy")
-        source = _draft(db, body.copy_from)
+        # A built month if there is one, else what the record has (an old doc).
+        source = db.query(ProgrammeDraft).filter(ProgrammeDraft.month == body.copy_from).first()
+        old_nights = source.nights if source else _record_nights(db, body.copy_from)
+        if not old_nights:
+            raise HTTPException(status_code=404, detail="There's nothing to copy for that month")
         dates = pb.month_dates(body.month, pb.PARADE_WEEKDAYS) or []
         for i, d in enumerate(dates[:MAX_NIGHTS]):
-            night = ProgrammeDraftNight(date=d)
-            draft.nights.append(night)
-            if i < len(source.nights):
-                old = source.nights[i]
-                night.uniform, night.duty_nco = old.uniform, old.duty_nco
+            if i >= len(old_nights):
+                draft.nights.append(ProgrammeDraftNight(date=d))
+            elif not source:
+                draft.nights.append(_from_record(old_nights[i], d))
+            else:
+                old = old_nights[i]
+                night = ProgrammeDraftNight(date=d, uniform=old.uniform, duty_nco=old.duty_nco)
+                draft.nights.append(night)
                 for s in old.slots:
                     night.slots.append(ProgrammeSlot(
                         period=s.period, flights=list(s.flights or []), title=s.title, category=s.category,

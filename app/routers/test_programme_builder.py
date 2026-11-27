@@ -210,6 +210,28 @@ def test_a_month_can_copy_another_week_by_week(api, roster):
     assert copy["history"][0]["summary"] == "Started as a copy of November 2026 programme"
 
 
+def test_a_month_can_copy_an_old_doc_from_the_record_week_by_week(api, db, roster):
+    # Only the record has November (imported docs): it's offered to copy, and
+    # its first Monday's sessions land on December's first Wednesday.
+    night = db.query(ProgrammeNight).filter(ProgrammeNight.date == date(2026, 11, 2)).one()
+    night.uniform = "No.3 SD"
+    night.sessions += [ProgrammeSession(period=1, flight=f, activity="Drill", category="drill", split=False,
+                                        raw="Drill") for f in "AB"]
+    db.commit()
+    assert "2026-11" in api.get(f"{BASE}/months", headers=staff(api)).json()["copy_months"]
+    programme = new_month(api, start="copy", copy_from="2026-11")
+    first = programme["nights"][0]
+    assert (first["date"], first["uniform"]) == ("2026-12-02", "No.3 SD")
+    assert [(s["title"], s["flights"], s["period"]) for s in first["slots"]] == [("Drill", ["A", "B"], 1)]
+    # November had three nights; the rest of December starts empty.
+    assert len(programme["nights"]) == 9 and not programme["nights"][3]["slots"]
+
+
+def test_copying_a_month_with_nothing_anywhere_is_a_404(api, roster):
+    res = api.post(f"{BASE}/months", headers=staff(api), json={"month": MONTH, "start": "copy", "copy_from": "2020-01"})
+    assert res.status_code == 404
+
+
 def test_deleting_a_month_leaves_the_record_alone(api, db, roster):
     new_month(api)
     assert api.delete(f"{BASE}/months/{MONTH}", headers=staff(api)).json() == {"ok": True}
