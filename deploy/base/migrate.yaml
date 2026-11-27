@@ -41,10 +41,21 @@ spec:
           # from the models and stamped instead. Exit 3 means "no
           # alembic_version table"; any other failure (DB not up yet) exits
           # non-zero and the Job retries, rather than being mistaken for empty.
+          #
+          # It first waits up to a minute for the database to accept a
+          # connection. A new pod's IP isn't in the database node's
+          # network-policy ipset for a second or more after it starts, so the
+          # first connect is refused; without the wait every sync left a trail
+          # of Error pods while the Job retried.
           command:
             - sh
             - -ec
             - |
+              i=0
+              until python -c 'from database.database import engine; engine.connect().close()' 2>/dev/null; do
+                i=$((i + 1)); [ "$i" -lt 30 ] || { echo "database still unreachable after 60s"; exit 1; }
+                echo "database not reachable yet; retrying in 2s ($i/30)"; sleep 2
+              done
               rc=0
               python -c 'import sys; from sqlalchemy import inspect; from database.database import engine; sys.exit(0 if inspect(engine).has_table("alembic_version") else 3)' || rc=$?
               case $rc in
