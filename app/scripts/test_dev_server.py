@@ -41,6 +41,7 @@ from scripts.dev_server import (
     seed_oc_dashboard,
     seed_parade_reports,
     seed_programme,
+    seed_programme_builder,
     seed_push,
     seed_recruits,
     seed_session_bank,
@@ -403,6 +404,7 @@ def _seed_everything(api, db):
     seed_push(db, now=NOW)
     seed_assistant(db, now=NOW)
     seed_programme(db, now=NOW)
+    seed_programme_builder(api, staff, api.as_("nco"), db, now=NOW)
     seed_session_bank(api, staff, now=NOW)
     seed_theory_custom(api, staff)
     seed_check_ins(api, staff, db, now=NOW)

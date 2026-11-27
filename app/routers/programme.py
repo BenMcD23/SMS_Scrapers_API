@@ -1,4 +1,4 @@
-"""Monthly programme updater — pulls the PDF from Drive and commits it to the website repo."""
+"""Monthly programme publishing: the website's PDF and images, from the Drive doc or the builder."""
 
 import base64
 import io
@@ -42,7 +42,6 @@ async def update_programme(
     year = year or now.year
     month_str = str(month).zfill(2)
     short_year = str(year)[-2:]
-    pdf_filename = f"{month_str}_{short_year}_programme.pdf"
 
     # Fetch PDF URL from Apps Script, then download the actual PDF
     async with httpx.AsyncClient() as client:
@@ -62,7 +61,23 @@ async def update_programme(
 
         pdf_bytes = pdf_resp.content
 
-    # Convert PDF pages to webp
+    result = await publish_pdf_to_website(pdf_bytes, month, year)
+    return {
+        "status": "success",
+        "message": f"Programme updated for {month_str}/{short_year}",
+        **result,
+    }
+
+
+async def publish_pdf_to_website(pdf_bytes: bytes, month: int, year: int) -> dict:
+    """Put a month's programme PDF on the website: the PDF, its first two
+    pages as images (the programme and the rooms), and the page's link to it,
+    in one commit that also removes older months' PDFs. Shared by the Drive
+    updater above and the programme builder's publish.
+
+    Raises HTTPException: 500 when the PDF can't be turned into images or the
+    website's page can't be read, so nothing half-published is committed."""
+    pdf_filename = f"{month:02d}_{str(year)[-2:]}_programme.pdf"
     try:
         # Rendering at 200 dpi takes seconds: off the event loop so the rest of
         # the API keeps answering meanwhile.
@@ -113,9 +128,4 @@ async def update_programme(
             delete_paths=old_pdf_paths,
         )
 
-    return {
-        "status": "success",
-        "message": f"Programme updated for {month_str}/{short_year}",
-        "pdf": pdf_filename,
-        "pages_converted": len(pages),
-    }
+    return {"pdf": pdf_filename, "pages_converted": len(pages)}

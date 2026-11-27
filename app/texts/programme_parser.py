@@ -119,7 +119,7 @@ def _normalise_headers(row: dict, num_cols: int) -> list[str]:
 class _Columns:
     """Column indices derived from the two header rows."""
 
-    def __init__(self, table: dict):
+    def __init__(self, table: dict, needs_dnco: bool = True):
         rows = table.get("tableRows", [])
         if len(rows) < 3:
             raise ValueError("Programme table is too short")
@@ -140,7 +140,7 @@ class _Columns:
         p2_a = find(lambda t, s: "2nd" in t and "a flight" in s)
         p2_b = find(lambda t, s: "2nd" in t and "b flight" in s)
 
-        if not (date_cols and len(prob_cols) >= 2 and uniform_cols and dnco_cols
+        if not (date_cols and len(prob_cols) >= 2 and uniform_cols and (dnco_cols or not needs_dnco)
                 and p1_a and p1_b and p2_a and p2_b):
             raise ValueError(
                 "Could not identify the programme table columns — has the layout changed?"
@@ -149,7 +149,7 @@ class _Columns:
         self.date = date_cols[0]
         self.c1, self.c2 = prob_cols[0], prob_cols[-1]
         self.uniform = uniform_cols[0]
-        self.dnco = dnco_cols[0]
+        self.dnco = dnco_cols[0] if dnco_cols else self.uniform
         self.periods = [(self.c1, p1_a, p1_b), (self.c2, p2_a, p2_b)]
 
 
@@ -234,15 +234,61 @@ def _parse_date_strict(raw: str, month: int, year: int) -> datetime | None:
     return None
 
 
-def _read_table(month: int, year: int) -> tuple[dict, _Columns]:
+def _read_document(month: int, year: int) -> dict:
     drive, docs = _docs_clients()
     doc_id = _find_programme_doc_id(drive, month, year)
-    document = docs.documents().get(documentId=doc_id).execute()
+    return docs.documents().get(documentId=doc_id).execute()
 
+
+def _read_table(month: int, year: int, document: dict | None = None) -> tuple[dict, _Columns]:
+    document = document or _read_document(month, year)
     table = _first_table(document)
     if table is None:
         raise ValueError("Programme doc has no table")
     return table, _Columns(table)
+
+
+def _roomings_table(document: dict) -> tuple[dict, _Columns] | None:
+    """The second page's roomings: the programme's grid again with a room in
+    each cell. The first table after the programme laid out the same way
+    (the important dates and the room key aren't). None when there isn't one."""
+    tables = [el["table"] for el in document.get("body", {}).get("content", []) if "table" in el]
+    for table in tables[1:]:
+        try:
+            return table, _Columns(table, needs_dnco=False)
+        except ValueError:
+            continue
+    return None
+
+
+def _add_rooms(nights: list[dict], roomings: list[dict], periods) -> None:
+    """Give each session the room the roomings page has in the same place:
+    the flight's one room, or, for a flight split between things, the room in
+    the same position when the counts match. Anything less sure stays None."""
+    by_date = {n["date"]: n for n in roomings}
+    for night in nights:
+        rooms = by_date.get(night["date"])
+        if not rooms:
+            continue
+        where: dict[tuple[int, str], list[str]] = {}
+        for period, (c_col, a_cols, b_cols) in enumerate(periods, start=1):
+            for r in _period_sessions(rooms["cells"], c_col, a_cols, b_cols):
+                for flight in r["flights"]:
+                    where.setdefault((period, flight), []).append(" ".join(r["text"].split()))
+        seen: dict[tuple[int, str], int] = {}
+        for s in night["sessions"]:
+            options = set()
+            for flight in s["flights"]:
+                found = where.get((s["period"], flight), [])
+                i = seen.get((s["period"], flight), 0)
+                seen[(s["period"], flight)] = i + 1
+                if len(set(found)) == 1:
+                    options.add(found[0])
+                elif s["split"] and i < len(found):
+                    options.add(found[i])
+                else:
+                    options.add(None)
+            s["room"] = options.pop() if len(options) == 1 else None
 
 
 def _walk_nights(table: dict, columns: _Columns, month: int, year: int) -> list[dict]:
@@ -347,17 +393,26 @@ def _period_sessions(cells: list[dict], c_col: int, a_cols: list[int], b_cols: l
 
 
 def parse_programme_sessions(month: int, year: int) -> list[dict]:
-    """[{date, uniform, dnco, sessions: [{period, flights, text, split}]}]:
-    the programme as a record of what each flight did, for
-    core/programme.py to tidy and store."""
-    table, columns = _read_table(month, year)
+    """[{date, uniform, dnco, sessions: [{period, flights, text, split, room}]}]:
+    the programme as a record of what each flight did, and where (from the
+    roomings page), for core/programme.py to tidy and store."""
+    document = _read_document(month, year)
+    table, columns = _read_table(month, year, document)
+    nights = sessions_from_table(table, columns, month, year)
+    roomings = _roomings_table(document)
+    if roomings:
+        _add_rooms(nights, _walk_nights(roomings[0], roomings[1], month, year), roomings[1].periods)
+    return nights
+
+
+def sessions_from_table(table: dict, columns: _Columns, month: int, year: int) -> list[dict]:
     return [
         {
             "date": night["date"],
             "uniform": night["uniform"],
             "dnco": night["dnco"],
             "sessions": [
-                {"period": period, **session}
+                {"period": period, **session, "room": None}
                 for period, (c_col, a_cols, b_cols) in enumerate(columns.periods, start=1)
                 for session in _period_sessions(night["cells"], c_col, a_cols, b_cols)
             ],

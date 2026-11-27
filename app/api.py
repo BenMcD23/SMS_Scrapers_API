@@ -57,6 +57,7 @@ from routers import (
     parade_reports,
     portal,
     programme,
+    programme_builder,
     programme_record,
     push,
     recruits,
@@ -229,6 +230,7 @@ app.include_router(events.router)
 app.include_router(flying.router)
 app.include_router(programme.router)
 app.include_router(programme_record.router)
+app.include_router(programme_builder.router)
 app.include_router(training.router)
 app.include_router(newsletters.router)
 app.include_router(gallery.router)

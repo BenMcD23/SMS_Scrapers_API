@@ -135,7 +135,7 @@ def stats(days: int = 365, start: date | None = None, end: date | None = None,
         result = programme.programme_stats(db, days=min((end - start).days, 1095), today=end)
     else:
         result = programme.programme_stats(db, max(7, min(days, 1095)))
-    return {**result, "categories_all": [{"key": k, "label": v} for k, v in programme.CATEGORIES.items()]}
+    return {**result, "categories_all": [{"key": k, "label": v} for k, v in programme.kind_labels(db).items()]}
 
 
 @router.get("/cadets/{cin}")

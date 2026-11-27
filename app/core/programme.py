@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from core.attendance import ABSENT, AUTHORISED, PRESENT, attendance_state
 from core.llm import generate
-from database.models import Cadet, CadetAttendance, ProgrammeNight, ProgrammeSession
+from database.models import Cadet, CadetAttendance, ProgrammeKind, ProgrammeNight, ProgrammeSession
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ CATEGORIES: dict[str, str] = {
     "first_aid": "First aid",
     "stem": "STEM and aviation",
     "sport": "Sport and fitness",
+    "shooting": "Shooting",
     "dofe": "Duke of Edinburgh",
     "music": "Band",
     "leadership": "Leadership and NCOs",
@@ -51,6 +52,28 @@ CATEGORIES: dict[str, str] = {
     "social": "Social and events",
     "other": "Other",
 }
+
+
+
+def kinds(db: Session) -> list[dict]:
+    """Every kind of session, built-in first in their order then the ones
+    staff added: [{key, label, colour, hidden, builtin}]. A Programme_Kinds row
+    with a built-in key renames, colours or hides it."""
+    rows = {k.key: k for k in db.query(ProgrammeKind).order_by(ProgrammeKind.position, ProgrammeKind.label)}
+    out = []
+    for key, label in CATEGORIES.items():
+        row = rows.pop(key, None)
+        out.append({"key": key, "label": row.label if row else label, "colour": row.colour if row else None,
+                    "hidden": bool(row and row.hidden), "builtin": True})
+    out += [{"key": r.key, "label": r.label, "colour": r.colour, "hidden": r.hidden, "builtin": False}
+            for r in rows.values()]
+    return out
+
+
+def kind_labels(db: Session) -> dict[str, str]:
+    """Key to label for every kind, hidden ones included: old sessions keep theirs."""
+    return {k["key"]: k["label"] for k in kinds(db)}
+
 
 # First match wins, so the specific come before the general ("drill" is in
 # "Blue Drill Training" and "Remembrance Parade Practice" is drill too).
@@ -64,6 +87,7 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
                     "map reading", "navigation", "kit check")),
     ("stem", ("stem", "flight sim", "simulator", "synthetic", "cyber", "space", "radio", "comms", "drone",
               "rocket", "atp")),
+    ("shooting", ("air rifle", "shooting", "marksman", "dcct", "range day")),
     ("sport", ("sport", "volleyball", "football", "frisbee", "athletic", "physical", "fitness", "games",
                "dodgeball", "netball", "rounders")),
     ("leadership", ("nco", "jnco", "snco", "leadership", "cadets own", "assessed session", "moi", "resilience", "back to basics")),
@@ -224,6 +248,25 @@ def import_month(db: Session, month: int, year: int, use_ai: bool = True, nights
         return {"month": f"{year}-{month:02d}", "nights": 0, "sessions": 0, "skipped": "no nights in the doc"}
 
     tidy = tidy_cells(db, [s["text"] for n in nights for s in n["sessions"]], use_ai=use_ai)
+    rows = []
+    for n in nights:
+        sessions = []
+        for s in n["sessions"]:
+            acts = tidy.get(s["text"], [])
+            split = s["split"] or len(acts) > 1
+            sessions += [{"period": s["period"], "flight": flight, "activity": act.name, "category": act.category,
+                          "instructor": act.instructor, "split": split, "raw": s["text"], "room": s.get("room")}
+                         for act in acts for flight in s["flights"]]
+        rows.append({"date": n["date"].date() if isinstance(n["date"], datetime) else n["date"],
+                     "uniform": n.get("uniform"), "duty_nco": n.get("dnco"), "sessions": sessions})
+    return replace_month(db, month, year, rows)
+
+
+def replace_month(db: Session, month: int, year: int, nights: list[dict]) -> dict:
+    """Store a month's nights in place of what the record had for it. Shared
+    by the doc import and the programme builder's publish, so a month reads
+    the same whichever wrote it. Each night is {date, uniform, duty_nco,
+    sessions: [{period, flight, activity, category, instructor, split, raw}]}."""
     first = date(year, month, 1)
     after = date(year + month // 12, month % 12 + 1, 1)
     # Through the ORM so the sessions go with their nights on every database,
@@ -235,18 +278,11 @@ def import_month(db: Session, month: int, year: int, use_ai: bool = True, nights
     now = datetime.now()
     sessions = 0
     for n in nights:
-        night = ProgrammeNight(date=n["date"].date() if isinstance(n["date"], datetime) else n["date"],
-                               uniform=n.get("uniform") or None, duty_nco=n.get("dnco") or None,
-                               imported_at=now)
+        night = ProgrammeNight(date=n["date"], uniform=n.get("uniform") or None,
+                               duty_nco=n.get("duty_nco") or None, imported_at=now)
         for s in n["sessions"]:
-            acts = tidy.get(s["text"], [])
-            split = s["split"] or len(acts) > 1
-            for act in acts:
-                for flight in s["flights"]:
-                    night.sessions.append(ProgrammeSession(
-                        period=s["period"], flight=flight, activity=act.name, category=act.category,
-                        instructor=act.instructor, split=split, raw=s["text"]))
-                    sessions += 1
+            night.sessions.append(ProgrammeSession(**s))
+            sessions += 1
         db.add(night)
     db.commit()
     return {"month": f"{year}-{month:02d}", "nights": len(nights), "sessions": sessions}
@@ -351,17 +387,18 @@ def programme_stats(db: Session, days: int = 365, today: date | None = None) -> 
             "sessions": _night_summary(n),
         })
 
+    labels = kind_labels(db)
     return {
         "days": days,
         "nights": night_rows,
         "categories": [
-            {"key": key, "label": CATEGORIES[key], "nights": len(c["nights"]), "rate": _rate(c["present"], c["total"]),
+            {"key": key, "label": labels[key], "nights": len(c["nights"]), "rate": _rate(c["present"], c["total"]),
              "authorised_rate": _rate(c["authorised"], c["total"]), "cadet_nights": c["total"]}
-            for key in CATEGORIES if (c := by_category.get(key)) and c["total"]
+            for key in labels if (c := by_category.get(key)) and c["total"]
         ],
         # Activities seen at least twice: once is one night, not a pattern.
         "activities": sorted(
-            ({"name": a["name"], "category": a["category"], "label": CATEGORIES[a["category"]],
+            ({"name": a["name"], "category": a["category"], "label": labels.get(a["category"], a["category"]),
               "times": len(a["nights"]), "rate": _rate(a["present"], a["total"])}
              for a in by_activity.values() if len(a["nights"]) >= 2 and a["total"]),
             key=lambda a: (a["rate"], a["name"]),
@@ -408,11 +445,12 @@ def cadet_sessions(db: Session, cin: int, days: int = 365, today: date | None = 
             totals[category][state] += 1
         rows.append({"date": n.date.isoformat(), "state": state,
                      "activities": sorted({s.activity for s in mine})})
+    labels = kind_labels(db)
     return {
         "flight": flight or None,
         "nights": rows,
         "by_category": [
-            {"category": CATEGORIES[k], **totals[k], "rate": _rate(totals[k][PRESENT], sum(totals[k].values()))}
-            for k in CATEGORIES if k in totals
+            {"category": labels[k], **totals[k], "rate": _rate(totals[k][PRESENT], sum(totals[k].values()))}
+            for k in labels if k in totals
         ],
     }

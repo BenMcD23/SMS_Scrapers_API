@@ -157,5 +157,5 @@ def test_quali_expiry_alert_pushes_alongside_the_email(db, auth, pushes, outbox)
 
 def test_topics_for_each_role():
     assert push.topics_for_role("staff") == list(push.TOPICS)
-    assert push.topics_for_role("nco") == push.topics_for_role("snco") == ["my_session_plans"]
+    assert push.topics_for_role("nco") == push.topics_for_role("snco") == ["my_session_plans", "programme"]
     assert push.topics_for_role(None) == [] and push.topics_for_role("cadet") == []
