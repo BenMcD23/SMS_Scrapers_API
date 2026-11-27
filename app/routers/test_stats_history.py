@@ -293,6 +293,17 @@ def test_retention_groups_intakes_and_leaves_out_who_was_already_there(api, db):
     assert body == [{"intake": "2025-02", "joined": 2, "still_on_strength": 1, "6m": 1, "12m": 1}]
 
 
+def test_retention_counts_current_cadets_by_their_portal_join_date(api, db):
+    # Joined before snapshots began, so first-appearance would never see them.
+    _snapshot(db, _now() - timedelta(days=30), [{"cin": 1}, {"cin": 2}, {"cin": 3}, {"cin": 4}, {"cin": 5}])
+    for cin in range(1, 6):
+        db.add(Cadet(cin=cin, first_name="C", last_name=str(cin), joined_on=date(2025, 3, 10 + cin)))
+    db.commit()
+    [row] = api.get("/stats/retention", headers=api.as_("nco")).json()
+    assert row["intake"] == "2025-03" and row["joined"] == 5 and row["still_on_strength"] == 5
+    assert row["6m"] == 5 and row["12m"] == 5
+
+
 def test_retention_marks_are_null_until_the_intake_reaches_them(api, db):
     t0 = _now() - timedelta(days=100)
     _snapshot(db, t0, [{"cin": 1}])
