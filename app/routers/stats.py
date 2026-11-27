@@ -541,32 +541,46 @@ def get_intake_retention(
     db: Session = Depends(get_db),
     idinfo: dict = Depends(require_staff_or_nco),
 ):
-    """Cadets grouped by the month they first appeared in a per-cadet snapshot,
-    and how many were still turning up in snapshots 6 and 12 months later.
+    """Cadets grouped by the month they joined, and how many were still on
+    strength 6 and 12 months later.
 
-    The first snapshot's cadets are left out: they were already on strength,
-    so it isn't when they joined. A mark is null until enough time has passed
-    for every cadet in the intake to have reached it."""
+    The join date is the Volunteer Portal's `joined_on` where the cadet has one
+    (so people who joined before tracking began count too); otherwise it is the
+    first per-cadet snapshot they appear in, and cadets in the very first
+    snapshot are left out because that only says they were already there. A
+    cadet still on strength counts as retained at every mark; one who has left
+    is retained to the last snapshot they appear in. A mark is null until
+    enough time has passed for every cadet in the intake to have reached it."""
     timelines, dates = _cadet_timelines(db)
-    if not dates:
+    current = {cin: joined_on for cin, joined_on in db.query(Cadet.cin, Cadet.joined_on)}
+    if not dates and not any(current.values()):
         return []
-    first_ever, latest = dates[0], dates[-1]
-    on_strength = {cin for (cin,) in db.query(Cadet.cin)}
+    first_ever = dates[0] if dates else None
+    latest = dates[-1] if dates else datetime.now()
+    now = max(latest, datetime.now()) if current else latest
 
-    intakes: dict = defaultdict(list)
-    for cin, points in timelines.items():
-        joined = points[0][0]
-        if joined.date() == first_ever.date():
+    intakes: dict = defaultdict(list)  # month -> [(joined, still here?, last seen)]
+    for cin, joined_on in current.items():
+        if joined_on:
+            joined = datetime.combine(joined_on, datetime.min.time())
+        elif cin in timelines and timelines[cin][0][0].date() != first_ever.date():
+            joined = timelines[cin][0][0]
+        else:
             continue
-        intakes[joined.strftime("%Y-%m")].append((cin, joined, points[-1][0]))
+        intakes[joined.strftime("%Y-%m")].append((joined, True, now))
+    for cin, points in timelines.items():
+        if cin in current or points[0][0].date() == first_ever.date():
+            continue
+        joined = points[0][0]
+        intakes[joined.strftime("%Y-%m")].append((joined, False, points[-1][0]))
 
     out = []
     for month in sorted(intakes):
         group = intakes[month]
-        row = {"intake": month, "joined": len(group), "still_on_strength": sum(1 for c, _, _ in group if c in on_strength)}
+        row = {"intake": month, "joined": len(group), "still_on_strength": sum(1 for _, here, _ in group if here)}
         for key, days in RETENTION_MARKS.items():
-            due = max(j for _, j, _ in group) + timedelta(days=days)
-            row[key] = None if latest < due else sum(1 for _, j, last in group if last >= j + timedelta(days=days))
+            due = max(j for j, _, _ in group) + timedelta(days=days)
+            row[key] = None if now < due else sum(1 for j, _, last in group if last >= j + timedelta(days=days))
         out.append(row)
     return out
 
