@@ -13,7 +13,7 @@ from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func
 
-from core import programme, push
+from core import parade_report, programme, push
 from core import staff_compliance as sc
 from core.config import AUDIT_RETENTION_DAYS, DB_BACKUP_ENABLED, OC_EMAIL, QUALI_EXPIRY_ALERT_EMAIL
 from core.emailer import quali_expiry_email_html, send_email, staff_compliance_email_html
@@ -245,6 +245,17 @@ def register_jobs(scheduler: BaseScheduler) -> None:
     scheduler.add_job(import_recent_programme, CronTrigger(day_of_week="sun", hour=20, minute=30, timezone=LONDON))
     # 4pm Tue/Thu — sends the ready parade-night text for the next day (Wed/Fri).
     scheduler.add_job(scheduled_send_job, CronTrigger(day_of_week="tue,thu", hour=16, minute=0, timezone=LONDON))
+    # 21:30 Wed/Fri, once parade's register is marked: scrape it, then email the
+    # cadet attendance report. Does nothing unless staff have switched it on.
+    scheduler.add_job(
+        parade_report.run_parade_report,
+        CronTrigger(day_of_week=parade_report.RUN_DAYS, hour=parade_report.RUN_HOUR,
+                    minute=parade_report.RUN_MINUTE, timezone=LONDON),
+        id="parade_report",
+        # A full cadet scrape outlives the default one-second grace: if the
+        # scheduler was busy at 21:30, a late start beats no report at all.
+        misfire_grace_time=60 * 60,
+    )
     # Scraper schedules live in the database and are edited through the API,
     # which re-registers them on every edit; this loads them at startup.
     scrapers.register_schedule_jobs()

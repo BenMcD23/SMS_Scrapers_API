@@ -590,3 +590,61 @@ def recruit_form_link_html(cadet_first_name: str, link: str, expires: str,
         Replies to this email go to {_esc(contact_name)}.</p>
     </div>
     """
+
+
+_PARADE_SECTIONS = (
+    ("absent", "Absent", "#c62828"),
+    ("authorised", "Authorised absence", "#e65100"),
+    ("present", "Present", "#2e7d32"),
+)
+
+
+def parade_report_email_html(night_label: str, link: str, entries: list[dict]) -> str:
+    """A parade night's cadet register for the report recipients.
+
+    ``entries`` are {name, rank, flight, status, state}. Every cadet on the
+    register is listed, absent first, then authorised absences, then present,
+    so the people to follow up are at the top. Names come from Bader and are
+    escaped like any other scraped text.
+    """
+    counts = {key: sum(1 for e in entries if e["state"] == key) for key, _, _ in _PARADE_SECTIONS}
+    marked = len(entries)
+    turnout = round(100 * counts["present"] / marked) if marked else 0
+    th = 'style="text-align:left;padding:6px 8px;border-bottom:2px solid #ccc"'
+    td = 'style="padding:6px 8px;border-bottom:1px solid #eee"'
+
+    sections = []
+    for key, title, colour in _PARADE_SECTIONS:
+        rows = [e for e in entries if e["state"] == key]
+        if not rows:
+            body = '<p style="color:#555;margin:4px 0 0">None.</p>'
+        else:
+            trs = "".join(
+                f"<tr><td {td}>{_esc(e['name'])}</td><td {td}>{_esc(e['rank'])}</td>"
+                f"<td {td}>{_esc(e['flight'])}</td><td {td}>{_esc(e['status'])}</td></tr>"
+                for e in rows
+            )
+            body = (
+                '<table style="width:100%;border-collapse:collapse;font-size:14px">'
+                f"<tr><th {th}>Cadet</th><th {th}>Rank</th><th {th}>Flight</th><th {th}>Bader status</th></tr>"
+                f"{trs}</table>"
+            )
+        sections.append(
+            f'<h3 style="margin:24px 0 4px;color:{colour}">{title} ({len(rows)})</h3>{body}'
+        )
+
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px">
+      <h2 style="margin:0 0 4px">Parade night attendance: {_esc(night_label)}</h2>
+      <hr style="border:none;border-top:2px solid #1565c0;margin:0 0 20px">
+      <p style="margin:0">Cadets on the register: <b>{marked}</b>.
+        Present <b>{counts["present"]}</b> ({turnout}%),
+        authorised absence <b>{counts["authorised"]}</b>,
+        absent <b>{counts["absent"]}</b>.</p>
+      {"".join(sections)}
+      <p style="margin:20px 0 0">
+        <a href="{link}" style="display:inline-block;background:#1565c0;color:#fff;text-decoration:none;
+          padding:10px 18px;border-radius:6px;font-size:14px">Open the report</a></p>
+      {FOOTER}
+    </div>
+    """

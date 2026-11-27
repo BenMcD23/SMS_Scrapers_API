@@ -232,7 +232,9 @@ def _save_stats_snapshot(db: Session):
         logger.error(f"stats snapshot failed: {snap_err}")
 
 
-def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: str):
+def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: str) -> bool:
+    """Run one claimed named scraper to the end. True only if it finished
+    cleanly: not stopped, timed out, crashed or reporting an error."""
     state = named_scraper_states[name]
     db = Session(engine)
     stop_event = state["stop_event"]
@@ -299,6 +301,7 @@ def run_named_scraper_task(name: str, scraper_func, user_id: int, user_email: st
         db.close()
         state["running"] = False
         state["started_by"] = None
+    return success
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────────────────
@@ -602,9 +605,24 @@ def cleanup_old_run_logs():
 VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
+def _claim(name: str, started_by: str) -> bool:
+    """Mark a named scraper as running, unless it already is."""
+    state = named_scraper_states[name]
+    with state["lock"]:
+        if state["running"]:
+            return False
+        state["running"] = True
+        state["started_by"] = started_by
+        state["messages"].clear()
+        state["messages"].append(json.dumps({
+            "type": "status", "value": "running",
+            "started_by": started_by, "scraper_name": name,
+        }))
+        return True
+
+
 def _run_scheduled_scraper(name: str):
     db = SessionLocal()
-    claimed = False
     try:
         sched = db.query(ScraperSchedule).filter(ScraperSchedule.scraper_id == name).first()
         if not sched or not sched.enabled or not sched.user:
@@ -612,26 +630,50 @@ def _run_scheduled_scraper(name: str):
         if not sched.user.bader_credentials:
             logger.warning(f"scheduled {name}: {sched.user.email} has no Bader credentials saved, skipping")
             return
-
         user_id, email = sched.user.id, sched.user.email
-        state = named_scraper_states[name]
-        with state["lock"]:
-            if state["running"]:
-                logger.warning(f"scheduled {name}: already running, skipping")
-                return
-            state["running"] = True
-            state["started_by"] = f"schedule ({email})"
-            state["messages"].clear()
-            state["messages"].append(json.dumps({
-                "type": "status", "value": "running",
-                "started_by": state["started_by"], "scraper_name": name,
-            }))
-            claimed = True
     finally:
         db.close()
 
-    if claimed:
-        run_named_scraper_task(name, SCRAPER_FUNCS[name], user_id, email)
+    if not _claim(name, f"schedule ({email})"):
+        logger.warning(f"scheduled {name}: already running, skipping")
+        return
+    run_named_scraper_task(name, SCRAPER_FUNCS[name], user_id, email)
+
+
+# How often a job waiting on someone else's run checks whether it has finished.
+WAIT_POLL_SECONDS = 30
+
+
+def run_scraper_and_wait(name: str, user_id: int, email: str, started_by: str) -> bool:
+    """Run a named scraper in this thread and say whether it worked, for a job
+    that needs fresh data before it carries on (the parade report).
+
+    If someone else's run is already going, wait for it instead of skipping:
+    it is scraping the same pages, so its result is as fresh as ours would be.
+    That run is judged by the run record it leaves behind.
+    """
+    if _claim(name, started_by):
+        return run_named_scraper_task(name, SCRAPER_FUNCS[name], user_id, email)
+
+    waiting_since = datetime.now()
+    deadline = time.monotonic() + SCRAPER_MAX_RUNTIME_SECONDS
+    while named_scraper_states[name]["running"]:
+        if time.monotonic() > deadline:
+            logger.warning(f"{started_by}: {name} still running after the maximum runtime, giving up")
+            return False
+        time.sleep(WAIT_POLL_SECONDS)
+    db = SessionLocal()
+    try:
+        last = (
+            db.query(ScraperRun)
+            .filter(ScraperRun.scraper_id == name, ScraperRun.ran_at >= waiting_since)
+            .order_by(ScraperRun.ran_at.desc())
+            .first()
+        )
+        # No record means it was stopped by hand, which leaves none.
+        return bool(last and last.success)
+    finally:
+        db.close()
 
 
 def register_schedule_jobs():
