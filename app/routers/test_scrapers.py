@@ -6,6 +6,7 @@ the bookkeeping around them, which is what breaks silently."""
 import json
 import threading
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -506,3 +507,57 @@ def test_a_paused_upload_stream_does_not_hold_the_job_lock(monkeypatch):
     monkeypatch.setattr(sc, "require_staff", lambda authorization: None)
     response = anyio.run(lambda: sc.upload_stream("j1", authorization="Bearer staff"))
     assert anyio.run(_first_chunk_then_lock_is_free, response, state)
+
+
+# ── run_scraper_and_wait (the parade report's scrape) ─────────────────────────
+
+def test_run_and_wait_runs_the_scraper_and_reports_whether_it_worked(db, creds, fresh_state, monkeypatch):
+    outcomes = iter([True, False])
+
+    def run(name, f, uid, email):
+        fresh_state[name]["running"] = False  # as the real task does when it ends
+        return next(outcomes)
+
+    monkeypatch.setattr(sc, "run_named_scraper_task", run)
+    assert sc.run_scraper_and_wait("medical", creds.id, creds.email, "parade report (x)") is True
+    assert fresh_state["medical"]["started_by"] == "parade report (x)"
+    assert sc.run_scraper_and_wait("medical", creds.id, creds.email, "parade report (x)") is False
+
+
+def test_a_real_run_returns_false_when_the_scraper_logs_an_error(db, creds, fresh_state, monkeypatch):
+    def fails(messages, lock, user_id, db_, stop_event, on_context_ready=None):
+        messages.append(json.dumps({"type": "error", "value": "Bader login failed"}))
+
+    monkeypatch.setitem(sc.SCRAPER_FUNCS, "medical", fails)
+    assert sc.run_scraper_and_wait("medical", creds.id, creds.email, "parade report (x)") is False
+    assert db.query(ScraperRun).one().success is False
+
+
+@pytest.mark.parametrize("other_run_succeeded, expected", [(True, True), (False, False), (None, False)])
+def test_run_and_wait_waits_for_someone_elses_run_and_goes_by_its_record(
+        db, creds, fresh_state, monkeypatch, other_run_succeeded, expected):
+    # Someone started cadet-quali by hand just before 21:30. Waiting on it is
+    # as fresh as running again; its record says whether it worked, and no
+    # record (stopped by hand) counts as not working.
+    state = fresh_state["cadet-quali"]
+    state["running"] = True
+    ran = []
+    monkeypatch.setattr(sc, "run_named_scraper_task", lambda *a: ran.append(a))
+
+    def finish(_seconds):
+        if other_run_succeeded is not None:
+            db.add(ScraperRun(scraper_id="cadet-quali", ran_at=datetime.now() + timedelta(seconds=1),
+                              success=other_run_succeeded, ran_by="someone", logs=""))
+            db.commit()
+        state["running"] = False
+
+    monkeypatch.setattr(sc, "time", SimpleNamespace(sleep=finish, monotonic=lambda: 0))
+    assert sc.run_scraper_and_wait("cadet-quali", creds.id, creds.email, "parade report (x)") is expected
+    assert ran == []  # never started a second run
+
+
+def test_run_and_wait_gives_up_on_a_run_that_never_finishes(db, creds, fresh_state, monkeypatch):
+    fresh_state["cadet-quali"]["running"] = True
+    clock = iter([0, sc.SCRAPER_MAX_RUNTIME_SECONDS + 1])
+    monkeypatch.setattr(sc, "time", SimpleNamespace(sleep=lambda s: None, monotonic=lambda: next(clock)))
+    assert sc.run_scraper_and_wait("cadet-quali", creds.id, creds.email, "parade report (x)") is False

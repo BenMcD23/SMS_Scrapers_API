@@ -10,7 +10,7 @@ programme docs (2024-26) ran most, so the builder is useful on day one. They
 are ordinary rows: staff edit or delete them like any they add.
 
 Revision ID: p7b8u9i0l1d2
-Revises: s1t2n3s4n5s6
+Revises: p1a2r3a4d5e6
 Create Date: 2026-11-25 20:00:00.000000
 
 """
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 
 
 revision: str = 'p7b8u9i0l1d2'
-down_revision: Union[str, Sequence[str], None] = 's1t2n3s4n5s6'
+down_revision: Union[str, Sequence[str], None] = 'p1a2r3a4d5e6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1544,6 +1544,65 @@ def seed_staff_compliance(db, now: datetime | None = None) -> None:
     db.commit()
 
 
+def seed_parade_reports(db, now: datetime | None = None) -> None:
+    """Parade reports for the last four parade nights, switched on, with the
+    dev SNCO on the list and the dev NCO not, so the reports page shows both a
+    listed reader and the "not on the list" state. A few marks on those nights
+    become authorised absences first: the main seed only marks present or
+    absent, and the report's middle section would otherwise be empty."""
+    import core.security as security
+    from core import parade_report
+    from database.models import CadetAttendance, ParadeReportRecipient, ParadeReportSettings, User
+
+    now = now or datetime.now()
+
+    def dev_user(role: str) -> User:
+        sub = "dev-fake-sub" if role == "staff" else f"dev-fake-sub-{role}"
+        user = db.query(User).filter(User.google_id == sub).first()
+        if not user:
+            user = User(google_id=sub, email=security._dev_fake_email(role), first_name="Dev",
+                        last_name="Owner" if role == "staff" else role.upper())
+            db.add(user)
+            db.flush()
+        return user
+
+    owner, snco = dev_user("staff"), dev_user("snco")
+    dev_user("nco")  # signed in once, so staff can pick them from the list
+    db.add(ParadeReportSettings(enabled=True, user_id=owner.id, updated_by=owner.email,
+                                updated_at=now - timedelta(days=20)))
+    db.add(ParadeReportRecipient(email=snco.email.lower(), added_by=owner.email,
+                                 added_at=now - timedelta(days=20)))
+    db.add(ParadeReportRecipient(email=owner.email.lower(), added_by=owner.email,
+                                 added_at=now - timedelta(days=20)))
+
+    nights = _parade_nights(now, 4)
+    for n, night in enumerate(nights):
+        day_start = datetime(night.year, night.month, night.day)
+        absent = (
+            db.query(CadetAttendance)
+            # The day, not the exact time: main() takes `now` again after seed()
+            # did, so the seeded nights sit a few seconds off this one.
+            .filter(CadetAttendance.date >= day_start, CadetAttendance.date < day_start + timedelta(days=1),
+                    CadetAttendance.status == "Absent")
+            .order_by(CadetAttendance.cadet_id)
+            .all()
+        )
+        for record in absent[: n % 3 + 1]:
+            record.status = "Authorised Absence"
+        db.commit()
+        report = parade_report.build_report(db, night.date(), "schedule")
+        if report is None:
+            continue
+        report.generated_at = night.replace(hour=22, minute=10)
+        # The newest is "built by hand, not emailed", the others went out.
+        if n < len(nights) - 1:
+            report.emailed_at = night.replace(hour=22, minute=11)
+            report.emailed_to = [owner.email.lower(), snco.email.lower()]
+        else:
+            report.generated_by = owner.email
+    db.commit()
+
+
 def schema_is_stale(engine, base) -> bool:
     """True if a table the models have is missing, or an existing one lacks a
     column. A missing table would be made empty by create_all and never
@@ -1639,6 +1698,8 @@ def main() -> None:
         with SessionLocal() as db:
             seed_drill(client, headers, db)
             seed_staff_compliance(db)
+        with SessionLocal() as db:
+            seed_parade_reports(db)
         print(f"seeded {db_path}")
     else:
         print(f"using existing {db_path} (--reset to start over)")

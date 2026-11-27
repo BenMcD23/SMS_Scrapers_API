@@ -39,6 +39,7 @@ from scripts.dev_server import (
     seed_inspections,
     seed_nco_notes,
     seed_oc_dashboard,
+    seed_parade_reports,
     seed_programme,
     seed_programme_builder,
     seed_push,
@@ -411,6 +412,27 @@ def _seed_everything(api, db):
     seed_training(api, staff, db, now=NOW)
     seed_drill(api, staff, db, now=NOW)
     seed_staff_compliance(db, now=NOW)
+    seed_parade_reports(db, now=NOW)
+
+
+def test_the_seeded_parade_reports_show_every_section_and_both_kinds_of_reader(api, db):
+    # Four nights, each with someone in all three sections; the dev SNCO is on
+    # the list (sees them) and the dev NCO is not (the page's other state).
+    import core.security as security
+
+    seed(db, now=NOW)
+    # A few seconds later, as in dev_server.main, which takes `now` again.
+    seed_parade_reports(db, now=NOW + timedelta(seconds=5))
+    reports = api.get("/parade-reports", headers=api.as_("staff")).json()["reports"]
+    assert len(reports) == 4
+    assert all(min(r["counts"].values()) > 0 for r in reports)
+    assert [r["emailedAt"] is None for r in reports] == [True, False, False, False]  # newest first
+
+    from database.models import ParadeReportRecipient
+
+    listed = {r.email for r in db.query(ParadeReportRecipient)}
+    assert security._dev_fake_email("snco") in listed
+    assert security._dev_fake_email("nco") not in listed
 
 
 def test_the_drill_tracker_has_cadets_at_every_point_on_the_syllabus(api, db):

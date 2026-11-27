@@ -1283,6 +1283,73 @@ class ScraperSchedule(Base):
     user = relationship("User")
 
 
+class ParadeReportSettings(Base):
+    """The one row that switches the parade-night attendance report on.
+
+    When enabled, core/parade_report.py runs the cadet-quali scraper at 21:30
+    on Wednesdays and Fridays with `user_id`'s Bader credentials (whoever last
+    switched it on, as with ScraperSchedule), then saves and emails the night's
+    cadet register.
+    """
+    __tablename__ = "Parade_Report_Settings"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    enabled    = Column(Boolean, nullable=False, default=False, server_default="0")
+    user_id    = Column(Integer, ForeignKey("Users.id", ondelete="SET NULL"), nullable=True, index=True)
+    updated_by = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+
+
+class ParadeReportRecipient(Base):
+    """An SMS user (staff, SNCO or NCO) who is emailed each parade report and
+    may open past ones. Kept by email, the identity the API sees on a request."""
+    __tablename__ = "Parade_Report_Recipients"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    email    = Column(Text, nullable=False, unique=True)  # lower-cased
+    added_by = Column(Text, nullable=True)
+    added_at = Column(DateTime, nullable=False)
+
+
+class ParadeReport(Base):
+    """One parade night's cadet register, frozen when the report was made.
+
+    The entries are a copy rather than a view of Cadet_Attendance, so a past
+    report reads the way it did when it was sent even after Bader's register is
+    corrected or a cadet leaves.
+    """
+    __tablename__ = "Parade_Reports"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    parade_date  = Column(Date, nullable=False, unique=True)
+    generated_at = Column(DateTime, nullable=False)
+    generated_by = Column(Text, nullable=False)   # "schedule" or the staff member's email
+    emailed_at   = Column(DateTime, nullable=True)  # NULL: not emailed (built by hand, or no one to send to)
+    emailed_to   = Column(JSON, nullable=True)      # the addresses it went to
+
+    entries = relationship("ParadeReportEntry", back_populates="report",
+                           cascade="all, delete-orphan", order_by="ParadeReportEntry.id")
+
+
+class ParadeReportEntry(Base):
+    """One cadet's mark on a saved parade report. No foreign key to Cadets on
+    purpose: a cadet who leaves stays on the nights they were marked for."""
+    __tablename__ = "Parade_Report_Entries"
+
+    id        = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(Integer, ForeignKey("Parade_Reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    cadet_cin = Column(BigInteger, nullable=False)
+    name      = Column(Text, nullable=False)
+    rank      = Column(Text, nullable=True)
+    flight    = Column(Text, nullable=True)
+    status    = Column(Text, nullable=True)   # Bader's wording, e.g. "Authorised Absence"
+    state     = Column(Text, nullable=False)  # present / authorised / absent (core/attendance.py)
+
+    report = relationship("ParadeReport", back_populates="entries")
+
+
 # ─── Stats Snapshots ──────────────────────────────────────────────────────────
 
 class StatsSnapshot(Base):

@@ -1,7 +1,8 @@
 # PostgreSQL, run by the CloudNativePG operator (installed from the k3s-homelab
-# repo). Two instances on different nodes with streaming replication: if the
-# primary's node drops, the replica is promoted in about a minute. Placement of
-# the primary is steered by the switchover CronJob in overlays/prod.
+# repo). Two instances on different nodes with synchronous streaming replication
+# (see below): if the primary's node drops, the replica is promoted in about a
+# minute. Placement of the primary is steered by the switchover CronJob in
+# overlays/prod.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -23,6 +24,18 @@ spec:
     liveness:
       isolationCheck:
         enabled: false
+
+  # Synchronous replication: a commit returns only once the replica has the
+  # WAL too, so a failover can't lose the last moment's writes (async lost
+  # whatever home wrote just before its link dropped on 2026-11-25).
+  # "preferred" means that with the replica down, commits carry on instead of
+  # blocking; those are on the primary only until a replica rejoins. Costs
+  # one tailnet round trip per commit.
+  postgresql:
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: preferred
 
   bootstrap:
     initdb:
