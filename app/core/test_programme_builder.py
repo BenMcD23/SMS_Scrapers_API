@@ -83,6 +83,24 @@ def test_who_a_session_is_for_reads_naturally(flights, label):
     assert pb.who_label(flights, ["C", "A", "B"]) == label
 
 
+@pytest.mark.parametrize("old,expected", [
+    # January 2026 back on Wed 14th: it lands mid-January 2027, not on the 1st.
+    ([date(2026, 1, d) for d in (14, 16, 21, 23, 28, 30)], {0: 3, 1: 4, 2: 5, 3: 6, 4: 7, 5: 8}),
+    # A full month of Mondays onto Wednesdays and Fridays: nearest days, in order.
+    ([date(2026, 11, d) for d in (2, 9, 16, 23, 30)], {0: 0, 1: 2, 2: 4, 3: 6, 4: 8}),
+    # Late nights leave room for the ones after them.
+    ([date(2026, 12, d) for d in (29, 30, 31)], {0: 6, 1: 7, 2: 8}),
+    # A Wednesday stays a Wednesday when one is near (4 Nov 2026 is a Wednesday).
+    ([date(2026, 11, 4)], {0: 1}),
+    # More old nights than new ones: the last are dropped.
+    ([date(2026, 12, d) for d in range(1, 12)], {i: i for i in range(9)}),
+    ([], {}),
+])
+def test_old_nights_go_on_the_new_nights_nearest_their_day_of_the_month(old, expected):
+    jan_2027 = pb.month_dates("2027-01", pb.PARADE_WEEKDAYS)  # 1, 6, 8, 13, 15, 20, 22, 27, 29
+    assert pb.align_nights(old, jan_2027) == expected
+
+
 def test_a_month_is_every_wednesday_and_friday():
     assert [d.day for d in pb.month_dates("2026-12", pb.PARADE_WEEKDAYS)] == [2, 4, 9, 11, 16, 18, 23, 25, 30]
 

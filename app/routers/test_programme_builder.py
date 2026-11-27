@@ -202,7 +202,7 @@ def test_a_month_starts_from_what_the_record_has_merging_flights(api, db, roster
     assert "2026-12" not in api.get(f"{BASE}/months", headers=staff(api)).json()["record_months"]
 
 
-def test_a_month_can_copy_another_week_by_week(api, roster):
+def test_a_month_can_copy_another_lined_up_by_date(api, roster):
     source = new_month(api, "2026-11")
     add(api, source["nights"][0]["id"], "Drill", month="2026-11", people=["staff:3001"], room_id=None)
     copy = new_month(api, start="copy", copy_from="2026-11")
@@ -212,7 +212,7 @@ def test_a_month_can_copy_another_week_by_week(api, roster):
     assert copy["history"][0]["summary"] == "Started as a copy of November 2026 programme"
 
 
-def test_a_month_can_copy_an_old_doc_from_the_record_week_by_week(api, db, roster):
+def test_a_month_can_copy_an_old_doc_from_the_record_lined_up_by_date(api, db, roster):
     # Only the record has November (imported docs): it's offered to copy, and
     # its first Monday's sessions land on December's first Wednesday.
     night = db.query(ProgrammeNight).filter(ProgrammeNight.date == date(2026, 11, 2)).one()
@@ -243,6 +243,17 @@ def test_rooms_from_an_old_doc_are_matched_to_ours_by_name_and_old_name(api, db,
     first = new_month(api, start="copy", copy_from="2026-11")["nights"][0]
     assert {s["title"]: rooms.get(s["room_id"]) for s in first["slots"]} == {
         "Drill": "Main Parade Hall", "Archery": "Hangar", "Quiz": None}
+
+
+def test_copying_a_january_that_started_halfway_through_lands_halfway_through(api, db, roster):
+    # Back on Wed 14 Jan 2026: its nights used to land on 1, 6 and 8 Jan 2027.
+    for day in (14, 16):
+        db.add(ProgrammeNight(date=date(2026, 1, day), imported_at=datetime.now(), sessions=[
+            ProgrammeSession(period=1, flight="A", activity=f"Night {day}", category="drill", raw="x")]))
+    db.commit()
+    nights = new_month(api, "2027-01", start="copy", copy_from="2026-01")["nights"]
+    assert [(n["date"], [s["title"] for s in n["slots"]]) for n in nights if n["slots"]] == [
+        ("2027-01-13", ["Night 14"]), ("2027-01-15", ["Night 16"])]
 
 
 def test_copying_a_month_with_nothing_anywhere_is_a_404(api, roster):
