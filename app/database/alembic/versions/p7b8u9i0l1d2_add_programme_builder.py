@@ -32,39 +32,46 @@ def _index(table: str, column: str) -> None:
     op.create_index(f'ix_{table}_{column}', table, [column])
 
 
-# In the order of the old docs' room key, which the printed programme colours by.
-ROOMS = ['Drill Hall', 'Upstairs Classroom', 'Hangar', 'IT Suite', 'Outside', 'AR Classroom']
+# The squadron's rooms. Their order sets their colours on the printed roomings.
+ROOMS = [
+    ('Main Parade Hall', None),
+    ('Range', 'Shooting, and a normal room for lessons'),
+    ('Hangar', 'Indoor drill, archery'),
+    ('Flight Sim Room', 'Small: fine for a small lesson'),
+    ('Outside', None),
+]
 
-# (title, kind, whole night, room): the old docs' most-run sessions.
+# (title, kind, whole night, room): the old docs' most-run sessions. Lessons
+# go in the Range, clear of drill in the Main Parade Hall; staff can move them.
 BANK = [
-    ('Drill', 'drill', False, 'Drill Hall'),
-    ('Inspection', 'drill', False, 'Drill Hall'),
-    ('Progressive Drill', 'drill', False, 'Drill Hall'),
-    ('5x5 Practice', 'drill', False, 'Drill Hall'),
-    ('Inter Flight Drill', 'drill', False, 'Drill Hall'),
-    ('Passing Out Parade Practice', 'drill', False, 'Drill Hall'),
-    ('Banner Drill', 'drill', False, 'Drill Hall'),
-    ('Classifications', 'classifications', False, None),
-    ('Classification Exams', 'classifications', False, None),
-    ('History of the ATC', 'lessons', False, None),
-    ('History of the RAF', 'lessons', False, None),
-    ('History of Flight', 'lessons', False, None),
-    ('Rank System', 'lessons', False, None),
-    ('Squadron Security', 'lessons', False, None),
-    ('Principles of Flight', 'lessons', False, None),
+    ('Drill', 'drill', False, 'Main Parade Hall'),
+    ('Inspection', 'drill', False, 'Main Parade Hall'),
+    ('Progressive Drill', 'drill', False, 'Main Parade Hall'),
+    ('5x5 Practice', 'drill', False, 'Main Parade Hall'),
+    ('Inter Flight Drill', 'drill', False, 'Main Parade Hall'),
+    ('Passing Out Parade Practice', 'drill', False, 'Main Parade Hall'),
+    ('Banner Drill', 'drill', False, 'Main Parade Hall'),
+    ('Classifications', 'classifications', False, 'Range'),
+    ('Classification Exams', 'classifications', False, 'Range'),
+    ('History of the ATC', 'lessons', False, 'Range'),
+    ('History of the RAF', 'lessons', False, 'Range'),
+    ('History of Flight', 'lessons', False, 'Range'),
+    ('Rank System', 'lessons', False, 'Range'),
+    ('Squadron Security', 'lessons', False, 'Range'),
+    ('Principles of Flight', 'lessons', False, 'Range'),
     ('Fieldcraft', 'fieldcraft', False, None),
-    ('Map Reading', 'fieldcraft', False, None),
+    ('Map Reading', 'fieldcraft', False, 'Range'),
     ('Field Cooking', 'fieldcraft', False, 'Outside'),
     ('Essential First Aid', 'first_aid', False, None),
     ('Casualty Simulation', 'first_aid', False, None),
-    ('Flight Sim', 'stem', False, 'IT Suite'),
+    ('Flight Sim', 'stem', False, 'Flight Sim Room'),
     ('Space', 'stem', False, None),
     ('Basic Radio Comms', 'stem', False, None),
-    ('Bronze Cyber', 'stem', False, 'IT Suite'),
+    ('Bronze Cyber', 'stem', False, None),
     ('Sports', 'sport', False, 'Outside'),
     ('Inter Flight Sports', 'sport', False, 'Outside'),
     ('Archery', 'sport', False, 'Hangar'),
-    ('Air Rifle Training', 'sport', False, 'AR Classroom'),
+    ('Air Rifle Training', 'shooting', False, 'Range'),
     ('DofE Physical', 'dofe', False, None),
     ('DofE Prep', 'dofe', False, None),
     ('Band', 'music', False, None),
@@ -108,6 +115,7 @@ def upgrade() -> None:
         sa.Column('whole_night', sa.Boolean(), nullable=False, server_default='0'),
         sa.Column('room_id', sa.Integer(), sa.ForeignKey('Programme_Rooms.id', ondelete='SET NULL'), nullable=True),
         sa.Column('instructor', sa.Text(), nullable=True),
+        sa.Column('people', sa.JSON(), nullable=False),
         sa.Column('subject_key', sa.Text(), nullable=True),
         sa.Column('part', sa.Integer(), nullable=True),
         sa.Column('notes', sa.Text(), nullable=True),
@@ -194,10 +202,11 @@ def upgrade() -> None:
     )
     _index('Programme_Changes', 'programme_id')
 
-    op.bulk_insert(rooms, [{'name': n, 'position': i, 'active': True} for i, n in enumerate(ROOMS)])
+    op.bulk_insert(rooms, [{'name': n, 'notes': note, 'position': i, 'active': True}
+                           for i, (n, note) in enumerate(ROOMS)])
     room_ids = dict(op.get_bind().execute(sa.select(rooms.c.name, rooms.c.id)).all())
     now = datetime.now()
-    op.bulk_insert(bank, [{'title': t, 'category': k, 'whole_night': w, 'room_id': room_ids.get(r),
+    op.bulk_insert(bank, [{'title': t, 'category': k, 'whole_night': w, 'room_id': room_ids.get(r), 'people': [],
                            'active': True, 'created_at': now, 'created_by': 'Default'} for t, k, w, r in BANK])
 
 

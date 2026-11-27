@@ -1,14 +1,13 @@
 """The programme builder's rules: people and mentions, the checks, the
 suggestions and the record a built month becomes."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import pytest
 
 from core import programme_builder as pb
 from database.models import (
     Cadet,
-    CadetAttendance,
     NcoHoliday,
     ProgrammeBankItem,
     ProgrammeDraft,
@@ -84,23 +83,8 @@ def test_who_a_session_is_for_reads_naturally(flights, label):
     assert pb.who_label(flights, ["C", "A", "B"]) == label
 
 
-def test_parade_weekdays_come_from_the_record_and_ignore_one_offs(db):
-    today = date(2026, 11, 20)
-    mondays = [date(2026, 9, 7) + timedelta(weeks=w) for w in range(6)]
-    thursdays = [date(2026, 9, 10) + timedelta(weeks=w) for w in range(4)]
-    for d in mondays + thursdays + [date(2026, 9, 19)]:  # and one Saturday
-        db.add(ProgrammeNight(date=d, imported_at=datetime.now()))
-    db.commit()
-    assert pb.parade_weekdays(db, today) == [0, 3]
-
-
-def test_parade_weekdays_fall_back_to_the_register_then_monday(db):
-    assert pb.parade_weekdays(db, date(2026, 11, 20)) == [0]
-    db.add(Cadet(cin=1, first_name="a", last_name="b"))
-    db.add(CadetAttendance(cadet_id=1, date=datetime(2026, 11, 12), status="Present", register_type="Parade Night"))
-    db.commit()
-    assert pb.parade_weekdays(db, date(2026, 11, 20)) == [3]
-
+def test_a_month_is_every_wednesday_and_friday():
+    assert [d.day for d in pb.month_dates("2026-12", pb.PARADE_WEEKDAYS)] == [2, 4, 9, 11, 16, 18, 23, 25, 30]
 
 def test_month_dates_and_bad_months():
     assert pb.month_dates("2026-12", [0]) == [date(2026, 12, d) for d in (7, 14, 21, 28)]

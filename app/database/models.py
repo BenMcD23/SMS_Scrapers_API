@@ -2205,7 +2205,9 @@ class ProgrammeBankItem(Base):
     category    = Column(Text,    nullable=False)  # a kind's key (core.programme.kinds)
     whole_night = Column(Boolean, nullable=False, default=False, server_default="0")
     room_id     = Column(Integer, ForeignKey("Programme_Rooms.id", ondelete="SET NULL"), nullable=True, index=True)
-    instructor  = Column(Text,    nullable=True)
+    instructor  = Column(Text,    nullable=True)   # free text, for a guest or "Flight NCOs"
+    # Who usually runs it, as person keys; copied onto a session when it's placed.
+    people      = Column(JSON,    nullable=False, default=list)
     # A theory catalogue lesson, so the builder can keep lessons in order.
     subject_key = Column(Text,    nullable=True)
     part        = Column(Integer, nullable=True)

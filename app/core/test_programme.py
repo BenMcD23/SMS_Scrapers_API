@@ -343,18 +343,18 @@ def test_the_weekly_job_is_scheduled_on_sunday_evening(monkeypatch):
 def test_a_kind_staff_added_or_renamed_is_labelled_in_the_stats(squadron):
     # A session published with a kind staff added in the builder used to be a
     # KeyError: stats looked labels up in the built-in list only.
-    squadron.add_all([ProgrammeKind(key="shooting", label="Shooting"),
+    squadron.add_all([ProgrammeKind(key="gliding", label="Gliding"),
                       ProgrammeKind(key="drill", label="Drill", hidden=True)])
     for s in squadron.query(ProgrammeSession).filter(ProgrammeSession.activity == "Flight Time"):
-        s.activity, s.category = "Range", "shooting"
+        s.activity, s.category = "Viking", "gliding"
     squadron.commit()
     out = pg.programme_stats(squadron, days=60, today=date(2026, 10, 31))
     labels = {c["key"]: c["label"] for c in out["categories"]}
-    assert labels["shooting"] == "Shooting" and labels["drill"] == "Drill"
+    assert labels["gliding"] == "Gliding" and labels["drill"] == "Drill"
     # Built-ins keep their order, added kinds come after.
-    assert list(labels)[-1] == "shooting"
+    assert list(labels)[-1] == "gliding"
     mine = pg.cadet_sessions(squadron, 1, days=60, today=date(2026, 10, 31))
-    assert "Shooting" in {c["category"] for c in mine["by_category"]}
+    assert "Gliding" in {c["category"] for c in mine["by_category"]}
 
 
 def test_kinds_are_the_built_ins_then_the_added_ones(db):
@@ -365,3 +365,8 @@ def test_kinds_are_the_built_ins_then_the_added_ones(db):
     assert [k["key"] for k in kinds] == [*pg.CATEGORIES, "aa", "zz"]
     assert next(k for k in kinds if k["key"] == "music") == {
         "key": "music", "label": "Band and drums", "colour": "#4a86e8", "hidden": False, "builtin": True}
+
+
+@pytest.mark.parametrize("name", ["Air Rifle Training", "DCCT Shooting", "Squadron Shooting Weekend"])
+def test_shooting_is_its_own_kind(name):
+    assert category_for(name) == "shooting"

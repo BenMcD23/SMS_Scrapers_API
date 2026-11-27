@@ -70,8 +70,10 @@ def test_upgrade_seeds_the_rooms_and_a_bank_of_common_sessions():
     with engine.connect() as conn:
         rooms = dict(conn.execute(sa.text('SELECT id, name FROM "Programme_Rooms"')).all())
         bank = conn.execute(sa.text('SELECT title, category, room_id FROM "Programme_Bank_Items"')).all()
-    assert "Drill Hall" in rooms.values()
+    assert set(rooms.values()) == {"Main Parade Hall", "Range", "Hangar", "Flight Sim Room", "Outside"}
     assert len(bank) == len({t.lower() for t, _, _ in bank}) > 30
     assert all(k in CATEGORIES for _, k, _ in bank)
     assert all(r is None or r in rooms for _, _, r in bank)
-    assert ("Drill", "drill", next(i for i, n in rooms.items() if n == "Drill Hall")) in bank
+    room = {n: i for i, n in rooms.items()}
+    assert ("Drill", "drill", room["Main Parade Hall"]) in bank
+    assert ("Air Rifle Training", "shooting", room["Range"]) in bank

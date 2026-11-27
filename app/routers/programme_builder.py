@@ -128,6 +128,7 @@ class BankBody(BaseModel):
     whole_night: bool = False
     room_id: int | None = None
     instructor: str | None = Field(None, max_length=200)
+    people: list[str] = Field(default_factory=list, max_length=MAX_PEOPLE)
     subject_key: str | None = Field(None, max_length=80)
     part: int | None = Field(None, ge=1, le=20)
     notes: str | None = Field(None, max_length=1000)
@@ -348,10 +349,11 @@ def _room_json(r: ProgrammeRoom) -> dict:
             "active": r.active}
 
 
-def _bank_json(item: ProgrammeBankItem, usage: dict) -> dict:
+def _bank_json(item: ProgrammeBankItem, usage: dict, people: dict[str, pb.Person]) -> dict:
     times, last = usage.get(item.title.casefold(), (0, None))
     return {"id": item.id, "title": item.title, "category": item.category, "whole_night": item.whole_night,
-            "room_id": item.room_id, "instructor": item.instructor, "subject_key": item.subject_key,
+            "room_id": item.room_id, "instructor": item.instructor,
+            "people": [_ref(k, people) for k in item.people or []], "subject_key": item.subject_key,
             "part": item.part, "notes": item.notes, "active": item.active, "times_run": times,
             "last_run": _iso(last)}
 
@@ -389,7 +391,7 @@ def list_months(db: Session = Depends(get_db), idinfo: dict = Depends(require_st
     record = sorted({m for (m,) in db.query(month_col).distinct()} - built, reverse=True)
     today = date.today()
     nxt = f"{today.year + today.month // 12}-{today.month % 12 + 1:02d}"
-    return {"programmes": out, "record_months": record[:24], "parade_weekdays": pb.parade_weekdays(db),
+    return {"programmes": out, "record_months": record[:24], "parade_weekdays": pb.PARADE_WEEKDAYS,
             "next_month": nxt if nxt not in built else None}
 
 
@@ -426,7 +428,7 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
         if not body.copy_from:
             raise HTTPException(status_code=422, detail="Say which month to copy")
         source = _draft(db, body.copy_from)
-        dates = pb.month_dates(body.month, pb.parade_weekdays(db)) or []
+        dates = pb.month_dates(body.month, pb.PARADE_WEEKDAYS) or []
         for i, d in enumerate(dates[:MAX_NIGHTS]):
             night = ProgrammeDraftNight(date=d)
             draft.nights.append(night)
@@ -440,7 +442,7 @@ def create_month(body: CreateProgramme, db: Session = Depends(get_db),
                         people=list(s.people or []), subject_key=s.subject_key, part=s.part, notes=s.notes))
         summary = f"Started as a copy of {_programme_name(body.copy_from)}"
     else:
-        for d in pb.month_dates(body.month, pb.parade_weekdays(db))[:MAX_NIGHTS]:
+        for d in pb.month_dates(body.month, pb.PARADE_WEEKDAYS)[:MAX_NIGHTS]:
             draft.nights.append(ProgrammeDraftNight(date=d))
         summary = "Started the programme"
     _touch(draft, idinfo, summary)
@@ -567,7 +569,7 @@ def add_slot(month: str, body: SlotBody, db: Session = Depends(get_db),
         bank_item_id=item.id if item else None,
         room_id=body.room_id if "room_id" in sent else (item.room_id if item else None),
         instructor=(body.instructor if "instructor" in sent else (item.instructor if item else None)) or None,
-        people=body.people or [],
+        people=body.people if "people" in sent else list(item.people or []) if item else [],
         subject_key=body.subject_key if "subject_key" in sent else (item.subject_key if item else None),
         part=body.part if "part" in sent else (item.part if item else None),
         notes=(body.notes or "").strip() or None,
@@ -696,7 +698,8 @@ def fill(month: str, body: FillBody, db: Session = Depends(get_db), idinfo: dict
             item = next(b for b in bank if b.id == option["bank_item_id"])
             night.slots.append(ProgrammeSlot(
                 period=cell[1], flights=[cell[2]], title=item.title, category=item.category, bank_item_id=item.id,
-                room_id=option["room_id"], instructor=item.instructor, people=[], subject_key=item.subject_key,
+                room_id=option["room_id"], instructor=item.instructor, people=list(item.people or []),
+                subject_key=item.subject_key,
                 part=item.part, notes=None))
         db.flush()
         added += 1
@@ -798,9 +801,9 @@ def _usage(db: Session) -> dict[str, tuple[int, date]]:
 
 @router.get("/bank")
 def list_bank(db: Session = Depends(get_db), idinfo: dict = Depends(require_staff_or_nco)) -> list[dict]:
-    usage = _usage(db)
+    usage, people = _usage(db), pb.directory(db)
     items = db.query(ProgrammeBankItem).order_by(ProgrammeBankItem.category, ProgrammeBankItem.title).all()
-    return [_bank_json(i, usage) for i in items]
+    return [_bank_json(i, usage, people) for i in items]
 
 
 def _check_bank(db: Session, body: BankBody) -> None:
@@ -810,6 +813,10 @@ def _check_bank(db: Session, body: BankBody) -> None:
         raise HTTPException(status_code=422, detail="That room isn't in the list")
     if bool(body.subject_key) != bool(body.part):
         raise HTTPException(status_code=422, detail="A lesson needs both its subject and its number")
+    if body.people:
+        everyone = pb.directory(db)
+        if any(k not in everyone or everyone[k].kind == "cadet" for k in body.people):
+            raise HTTPException(status_code=422, detail="Only staff and NCOs on the roster can run a session")
 
 
 @router.post("/bank", status_code=201)
@@ -818,11 +825,12 @@ def add_bank_item(body: BankBody, db: Session = Depends(get_db), idinfo: dict = 
     title = body.title.strip()
     if db.query(ProgrammeBankItem).filter(func.lower(ProgrammeBankItem.title) == title.lower()).first():
         raise HTTPException(status_code=409, detail="The bank already has a session with that name")
-    item = ProgrammeBankItem(**{**body.model_dump(), "title": title}, created_at=datetime.now(),
+    item = ProgrammeBankItem(**{**body.model_dump(), "title": title, "people": list(dict.fromkeys(body.people))},
+                             created_at=datetime.now(),
                              created_by=actor_name(idinfo))
     db.add(item)
     db.commit()
-    return _bank_json(item, _usage(db))
+    return _bank_json(item, _usage(db), pb.directory(db))
 
 
 @router.put("/bank/{item_id}")
@@ -838,10 +846,10 @@ def edit_bank_item(item_id: int, body: BankBody, db: Session = Depends(get_db),
                                                ProgrammeBankItem.id != item_id).first()
     if clash:
         raise HTTPException(status_code=409, detail="The bank already has a session with that name")
-    for name, value in {**body.model_dump(), "title": title}.items():
+    for name, value in {**body.model_dump(), "title": title, "people": list(dict.fromkeys(body.people))}.items():
         setattr(item, name, value)
     db.commit()
-    return _bank_json(item, _usage(db))
+    return _bank_json(item, _usage(db), pb.directory(db))
 
 
 @router.delete("/bank/{item_id}")

@@ -936,30 +936,30 @@ def seed_programme(db, now: datetime | None = None) -> None:
 
 
 PROGRAMME_ROOMS = [
-    {"name": "Drill hall", "capacity": 80},
-    {"name": "Classroom 1", "capacity": 20},
-    {"name": "Classroom 2", "capacity": 14},
-    {"name": "Flight sim room", "capacity": 6, "notes": "Two sims, three cadets on each"},
-    {"name": "Parade square"},
+    {"name": "Main Parade Hall", "capacity": 80},
+    {"name": "Range", "capacity": 20, "notes": "Shooting, and a normal room for lessons"},
+    {"name": "Hangar", "capacity": 40, "notes": "Indoor drill, archery"},
+    {"name": "Flight Sim Room", "capacity": 6, "notes": "Small: fine for a small lesson"},
+    {"name": "Outside"},
     {"name": "Old radio room", "capacity": 8, "active": False},
 ]
 PROGRAMME_BANK = [
-    {"title": "Map Reading 1", "category": "lessons", "subject_key": "acp_32_2", "part": 1, "room": "Classroom 1"},
-    {"title": "Map Reading 2", "category": "lessons", "subject_key": "acp_32_2", "part": 2, "room": "Classroom 1"},
-    {"title": "Map Reading 3", "category": "lessons", "subject_key": "acp_32_2", "part": 3, "room": "Classroom 1"},
+    {"title": "Map Reading 1", "category": "lessons", "subject_key": "acp_32_2", "part": 1, "room": "Range"},
+    {"title": "Map Reading 2", "category": "lessons", "subject_key": "acp_32_2", "part": 2, "room": "Range"},
+    {"title": "Map Reading 3", "category": "lessons", "subject_key": "acp_32_2", "part": 3, "room": "Range"},
     {"title": "Principles of Flight 1", "category": "classifications", "subject_key": "acp_33_2", "part": 1,
-     "room": "Classroom 2"},
+     "room": "Flight Sim Room"},
     {"title": "Principles of Flight 2", "category": "classifications", "subject_key": "acp_33_2", "part": 2,
-     "room": "Classroom 2"},
-    {"title": "Flight Sim", "category": "stem", "room": "Flight sim room", "instructor": "CI Doe",
+     "room": "Flight Sim Room"},
+    {"title": "Flight Sim", "category": "stem", "room": "Flight Sim Room", "instructor": "CI Doe",
      "notes": "Six at a time: rotate every 10 minutes"},
-    {"title": "Inter Flight Sports Night", "category": "sport", "whole_night": True, "room": "Drill hall",
+    {"title": "Inter Flight Sports Night", "category": "sport", "whole_night": True, "room": "Main Parade Hall",
      "instructor": "PTI"},
-    {"title": "Christmas Social", "category": "social", "whole_night": True, "room": "Drill hall"},
-    {"title": "Heartstart Course", "category": "courses", "room": "Classroom 2", "instructor": "1st Aid Team"},
+    {"title": "Christmas Social", "category": "social", "whole_night": True, "room": "Main Parade Hall"},
+    {"title": "Heartstart Course", "category": "courses", "room": "Flight Sim Room", "instructor": "1st Aid Team"},
 ]
 # A kind staff added, coloured like the old doc's blue courses, and one hidden.
-PROGRAMME_KINDS = [{"label": "Courses", "colour": "#4a86e8"}, {"label": "Shooting", "hidden": True}]
+PROGRAMME_KINDS = [{"label": "Courses", "colour": "#4a86e8"}, {"label": "Recruiting", "hidden": True}]
 
 
 def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: datetime | None = None) -> None:
@@ -993,7 +993,8 @@ def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: da
     if drill:
         ok(client.put(f"{base}/bank/{drill['id']}", headers=headers, json={
             **{k: drill[k] for k in ("title", "category", "whole_night", "subject_key", "part", "active")},
-            "room_id": rooms["Drill hall"], "instructor": "Sgt Hughes", "notes": "Bring the drill cards"}), "drill")
+            "room_id": rooms["Main Parade Hall"], "people": [f"staff:{3_001}"], "notes": "Bring the drill cards"}),
+           "drill")
 
     this_month = f"{now:%Y-%m}"
     following = (now.replace(day=1) + timedelta(days=32)).strftime("%Y-%m")
@@ -1029,7 +1030,7 @@ def seed_programme_builder(client, headers: dict, nco_headers: dict, db, now: da
             "people": [f"staff:{sarah.cin}", f"cadet:{nco.cin}"], "notes": "Squad drill, then the 5x5 test"}),
            "people")
         ok(client.patch(f"{base}/slots/{b['id']}", headers=headers, json={
-            "people": [f"staff:{sarah.cin}"], "room_id": rooms["Flight sim room"]}), "clash")
+            "people": [f"staff:{sarah.cin}"], "room_id": rooms["Flight Sim Room"]}), "clash")
     if len(nights) > 1:
         ok(client.post(f"{base}/months/{following}/slots", headers=headers, json={
             "night_id": nights[1]["id"], "period": None, "flights": [],

@@ -47,6 +47,10 @@ PERIODS: dict[int, str] = {1: "1st half", 2: "2nd half"}
 DEFAULT_FLIGHTS = ["C", "A", "B"]
 FLIGHT_LABELS = {"C": "Probationary"}
 
+# Wednesday and Friday: every new month gets both; staff remove the nights
+# the squadron isn't parading.
+PARADE_WEEKDAYS = [2, 4]
+
 # Turnout to plan rooms on when there's no register to go by.
 DEFAULT_TURNOUT = 0.75
 
@@ -79,25 +83,6 @@ def who_label(slot_flights: list[str], all_flights: list[str]) -> str:
     if len(ordered) == 1:
         return flight_label(ordered[0])
     return f"{', '.join(ordered[:-1])} and {ordered[-1]} Flights"
-
-
-def parade_weekdays(db: Session, today: date | None = None) -> list[int]:
-    """The weekdays the squadron parades on (0 is Monday), from the last six
-    months of the programme record, or the register when there's no record.
-    A weekday counts if it had at least a third as many nights as the busiest,
-    so a one-off Saturday doesn't become a parade night."""
-    today = today or date.today()
-    since = today - timedelta(days=183)
-    days = [n.date for n in db.query(ProgrammeNight.date).filter(ProgrammeNight.date >= since)]
-    if not days:
-        days = [r.date.date() for r in db.query(CadetAttendance.date)
-                .filter(CadetAttendance.date >= datetime.combine(since, datetime.min.time()))
-                .distinct()]
-    counts = Counter(d.weekday() for d in days)
-    if not counts:
-        return [0]
-    busiest = max(counts.values())
-    return sorted(day for day, n in counts.items() if n * 3 >= busiest)
 
 
 def month_bounds(month: str) -> tuple[date, date]:

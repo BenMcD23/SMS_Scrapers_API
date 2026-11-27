@@ -39,7 +39,7 @@ def roster(db):
         *[Cadet(cin=10 + i, first_name=f"Zoë{i}", last_name="Ó Briain", rank="Cadet", flight="ABC"[i % 3])
           for i in range(9)],
     ])
-    # Mondays, so a new month's nights are Mondays.
+    # The record has Mondays; a new month still gets every Wednesday and Friday.
     for d in (date(2026, 11, 2), date(2026, 11, 9), date(2026, 11, 16)):
         db.add(ProgrammeNight(date=d, imported_at=datetime.now()))
     db.commit()
@@ -158,13 +158,13 @@ def test_a_month_with_no_programme_is_a_404(api, roster):
 
 def test_a_new_month_gets_its_parade_nights_and_a_history_line(api, roster):
     programme = new_month(api)
-    assert [n["date"] for n in programme["nights"]] == ["2026-12-07", "2026-12-14", "2026-12-21", "2026-12-28"]
+    assert [n["date"] for n in programme["nights"]] == [f"2026-12-{d:02}" for d in (2, 4, 9, 11, 16, 18, 23, 25, 30)]
     assert programme["status"] == "draft" and programme["name"] == "December 2026 programme"
     assert [f["key"] for f in programme["flights"]] == ["C", "A", "B"]
     assert programme["history"][0]["summary"] == "Started the programme"
     assert programme["history"][0]["by"] == "Sam Staff"
     # Four empty nights: one warning each, not one per flight per half.
-    assert sum(i["code"] == "empty_night" for i in programme["issues"]) == 4
+    assert sum(i["code"] == "empty_night" for i in programme["issues"]) == 9
 
 
 @pytest.mark.parametrize("body,status", [
@@ -235,7 +235,7 @@ def test_nights_are_added_edited_and_removed_with_their_sessions(api, roster):
     assert res.json()["history"][0]["summary"] == "Removed Thu 3 Dec and its 1 session(s)"
 
 
-@pytest.mark.parametrize("day,status", [("2027-01-04", 422), ("2026-12-07", 409), (None, 422)])
+@pytest.mark.parametrize("day,status", [("2027-01-04", 422), ("2026-12-02", 409), (None, 422)])
 def test_a_night_must_be_a_new_date_in_the_month(api, roster, day, status):
     new_month(api)
     res = api.post(f"{BASE}/months/{MONTH}/nights", headers=staff(api), json={"date": day})
@@ -245,10 +245,10 @@ def test_a_night_must_be_a_new_date_in_the_month(api, roster, day, status):
 def test_moving_a_night_onto_another_or_out_of_the_month_is_refused(api, roster):
     programme = new_month(api)
     night = programme["nights"][0]["id"]
-    for day, status in (("2026-12-14", 409), ("2027-01-01", 422)):
+    for day, status in (("2026-12-04", 409), ("2027-01-01", 422)):
         assert api.patch(f"{BASE}/nights/{night}", headers=staff(api), json={"date": day}).status_code == status
     res = api.patch(f"{BASE}/nights/{night}", headers=staff(api), json={"date": "2026-12-08"})
-    assert res.status_code == 200 and res.json()["nights"][0]["date"] == "2026-12-08"
+    assert res.status_code == 200 and res.json()["nights"][1]["date"] == "2026-12-08"
     assert api.patch(f"{BASE}/nights/999", headers=staff(api), json={}).status_code == 404
 
 
@@ -266,7 +266,29 @@ def test_a_session_from_the_bank_copies_the_bank_and_can_be_changed(api, roster)
     slot = slot_named(res.json(), "Map Reading 1")
     assert (slot["category"], slot["room_id"], slot["instructor"], slot["subject_key"], slot["part"], slot["period"]) \
         == ("lessons", room["id"], "Sgt H", "acp_32_2", 1, 1)
-    assert res.json()["history"][0]["summary"] == "Added Map Reading 1 for A Flight, 1st half, Mon 7 Dec"
+    assert res.json()["history"][0]["summary"] == "Added Map Reading 1 for A Flight, 1st half, Wed 2 Dec"
+
+
+def test_who_usually_runs_a_bank_session_goes_on_it_wherever_its_placed(api, roster):
+    # Dragged, placed with the form, or filled from a suggestion, the session
+    # gets the bank's people, so the clash and holiday checks see them.
+    item = api.post(f"{BASE}/bank", headers=staff(api), json={
+        "title": "Drill", "category": "drill", "people": ["staff:3001", "cadet:1", "staff:3001"]})
+    assert item.status_code == 201
+    assert item.json()["people"] == [{"key": "staff:3001", "name": "Sgt Sue Second"},
+                                     {"key": "cadet:1", "name": "Cpl Nina Corporal"}]
+    nights = new_month(api)["nights"]
+    dragged = api.post(f"{BASE}/months/{MONTH}/slots", headers=staff(api),
+                       json={"night_id": nights[0]["id"], "bank_item_id": item.json()["id"], "flights": ["A"]}).json()
+    assert [p["key"] for p in slot_named(dragged, "Drill")["people"]] == ["staff:3001", "cadet:1"]
+    # The form sends who it ended up with, which wins.
+    changed = api.post(f"{BASE}/months/{MONTH}/slots", headers=staff(api), json={
+        "night_id": nights[1]["id"], "bank_item_id": item.json()["id"], "flights": ["B"], "people": []}).json()
+    assert [s["people"] for n in changed["nights"] if n["id"] == nights[1]["id"] for s in n["slots"]] == [[]]
+    filled = api.post(f"{BASE}/months/{MONTH}/fill", headers=staff(api),
+                      json={"cells": [{"night_id": nights[2]["id"], "period": 1, "flight": "C"}]}).json()
+    [slot] = [s for n in filled["programme"]["nights"] if n["id"] == nights[2]["id"] for s in n["slots"]]
+    assert [p["key"] for p in slot["people"]] == ["staff:3001", "cadet:1"]
 
 
 def test_a_whole_night_bank_session_goes_in_all_night(api, roster):
@@ -313,7 +335,7 @@ def test_moving_a_session_changes_only_what_was_sent(api, roster):
     assert moved["night_id"] == second and moved["period"] == 2 and moved["flights"] == ["A", "B"]
     assert moved["instructor"] == "Sgt H" and [p["key"] for p in moved["people"]] == ["cadet:1"]
     assert res.json()["history"][0]["summary"] == \
-        "Moved Drill from A Flight, 1st half, Mon 7 Dec to A and B Flights, 2nd half, Mon 14 Dec"
+        "Moved Drill from A Flight, 1st half, Wed 2 Dec to A and B Flights, 2nd half, Fri 4 Dec"
     res = api.patch(f"{BASE}/slots/{slot['id']}", headers=staff(api), json={"instructor": "", "people": None})
     cleared = slot_named(res.json(), "Drill")
     assert cleared["instructor"] is None and cleared["people"] == []
@@ -325,13 +347,13 @@ def test_a_session_is_copied_to_other_nights_and_removed(api, roster):
     slot = slot_named(add(api, nights[0], "Drill", flights=["A"]), "Drill")
     res = api.post(f"{BASE}/slots/{slot['id']}/copy", headers=staff(api),
                    json={"night_ids": [nights[0], nights[1], nights[2], nights[2]]})
-    assert [len(n["slots"]) for n in res.json()["nights"]] == [1, 1, 1, 0]
+    assert [len(n["slots"]) for n in res.json()["nights"]] == [1, 1, 1] + [0] * 6
     assert res.json()["history"][0]["summary"] == "Copied Drill to 2 more nights"
     other = new_month(api, "2026-11")["nights"][0]["id"]
     assert api.post(f"{BASE}/slots/{slot['id']}/copy", headers=staff(api),
                     json={"night_ids": [other]}).status_code == 422
     res = api.delete(f"{BASE}/slots/{slot['id']}", headers=staff(api))
-    assert [len(n["slots"]) for n in res.json()["nights"]] == [0, 1, 1, 0]
+    assert [len(n["slots"]) for n in res.json()["nights"]] == [0, 1, 1] + [0] * 6
 
 
 def test_the_checks_come_back_with_every_change(api, roster):
@@ -346,14 +368,14 @@ def test_an_nco_on_holiday_shows_as_away_and_as_a_clash(api, db, roster):
     user = User(google_id="g-nco", email="nco@317atc.co.uk")
     db.add(user)
     db.flush()
-    db.add(NcoHoliday(user_id=user.id, date_from=datetime(2026, 12, 7), date_to=datetime(2026, 12, 7),
+    db.add(NcoHoliday(user_id=user.id, date_from=datetime(2026, 12, 2), date_to=datetime(2026, 12, 2),
                       booked_by_name="N", booked_by_email="nco@317atc.co.uk", created_at=datetime.now()))
     db.commit()
     night = new_month(api)["nights"][0]["id"]
     programme = add(api, night, "Drill", flights=["A"], people=["cadet:1"])
     assert any(i["code"] == "person_away" for i in programme["issues"])
     people = api.get(f"{BASE}/people?month={MONTH}", headers=staff(api)).json()
-    assert next(p for p in people if p["key"] == "cadet:1")["away"] == [["2026-12-07", "2026-12-07"]]
+    assert next(p for p in people if p["key"] == "cadet:1")["away"] == [["2026-12-02", "2026-12-02"]]
 
 
 # ── suggestions and filling ───────────────────────────────────────────────────
@@ -363,7 +385,7 @@ def test_gaps_get_suggestions_and_fill_puts_each_in_once(api, roster):
         api.post(f"{BASE}/bank", headers=staff(api), json={"title": title, "category": category})
     programme = new_month(api)
     found = api.get(f"{BASE}/months/{MONTH}/suggestions", headers=staff(api)).json()
-    assert len(found) == 4 * 2 * 3  # every night, half and flight is a gap
+    assert len(found) == 9 * 2 * 3  # every night, half and flight is a gap
     assert all(f["options"] and f["options"][0]["reason"] for f in found)
     night = programme["nights"][0]
     res = api.post(f"{BASE}/months/{MONTH}/fill", headers=staff(api),
@@ -373,7 +395,7 @@ def test_gaps_get_suggestions_and_fill_puts_each_in_once(api, roster):
     assert len(set(titles)) == 2  # not the same thing twice
     res = api.post(f"{BASE}/months/{MONTH}/fill", headers=staff(api), json={})
     # Every gap filled, repeating only once each flight has had all three.
-    assert res.json()["filled"] == 4 * 2 * 3 - 2
+    assert res.json()["filled"] == 9 * 2 * 3 - 2
     filled = res.json()["programme"]
     for flight in "CAB":
         titles = [s["title"] for n in filled["nights"] for s in n["slots"] if flight in s["flights"]]
@@ -435,7 +457,7 @@ def test_the_pdf_is_laid_out_like_the_old_programme_doc(api, db, roster):
               json={"key_dates": [{"when": "13th December", "what": "Carol Service"}]})
     page1, page2 = _pdf_text(api)
     assert page1.startswith("December 2026") and "Ely" not in page1
-    for text in ("Probationary Flight", "1st Period", "Break", "Duty NCO", "Monday", "07/12/26", "Drill",
+    for text in ("Probationary Flight", "1st Period", "Break", "Duty NCO", "Wednesday", "02/12/26", "Drill",
                  "Sgt Second", "No.2c SD", "Cpl Ó Briain", "Fg Off Barker", "Important Dates", "13th December",
                  "Carol Service"):
         assert text in page1, text
@@ -465,14 +487,14 @@ def test_publishing_puts_the_pdf_on_the_website_and_the_month_in_the_record(api,
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["website"]["pdf"] == "12_26_programme.pdf"
-    assert body["record"] == {"month": "2026-12", "nights": 4, "sessions": 2}
+    assert body["record"] == {"month": "2026-12", "nights": 9, "sessions": 2}
     assert body["programme"]["status"] == "published"
     site = github.files[GITHUB_REPO]
     assert site["public/programme/12_26_programme.pdf"][:4] == b"%PDF"
     assert "public/programme/11_26_programme.pdf" not in site
     # The import is replaced by the built month; other months are untouched.
     december = db.query(ProgrammeNight).filter(ProgrammeNight.date >= date(2026, 12, 1)).all()
-    assert sorted(n.date.day for n in december) == [7, 14, 21, 28]
+    assert sorted(n.date.day for n in december) == [2, 4, 9, 11, 16, 18, 23, 25, 30]
     rows = db.query(ProgrammeSession).all()
     assert {(r.flight, r.activity, r.instructor) for r in rows} == {("A", "Drill", "Sgt H"), ("B", "Drill", "Sgt H")}
     # An edit after publishing shows there's something the website hasn't had.
@@ -535,6 +557,9 @@ def test_the_bank_is_listed_with_how_often_each_ran(api, db, roster):
     ({"title": "New", "category": "lessons", "subject_key": "acp_32_2"}, 422),
     ({"title": "New", "category": "drill", "room_id": 999}, 422),
     ({"title": "", "category": "drill"}, 422),
+    ({"title": "New", "category": "drill", "people": ["staff:999"]}, 422),
+    # A cadet takes part in a session; they don't usually run one.
+    ({"title": "New", "category": "drill", "people": ["cadet:4"]}, 422),
 ])
 def test_a_bank_session_that_cant_be_saved_is_refused(api, roster, body, status):
     api.post(f"{BASE}/bank", headers=staff(api), json={"title": "Drill", "category": "drill"})
@@ -619,7 +644,7 @@ def test_mentioning_an_nco_on_a_session_emails_them_a_link_and_the_thread(api, r
     programme = _comment(api, "staff", f"{mention('Cpl Nina Corporal', 'cadet:1')} can you take this?",
                          slot_id=slot["id"])
     thread = programme["comments"][0]
-    assert thread["quote"] == "Mon 7 Dec · 1st half · A Flight: Drill"
+    assert thread["quote"] == "Wed 2 Dec · 1st half · A Flight: Drill"
     assert thread["mentions"] == [{"key": "cadet:1", "name": "Cpl Nina Corporal"}]
     assert thread["author"]["name"] == "CI Sam Staff"
     assert slot_named(programme, "Drill")["open_comments"] == 1
@@ -627,7 +652,7 @@ def test_mentioning_an_nco_on_a_session_emails_them_a_link_and_the_thread(api, r
     assert email["to"] == "nco@317atc.co.uk"
     assert email["subject"] == "CI Sam Staff mentioned you in a comment on the December 2026 programme"
     assert f"/programme/{MONTH}?comment={thread['id']}" in email["html"]
-    assert "Mon 7 Dec · 1st half · A Flight: Drill" in email["html"]
+    assert "Wed 2 Dec · 1st half · A Flight: Drill" in email["html"]
     assert "@Cpl Nina Corporal can you take this?" in email["html"]
     assert "Reply" in email["html"] and "reply=1" in email["html"]
 
@@ -651,7 +676,7 @@ def test_a_reply_emails_everyone_in_the_thread_but_the_replier(api, roster, outb
     night = new_month(api)["nights"][0]["id"]
     programme = _comment(api, "staff", f"{mention('Sgt Sue Second', 'staff:3001')} rooms?", night_id=night)
     root = programme["comments"][0]
-    assert root["quote"] == "Monday 7 December"
+    assert root["quote"] == "Wednesday 2 December"
     outbox.clear()
     programme = _comment(api, "nco", "The hall is free", parent_id=root["id"])
     assert {e["to"] for e in outbox} == {"staff@317atc.co.uk", "staff2@317atc.co.uk"}
@@ -850,6 +875,7 @@ def test_staff_add_a_kind_and_use_it_for_sessions_and_the_bank(api, db, roster):
 
 
 @pytest.mark.parametrize("body,status", [({"label": "Drill and inspection"}, 409), ({"label": "drill"}, 409),
+                                         ({"label": "Shooting"}, 409),
                                          ({"label": "!!!"}, 422), ({"label": ""}, 422),
                                          ({"label": "x", "colour": "blue"}, 422)])
 def test_a_kind_that_would_clash_or_cant_be_keyed_is_refused(api, roster, body, status):
@@ -880,12 +906,13 @@ def test_editing_or_deleting_a_missing_kind_is_a_404(api, roster):
 
 
 def test_a_kind_is_only_deleted_while_nothing_has_it(api, db, roster):
-    api.post(f"{BASE}/kinds", headers=staff(api), json={"label": "Shooting"})
+    api.post(f"{BASE}/kinds", headers=staff(api), json={"label": "Gliding"})
     api.post(f"{BASE}/kinds", headers=staff(api), json={"label": "Unused"})
     db.add(ProgrammeSession(night=ProgrammeNight(date=date(2026, 1, 5), imported_at=datetime.now()),
-                            period=1, flight="A", activity="Range", category="shooting", split=False, raw="Range"))
+                            period=1, flight="A", activity="Viking", category="gliding", split=False, raw="Viking"))
     db.commit()
-    assert api.delete(f"{BASE}/kinds/shooting", headers=staff(api)).status_code == 409
+    assert api.delete(f"{BASE}/kinds/gliding", headers=staff(api)).status_code == 409
+    assert api.delete(f"{BASE}/kinds/shooting", headers=staff(api)).status_code == 409  # built in
     res = api.delete(f"{BASE}/kinds/unused", headers=staff(api))
     assert res.status_code == 200 and _kind(res.json(), "unused") is None
 
